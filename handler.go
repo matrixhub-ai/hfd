@@ -70,6 +70,9 @@ func (h *Handler) router() *mux.Router {
 	// Git LFS protocol endpoints
 	h.registryLFS(r)
 	h.registryLFSLock(r)
+
+	// Web UI endpoints (must be registered last for proper routing)
+	h.registryWeb(r)
 	return r
 }
 
