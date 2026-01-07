@@ -39,7 +39,7 @@ func TestGitServer(t *testing.T) {
 	repoURL := server.URL + "/" + repoName
 
 	t.Run("CreateRepository", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -201,7 +201,7 @@ func TestGitServer(t *testing.T) {
 	})
 
 	t.Run("DeleteRepository", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodDelete, server.URL+"/apis/repositories/"+repoName, nil)
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/repositories/"+repoName, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}

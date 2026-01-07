@@ -33,7 +33,7 @@ func main() {
 
 	log.Printf("Starting gitd server on %s, serving repositories from %s\n", addr, absRootDir)
 
-	handler := handlers.CombinedLoggingHandler(os.Stderr, handlers.CompressHandler(gitd.NewHandler(gitd.WithRootDir(absRootDir))))
+	handler := handlers.LoggingHandler(os.Stderr, handlers.CompressHandler(gitd.NewHandler(gitd.WithRootDir(absRootDir))))
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
 		os.Exit(1)

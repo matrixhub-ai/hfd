@@ -39,7 +39,7 @@ func TestGitLFSServer(t *testing.T) {
 
 	// Create repository on server
 	t.Run("CreateRepository", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -275,7 +275,7 @@ func TestGitLFSServer(t *testing.T) {
 
 	// Cleanup
 	t.Run("DeleteRepository", func(t *testing.T) {
-		req, err := http.NewRequest(http.MethodDelete, server.URL+"/apis/repositories/"+repoName, nil)
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/repositories/"+repoName, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}

@@ -1,6 +1,10 @@
 package gitd
 
 import (
+	"context"
+	"log"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -66,4 +70,11 @@ func getContentType(path string) string {
 	default:
 		return "text/plain; charset=utf-8"
 	}
+}
+
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	log.Printf("Executing command: %s %s", name, strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stderr = os.Stderr
+	return cmd
 }

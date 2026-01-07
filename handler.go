@@ -61,9 +61,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) router() *mux.Router {
 	r := mux.NewRouter()
 
-	// Repository management endpoints
-	h.registryManagement(r)
-
 	// Git protocol endpoints
 	h.registryGit(r)
 
@@ -71,8 +68,10 @@ func (h *Handler) router() *mux.Router {
 	h.registryLFS(r)
 	h.registryLFSLock(r)
 
-	// Web UI endpoints (must be registered last for proper routing)
-	h.registryWeb(r)
+	// Repository management endpoints
+	h.registryRepositoriesImport(r)
+	h.registryRepositoriesInfo(r)
+	h.registryRepositories(r)
 	return r
 }
 

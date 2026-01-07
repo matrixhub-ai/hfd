@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -52,7 +51,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 
 	base, dir := filepath.Split(repoPath)
 
-	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", "--advertise-refs", dir)
+	cmd := command(r.Context(), service, "--stateless-rpc", "--advertise-refs", dir)
 	// Execute git command
 	cmd.Dir = base
 	cmd.Stdout = w
@@ -89,7 +88,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 
 	base, dir := filepath.Split(repoPath)
 
-	cmd := exec.CommandContext(r.Context(), service, "--stateless-rpc", dir)
+	cmd := command(r.Context(), service, "--stateless-rpc", dir)
 	cmd.Dir = base
 	cmd.Stdin = r.Body
 	cmd.Stdout = w

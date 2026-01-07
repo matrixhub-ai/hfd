@@ -27,7 +27,7 @@ func TestRepositoryManagement(t *testing.T) {
 		repoName := "new-repo.git"
 
 		// Create repository
-		req, _ := http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Failed to create repository: %v", err)
@@ -46,7 +46,7 @@ func TestRepositoryManagement(t *testing.T) {
 		}
 
 		// Delete repository
-		req, _ = http.NewRequest(http.MethodDelete, server.URL+"/apis/repositories/"+repoName, nil)
+		req, _ = http.NewRequest(http.MethodDelete, server.URL+"/api/repositories/"+repoName, nil)
 		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Failed to delete repository: %v", err)
@@ -67,12 +67,12 @@ func TestRepositoryManagement(t *testing.T) {
 		repoName := "duplicate-repo.git"
 
 		// Create first time
-		req, _ := http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		resp, _ := http.DefaultClient.Do(req)
 		resp.Body.Close()
 
 		// Create second time
-		req, _ = http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, _ = http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Failed to send request: %v", err)
@@ -85,7 +85,7 @@ func TestRepositoryManagement(t *testing.T) {
 	})
 
 	t.Run("DeleteNonExistentRepository", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodDelete, server.URL+"/apis/repositories/nonexistent.git", nil)
+		req, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/repositories/nonexistent.git", nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Failed to send request: %v", err)
@@ -101,7 +101,7 @@ func TestRepositoryManagement(t *testing.T) {
 		repoName := "org/team/project.git"
 
 		// Create nested repository
-		req, _ := http.NewRequest(http.MethodPost, server.URL+"/apis/repositories/"+repoName, nil)
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/repositories/"+repoName, nil)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Failed to create repository: %v", err)
