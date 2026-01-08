@@ -75,13 +75,8 @@ but it's too large to be a pointer.` + string(make([]byte, 2000)),
 		t.Run(tt.name, func(t *testing.T) {
 			// Create an in-memory storage
 			storer := memory.NewStorage()
-
-			// Create a blob with the test content
-			blob := &object.Blob{}
-			blob.Hash = plumbing.NewHash("0000000000000000000000000000000000000000")
-			blob.Size = int64(len(tt.content))
 			
-			// Store the blob
+			// Create and store the blob with test content
 			obj := storer.NewEncodedObject()
 			obj.SetType(plumbing.BlobObject)
 			obj.SetSize(int64(len(tt.content)))
@@ -100,8 +95,8 @@ but it's too large to be a pointer.` + string(make([]byte, 2000)),
 				t.Fatalf("Failed to store object: %v", err)
 			}
 
-			// Get the blob back
-			blob, err = object.GetBlob(storer, hash)
+			// Get the blob back using proper go-git API
+			blob, err := object.GetBlob(storer, hash)
 			if err != nil {
 				t.Fatalf("Failed to get blob: %v", err)
 			}

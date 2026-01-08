@@ -206,6 +206,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 			hash := plumbing.NewHash(entries[i].SHA)
 			blob, err := repository.BlobObject(hash)
 			if err != nil {
+				// Skip blobs that cannot be read - they won't be marked as LFS
 				continue
 			}
 			
@@ -220,6 +221,8 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(entries)
 }
 
+const maxLFSPointerSize = 1024 // LFS pointers are typically < 200 bytes
+
 // detectLFSPointer checks if a blob is a git-lfs pointer file and returns the SHA256 if it is
 // LFS pointer files have a specific format:
 // version https://git-lfs.github.com/spec/v1
@@ -227,7 +230,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 // size <bytes>
 func detectLFSPointer(blob *object.Blob) (bool, string) {
 	// LFS pointers are small (typically < 200 bytes)
-	if blob.Size > 1024 {
+	if blob.Size > maxLFSPointerSize {
 		return false, ""
 	}
 
