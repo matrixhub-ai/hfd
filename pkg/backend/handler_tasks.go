@@ -100,14 +100,8 @@ func (h *Handler) handleLFSSyncObjectTask(ctx context.Context, task *queue.Task,
 		return nil
 	}
 
-	// Get LFS endpoint from source URL
-	lfsEndpoint := lfs.GetLFSEndpoint(sourceURL)
-
-	// Create remote client
-	remoteClient := lfs.NewRemoteClient()
-
 	// Request download URL for the object
-	batchResp, err := remoteClient.BatchDownload(ctx, lfsEndpoint, []lfs.LFSObject{{Oid: oid, Size: size}})
+	batchResp, err := h.lfsClient.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
 	if err != nil {
 		return fmt.Errorf("batch download request failed: %w", err)
 	}
@@ -121,15 +115,19 @@ func (h *Handler) handleLFSSyncObjectTask(ctx context.Context, task *queue.Task,
 		return fmt.Errorf("no download action for LFS object %s", oid)
 	}
 
-	// Download the object
-	body, err := remoteClient.DownloadObject(ctx, &downloadAction)
+	req, err := downloadAction.Request(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create download request for LFS object %s: %w", oid, err)
+	}
+
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download LFS object %s: %w", oid, err)
 	}
-	defer body.Close()
+	defer resp.Body.Close()
 
 	rp := &readerProgress{
-		reader: body,
+		reader: resp.Body,
 		size:   size,
 		callFunc: func(n int64, size int64) {
 			progressFn(int(float64(n)*100/float64(size)), oid, n, size)

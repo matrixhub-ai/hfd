@@ -1,13 +1,17 @@
 package backend
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/wzshiming/gitd/pkg/lfs"
 	"github.com/wzshiming/gitd/pkg/queue"
+	"github.com/wzshiming/httpseek"
 )
 
 type Authenticator interface {
@@ -17,6 +21,9 @@ type Authenticator interface {
 // Handler
 type Handler struct {
 	rootDir string
+
+	httpClient *http.Client
+	lfsClient  *lfs.Client
 
 	authenticate Authenticator
 
@@ -57,6 +64,19 @@ func WithQueueWorkers(count int) Option {
 func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
 		rootDir: "./data",
+		httpClient: &http.Client{
+			Transport: httpseek.NewMustReaderTransport(http.DefaultTransport,
+				func(r *http.Request, retry int, err error) error {
+					log.Printf("Retry %d for %s due to error: %v\n", retry+1, r.URL.String(), err)
+					if retry >= 5 {
+						return fmt.Errorf("max retries reached for %s: %w", r.URL.String(), err)
+					}
+					// Simple backoff strategy
+					time.Sleep(time.Duration(retry+1) * time.Second)
+					return nil
+				}),
+			Timeout: 30 * time.Minute, // Long timeout for large files
+		},
 	}
 
 	for _, opt := range opts {
@@ -75,6 +95,7 @@ func NewHandler(opts ...Option) *Handler {
 		h.queueWorker.Start()
 	}
 
+	h.lfsClient = lfs.NewClient(h.httpClient)
 	h.root = h.router()
 	return h
 }
