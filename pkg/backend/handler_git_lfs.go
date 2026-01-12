@@ -19,6 +19,7 @@ const (
 )
 
 func (h *Handler) registryLFS(r *mux.Router) {
+	r.HandleFunc("/{repo:.+}.git/info/lfs/objects/batch", h.requireAuth(h.handleBatch)).Methods("POST").MatcherFunc(metaMatcher)
 	r.HandleFunc("/{repo:.+}/info/lfs/objects/batch", h.requireAuth(h.handleBatch)).Methods("POST").MatcherFunc(metaMatcher)
 	r.HandleFunc("/objects/{oid}", h.requireAuth(h.handleGetContent)).Methods("GET", "HEAD")
 	r.HandleFunc("/objects/{oid}", h.requireAuth(h.handlePutContent)).Methods("PUT")

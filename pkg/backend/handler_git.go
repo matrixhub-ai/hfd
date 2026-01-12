@@ -12,8 +12,11 @@ import (
 
 func (h *Handler) registryGit(r *mux.Router) {
 	r.HandleFunc("/{repo:.+}.git/info/refs", h.requireAuth(h.handleInfoRefs)).Methods(http.MethodGet)
+	r.HandleFunc("/{repo:.+}/info/refs", h.requireAuth(h.handleInfoRefs)).Methods(http.MethodGet)
 	r.HandleFunc("/{repo:.+}.git/git-upload-pack", h.requireAuth(h.handleUploadPack)).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}/git-upload-pack", h.requireAuth(h.handleUploadPack)).Methods(http.MethodPost)
 	r.HandleFunc("/{repo:.+}.git/git-receive-pack", h.requireAuth(h.handleReceivePack)).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}/git-receive-pack", h.requireAuth(h.handleReceivePack)).Methods(http.MethodPost)
 }
 
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.

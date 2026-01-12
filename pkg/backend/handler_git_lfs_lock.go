@@ -19,9 +19,13 @@ var (
 )
 
 func (h *Handler) registryLFSLock(r *mux.Router) {
+	r.HandleFunc("/{repo:.+}.git/locks", h.requireAuth(h.handleGetLock)).Methods("GET").MatcherFunc(metaMatcher)
 	r.HandleFunc("/{repo:.+}/locks", h.requireAuth(h.handleGetLock)).Methods("GET").MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/locks/verify", h.requireAuth(h.handleLocksVerify)).Methods("POST").MatcherFunc(metaMatcher)
 	r.HandleFunc("/{repo:.+}/locks/verify", h.requireAuth(h.handleLocksVerify)).Methods("POST").MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/locks", h.requireAuth(h.handleCreateLock)).Methods("POST").MatcherFunc(metaMatcher)
 	r.HandleFunc("/{repo:.+}/locks", h.requireAuth(h.handleCreateLock)).Methods("POST").MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/locks/{id}/unlock", h.requireAuth(h.handleDeleteLock)).Methods("POST").MatcherFunc(metaMatcher)
 	r.HandleFunc("/{repo:.+}/locks/{id}/unlock", h.requireAuth(h.handleDeleteLock)).Methods("POST").MatcherFunc(metaMatcher)
 }
 
