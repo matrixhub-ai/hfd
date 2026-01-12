@@ -10,6 +10,7 @@ require (
 	github.com/gorilla/context v1.1.2
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
+	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/wzshiming/httpseek v0.5.0
 )
 
