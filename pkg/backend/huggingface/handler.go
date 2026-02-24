@@ -1,7 +1,7 @@
-package backend
+package huggingface
 
 import (
-	"io"
+	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -53,16 +53,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) register() {
-	// Git protocol endpoints
-	h.registryGit(h.root)
+	// HuggingFace-compatible API endpoints
+	h.registryHuggingFace(h.root)
 
 	h.root.NotFoundHandler = h.next
 }
 
-func responseText(w http.ResponseWriter, text string, sc int) {
+func responseJSON(w http.ResponseWriter, data any, sc int) {
 	header := w.Header()
 	if header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "text/plain; charset=utf-8")
+		header.Set("Content-Type", "application/json; charset=utf-8")
 	}
 
 	if sc >= http.StatusBadRequest {
@@ -74,9 +74,26 @@ func responseText(w http.ResponseWriter, text string, sc int) {
 		w.WriteHeader(sc)
 	}
 
-	if text == "" {
+	if data == nil {
+		_, _ = w.Write([]byte("{}"))
 		return
 	}
 
-	_, _ = io.WriteString(w, text)
+	switch t := data.(type) {
+	case error:
+		var dataErr struct {
+			Error string `json:"error"`
+		}
+		dataErr.Error = t.Error()
+		data = dataErr
+	case string:
+		var dataErr struct {
+			Error string `json:"error"`
+		}
+		dataErr.Error = t
+		data = dataErr
+	}
+
+	enc := json.NewEncoder(w)
+	_ = enc.Encode(data)
 }

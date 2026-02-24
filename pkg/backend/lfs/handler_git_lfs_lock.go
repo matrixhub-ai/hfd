@@ -1,4 +1,4 @@
-package backend
+package lfs
 
 import (
 	"crypto/rand"
@@ -38,7 +38,7 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
-	locks, nextCursor, err := h.locksStore.Filtered(repoName,
+	locks, nextCursor, err := h.storage.LocksStore().Filtered(repoName,
 		r.FormValue("path"),
 		r.FormValue("cursor"),
 		r.FormValue("limit"))
@@ -50,7 +50,7 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 		ll.NextCursor = nextCursor
 	}
 
-	h.JSON(w, ll, http.StatusOK)
+	responseJSON(w, ll, http.StatusOK)
 }
 
 func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +64,7 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 
 	reqBody := &lfs.VerifiableLockRequest{}
 	if err := dec.Decode(reqBody); err != nil {
-		h.JSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusBadRequest)
+		responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusBadRequest)
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ll := &lfs.VerifiableLockList{}
-	locks, nextCursor, err := h.locksStore.Filtered(repoName, "",
+	locks, nextCursor, err := h.storage.LocksStore().Filtered(repoName, "",
 		reqBody.Cursor,
 		strconv.Itoa(limit))
 	if err != nil {
@@ -92,7 +92,7 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.JSON(w, ll, http.StatusOK)
+	responseJSON(w, ll, http.StatusOK)
 }
 
 func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
@@ -106,17 +106,17 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 
 	var lockRequest lfs.LockRequest
 	if err := dec.Decode(&lockRequest); err != nil {
-		h.JSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusBadRequest)
+		responseJSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusBadRequest)
 		return
 	}
 
-	locks, _, err := h.locksStore.Filtered(repoName, lockRequest.Path, "", "1")
+	locks, _, err := h.storage.LocksStore().Filtered(repoName, lockRequest.Path, "", "1")
 	if err != nil {
-		h.JSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
+		responseJSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	if len(locks) > 0 {
-		h.JSON(w, &lfs.LockResponse{Message: "lock already created"}, http.StatusConflict)
+		responseJSON(w, &lfs.LockResponse{Message: "lock already created"}, http.StatusConflict)
 		return
 	}
 
@@ -127,12 +127,12 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 		LockedAt: time.Now(),
 	}
 
-	if err := h.locksStore.Add(repoName, *lock); err != nil {
-		h.JSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
+	if err := h.storage.LocksStore().Add(repoName, *lock); err != nil {
+		responseJSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
 		return
 	}
 
-	h.JSON(w, &lfs.LockResponse{Lock: lock}, http.StatusCreated)
+	responseJSON(w, &lfs.LockResponse{Lock: lock}, http.StatusCreated)
 }
 
 func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
@@ -148,30 +148,30 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 	var unlockRequest lfs.UnlockRequest
 
 	if len(lockId) == 0 {
-		h.JSON(w, &lfs.UnlockResponse{Message: "invalid lock id"}, http.StatusBadRequest)
+		responseJSON(w, &lfs.UnlockResponse{Message: "invalid lock id"}, http.StatusBadRequest)
 		return
 	}
 
 	if err := dec.Decode(&unlockRequest); err != nil {
-		h.JSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusBadRequest)
+		responseJSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusBadRequest)
 		return
 	}
 
-	l, err := h.locksStore.Delete(repoName, user, lockId, unlockRequest.Force)
+	l, err := h.storage.LocksStore().Delete(repoName, user, lockId, unlockRequest.Force)
 	if err != nil {
 		if err == ErrNotOwner {
-			h.JSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusForbidden)
+			responseJSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusForbidden)
 		} else {
-			h.JSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusInternalServerError)
+			responseJSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusInternalServerError)
 		}
 		return
 	}
 	if l == nil {
-		h.JSON(w, &lfs.UnlockResponse{Message: "unable to find lock"}, http.StatusNotFound)
+		responseJSON(w, &lfs.UnlockResponse{Message: "unable to find lock"}, http.StatusNotFound)
 		return
 	}
 
-	h.JSON(w, &lfs.UnlockResponse{Lock: l}, http.StatusOK)
+	responseJSON(w, &lfs.UnlockResponse{Lock: l}, http.StatusOK)
 }
 
 func randomLockId() string {

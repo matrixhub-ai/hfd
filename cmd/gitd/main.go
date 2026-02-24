@@ -1,4 +1,3 @@
-// Command gitd is a git server that uses the git binary to serve repositories over HTTP.
 package main
 
 import (
@@ -11,11 +10,17 @@ import (
 	"path/filepath"
 
 	"github.com/wzshiming/gitd/internal/handlers"
+	"github.com/wzshiming/gitd/pkg/authenticate"
 	backendgit "github.com/wzshiming/gitd/pkg/backend/git"
 	backendhttp "github.com/wzshiming/gitd/pkg/backend/http"
+	"github.com/wzshiming/gitd/pkg/backend/huggingface"
+	backendlfs "github.com/wzshiming/gitd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/gitd/pkg/backend/ssh"
+	backendweb "github.com/wzshiming/gitd/pkg/backend/web"
 	"github.com/wzshiming/gitd/pkg/lfs"
 	"github.com/wzshiming/gitd/pkg/s3fs"
+	"github.com/wzshiming/gitd/pkg/storage"
+	"github.com/wzshiming/gitd/web"
 )
 
 var (
@@ -31,6 +36,11 @@ var (
 	s3SecretKey    = ""
 	s3Bucket       = ""
 	s3UsePathStyle = false
+
+	// Authentication flags
+	sshAuthorizedKey = ""
+	httpUsername     = ""
+	httpPassword     = ""
 )
 
 func init() {
@@ -46,6 +56,12 @@ func init() {
 	flag.StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret key")
 	flag.StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket name")
 	flag.BoolVar(&s3UsePathStyle, "s3-use-path-style", false, "Use path style for S3 URLs")
+
+	// Authentication flags
+	flag.StringVar(&sshAuthorizedKey, "ssh-authorized-key", "", "Path to SSH authorized_keys file for public key authentication")
+	flag.StringVar(&httpUsername, "http-username", "", "Username for HTTP basic authentication")
+	flag.StringVar(&httpPassword, "http-password", "", "Password for HTTP basic authentication")
+
 	flag.Parse()
 }
 
@@ -56,11 +72,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts := []backendhttp.Option{
-		backendhttp.WithRootDir(absRootDir),
+	storageOpts := []storage.Option{
+		storage.WithRootDir(absRootDir),
 	}
 
-	log.Printf("Starting matrixhub server on %s, serving repositories from %s\n", addr, absRootDir)
+	log.Printf("Starting gitd server on %s, serving repositories from %s\n", addr, absRootDir)
 
 	if s3Endpoint != "" && s3Bucket != "" {
 		if s3Repositories {
@@ -88,25 +104,45 @@ func main() {
 			}()
 		}
 
-		opts = append(opts,
-			backendhttp.WithLFSS3(
-				lfs.NewS3(
-					"lfs",
-					s3Endpoint,
-					s3AccessKey,
-					s3SecretKey,
-					s3Bucket,
-					s3UsePathStyle,
-					s3SignEndpoint,
-				),
+		lfss3 := lfs.NewS3(
+			"lfs",
+			s3Endpoint,
+			s3AccessKey,
+			s3SecretKey,
+			s3Bucket,
+			s3UsePathStyle,
+			s3SignEndpoint,
+		)
+		storageOpts = append(storageOpts,
+			storage.WithLFSS3(
+				lfss3,
 			),
 		)
+
 	}
 
+	storage := storage.NewStorage(storageOpts...)
 	var handler http.Handler
-	handler = backendhttp.NewHandler(
-		opts...,
+
+	handler = backendweb.NewHandler(
+		backendweb.WithStorage(storage), backendweb.WithNext(web.Web),
 	)
+
+	handler = huggingface.NewHandler(
+		huggingface.WithStorage(storage), huggingface.WithNext(handler),
+	)
+
+	handler = backendlfs.NewHandler(
+		backendlfs.WithStorage(storage), backendlfs.WithNext(handler),
+	)
+
+	handler = backendhttp.NewHandler(
+		backendhttp.WithStorage(storage), backendhttp.WithNext(handler),
+	)
+
+	if httpUsername != "" {
+		handler = authenticate.Authenticate(httpUsername, httpPassword, handler)
+	}
 
 	handler = handlers.CompressHandler(handler)
 	handler = handlers.LoggingHandler(os.Stderr, handler)
@@ -149,7 +185,22 @@ func main() {
 			}
 			log.Printf("Generated SSH host key and saved to %s\n", hostKeyPath)
 		}
-		sshServer := backendssh.NewServer(repositoriesDir, hostKeySigner)
+		var sshOpts []backendssh.Option
+		if sshAuthorizedKey != "" {
+			authKeysData, err := os.ReadFile(sshAuthorizedKey)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading SSH authorized keys file: %v\n", err)
+				os.Exit(1)
+			}
+			authorizedKeys, err := backendssh.ParseAuthorizedKeys(authKeysData)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing SSH authorized keys: %v\n", err)
+				os.Exit(1)
+			}
+			sshOpts = append(sshOpts, backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback(authorizedKeys)))
+			log.Printf("SSH public key authentication enabled with %d key(s)\n", len(authorizedKeys))
+		}
+		sshServer := backendssh.NewServer(repositoriesDir, hostKeySigner, sshOpts...)
 		log.Printf("Starting SSH protocol server on %s\n", sshAddr)
 		go func() {
 			if err := sshServer.ListenAndServe(sshAddr); err != nil {

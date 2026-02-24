@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"path/filepath"
 	"strings"
 
 	"github.com/wzshiming/gitd/internal/utils"
@@ -62,7 +61,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	fullPath := s.resolveRepoPath(repoPath)
+	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
 	if fullPath == "" || !repository.IsRepository(fullPath) {
 		log.Printf("git protocol: repository not found: %s\n", repoPath)
 		return
@@ -138,26 +137,4 @@ func readRequest(r io.Reader) (service string, repoPath string, err error) {
 	repoPath = cmd[spaceIdx+1:]
 
 	return service, repoPath, nil
-}
-
-func (s *Server) resolveRepoPath(urlPath string) string {
-	urlPath = strings.TrimPrefix(urlPath, "/")
-	if urlPath == "" {
-		return ""
-	}
-
-	if !strings.HasSuffix(urlPath, ".git") {
-		urlPath += ".git"
-	}
-
-	fullPath := filepath.Join(s.repositoriesDir, urlPath)
-	fullPath = filepath.Clean(fullPath)
-
-	// Prevent path traversal outside the repositories directory
-	rel, err := filepath.Rel(s.repositoriesDir, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return ""
-	}
-
-	return fullPath
 }

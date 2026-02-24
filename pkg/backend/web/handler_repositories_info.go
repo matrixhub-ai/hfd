@@ -1,4 +1,4 @@
-package backend
+package web
 
 import (
 	"errors"
@@ -39,39 +39,39 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	refpath := vars["refpath"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	ref, path, err := repo.SplitRevisionAndPath(refpath)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	entries, err := repo.Tree(ref, path)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
-			h.JSON(w, []any{}, http.StatusOK)
+			responseJSON(w, []any{}, http.StatusOK)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to get tree for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 
-	h.JSON(w, entries, http.StatusOK)
+	responseJSON(w, entries, http.StatusOK)
 }
 
 // handleBlob handles requests to get file content
@@ -80,31 +80,31 @@ func (h *Handler) handleBlob(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	refpath := vars["refpath"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	ref, path, err := repo.SplitRevisionAndPath(refpath)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	blob, err := repo.Blob(ref, path)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to get blob for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -116,18 +116,18 @@ func (h *Handler) handleBlob(w http.ResponseWriter, r *http.Request) {
 			}()
 			ptr, err := lfs.DecodePointer(reader)
 			if err == nil && ptr != nil {
-				if h.s3Store != nil {
-					url, err := h.s3Store.SignGet(ptr.Oid)
+				if h.storage.S3Store() != nil {
+					url, err := h.storage.S3Store().SignGet(ptr.Oid)
 					if err != nil {
-						h.JSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+						responseJSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
 						return
 					}
 					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 					return
 				}
-				content, stat, err := h.contentStore.Get(ptr.Oid)
+				content, stat, err := h.storage.ContentStore().Get(ptr.Oid)
 				if err != nil {
-					h.JSON(w, fmt.Errorf("LFS object %q not found", ptr.Oid), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found", ptr.Oid), http.StatusNotFound)
 					return
 				}
 				defer func() {
@@ -149,7 +149,7 @@ func (h *Handler) handleBlob(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := blob.NewReader()
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to get blob reader for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob reader for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {
@@ -157,7 +157,7 @@ func (h *Handler) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}()
 	_, err = io.Copy(w, reader)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to read blob content for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to read blob content for repository %q at revision %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 }
@@ -168,39 +168,39 @@ func (h *Handler) handleCommits(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	refpath := vars["refpath"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	ref, _, err := repo.SplitRevisionAndPath(refpath)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	commits, err := repo.Commits(ref, 1)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
-			h.JSON(w, []any{}, http.StatusOK)
+			responseJSON(w, []any{}, http.StatusOK)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to get commits for repository %q at ref %q: %v", repoName, ref, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get commits for repository %q at ref %q: %v", repoName, ref, err), http.StatusInternalServerError)
 		return
 	}
 
-	h.JSON(w, commits, http.StatusOK)
+	responseJSON(w, commits, http.StatusOK)
 }
 
 // Branch represents a git branch
@@ -213,24 +213,24 @@ func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	branches, err := repo.Branches()
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to get branches for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get branches for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -239,5 +239,5 @@ func (h *Handler) handleBranches(w http.ResponseWriter, r *http.Request) {
 		branchList = append(branchList, Branch{Name: b})
 	}
 
-	h.JSON(w, branchList, http.StatusOK)
+	responseJSON(w, branchList, http.StatusOK)
 }

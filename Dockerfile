@@ -61,7 +61,8 @@ RUN --mount=type=cache,target=/var/cache/apk \
 
 COPY --from=builder /gitd /usr/local/bin/gitd
 
-EXPOSE 8080
 EXPOSE 9418
+EXPOSE 8080
+EXPOSE 2222
 
 ENTRYPOINT ["/usr/local/bin/gitd"]

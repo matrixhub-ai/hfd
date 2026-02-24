@@ -55,6 +55,28 @@ func Init(repoPath string, defaultBranch string) (*Repository, error) {
 	}, nil
 }
 
+func ResolvePath(repositoriesDir, urlPath string) string {
+	urlPath = strings.TrimPrefix(urlPath, "/")
+	if urlPath == "" {
+		return ""
+	}
+
+	if !strings.HasSuffix(urlPath, ".git") {
+		urlPath += ".git"
+	}
+
+	fullPath := filepath.Join(repositoriesDir, urlPath)
+	fullPath = filepath.Clean(fullPath)
+
+	// Prevent path traversal outside the repositories directory
+	rel, err := filepath.Rel(repositoriesDir, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+
+	return fullPath
+}
+
 func Open(repoPath string) (*Repository, error) {
 	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
 	if err != nil {

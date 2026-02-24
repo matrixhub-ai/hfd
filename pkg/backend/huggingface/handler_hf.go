@@ -1,4 +1,4 @@
-package backend
+package huggingface
 
 import (
 	"errors"
@@ -59,19 +59,19 @@ func (h *Handler) handleHFModelInfo(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *Handler) handleHFModelInfo(w http.ResponseWriter, r *http.Request) {
 		DefaultBranch: defaultBranch,
 	}
 
-	h.JSON(w, modelInfo, http.StatusOK)
+	responseJSON(w, modelInfo, http.StatusOK)
 }
 
 func (h *Handler) handleHFTree(w http.ResponseWriter, r *http.Request) {
@@ -128,25 +128,25 @@ func (h *Handler) handleHFTree(w http.ResponseWriter, r *http.Request) {
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	ref, path, err := repo.SplitRevisionAndPath(refpath)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -155,11 +155,11 @@ func (h *Handler) handleHFTree(w http.ResponseWriter, r *http.Request) {
 		Expand:    expand,
 	})
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 
-	h.JSON(w, entries, http.StatusOK)
+	responseJSON(w, entries, http.StatusOK)
 }
 
 // handleHFModelInfoRevision handles the /api/models/{repo_id}/revision/{revision} endpoint
@@ -170,19 +170,19 @@ func (h *Handler) handleHFModelInfoRevision(w http.ResponseWriter, r *http.Reque
 	repoName := vars["repo"]
 	ref := vars["revision"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -223,7 +223,7 @@ func (h *Handler) handleHFModelInfoRevision(w http.ResponseWriter, r *http.Reque
 		DefaultBranch: repo.DefaultBranch(),
 	}
 
-	h.JSON(w, modelInfo, http.StatusOK)
+	responseJSON(w, modelInfo, http.StatusOK)
 }
 
 // handleHFResolve handles the /{repo_id}/resolve/{revision}/{path} endpoint
@@ -234,25 +234,25 @@ func (h *Handler) handleHFResolve(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	refpath := vars["refpath"]
 
-	repoPath := h.resolveRepoPath(repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
-		h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			h.JSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
-		h.JSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	ref, path, err := repo.SplitRevisionAndPath(refpath)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -265,7 +265,7 @@ func (h *Handler) handleHFResolve(w http.ResponseWriter, r *http.Request) {
 
 	blob, err := repo.Blob(ref, path)
 	if err != nil {
-		h.JSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, repoName, ref), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, repoName, ref), http.StatusNotFound)
 		return
 	}
 
@@ -282,18 +282,18 @@ func (h *Handler) handleHFResolve(w http.ResponseWriter, r *http.Request) {
 				// Set HuggingFace-required headers before redirect
 				w.Header().Set("X-Repo-Commit", commitHash)
 				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.Oid))
-				if h.s3Store != nil {
-					url, err := h.s3Store.SignGet(ptr.Oid)
+				if h.storage.S3Store() != nil {
+					url, err := h.storage.S3Store().SignGet(ptr.Oid)
 					if err != nil {
-						h.JSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+						responseJSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
 						return
 					}
 					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 					return
 				}
-				content, stat, err := h.contentStore.Get(ptr.Oid)
+				content, stat, err := h.storage.ContentStore().Get(ptr.Oid)
 				if err != nil {
-					h.JSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, repoName, ref), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, repoName, ref), http.StatusNotFound)
 					return
 				}
 				defer func() {
@@ -323,7 +323,7 @@ func (h *Handler) handleHFResolve(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := blob.NewReader()
 	if err != nil {
-		h.JSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, repoName, ref, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, repoName, ref, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {
