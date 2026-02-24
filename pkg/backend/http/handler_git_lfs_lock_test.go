@@ -11,7 +11,7 @@ import (
 	"github.com/gorilla/handlers"
 
 	"github.com/wzshiming/gitd/internal/utils"
-	"github.com/wzshiming/gitd/pkg/backend"
+	backendhttp "github.com/wzshiming/gitd/pkg/backend/http"
 )
 
 // TestGitLFSLock tests the Git LFS lock functionality using git-lfs binary.
@@ -35,7 +35,7 @@ func TestGitLFSLock(t *testing.T) {
 	}()
 
 	// Create handler and test server
-	handler := handlers.LoggingHandler(os.Stderr, backend.NewHandler(backend.WithRootDir(repoDir)))
+	handler := handlers.LoggingHandler(os.Stderr, backendhttp.NewHandler(backendhttp.WithRootDir(repoDir)))
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

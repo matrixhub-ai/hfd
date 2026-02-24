@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wzshiming/gitd/pkg/backend"
+	backend "github.com/wzshiming/gitd/pkg/backend/http"
 	"github.com/wzshiming/gitd/pkg/queue"
 )
 

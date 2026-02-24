@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/handlers"
 
 	"github.com/wzshiming/gitd/internal/utils"
-	"github.com/wzshiming/gitd/pkg/backend"
+	backend "github.com/wzshiming/gitd/pkg/backend/http"
 )
 
 // runGitCmd runs a git command in the specified directory.

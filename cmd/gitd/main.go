@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/wzshiming/gitd/internal/handlers"
-	"github.com/wzshiming/gitd/pkg/backend"
+	backendhttp "github.com/wzshiming/gitd/pkg/backend/http"
 	"github.com/wzshiming/gitd/pkg/lfs"
 	"github.com/wzshiming/gitd/pkg/s3fs"
 )
@@ -48,8 +48,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts := []backend.Option{
-		backend.WithRootDir(absRootDir),
+	opts := []backendhttp.Option{
+		backendhttp.WithRootDir(absRootDir),
 	}
 
 	log.Printf("Starting matrixhub server on %s, serving repositories from %s\n", addr, absRootDir)
@@ -81,7 +81,7 @@ func main() {
 		}
 
 		opts = append(opts,
-			backend.WithLFSS3(
+			backendhttp.WithLFSS3(
 				lfs.NewS3(
 					"lfs",
 					s3Endpoint,
@@ -96,7 +96,7 @@ func main() {
 	}
 
 	var handler http.Handler
-	handler = backend.NewHandler(
+	handler = backendhttp.NewHandler(
 		opts...,
 	)
 

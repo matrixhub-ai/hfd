@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/handlers"
 
-	"github.com/wzshiming/gitd/pkg/backend"
+	backendhttp "github.com/wzshiming/gitd/pkg/backend/http"
 )
 
 // TestRepositoryManagement tests repository creation and deletion.
@@ -22,7 +22,7 @@ func TestRepositoryManagement(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	handler := handlers.LoggingHandler(os.Stderr, backend.NewHandler(backend.WithRootDir(repoDir)))
+	handler := handlers.LoggingHandler(os.Stderr, backendhttp.NewHandler(backendhttp.WithRootDir(repoDir)))
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

@@ -11,7 +11,7 @@ import (
 	"github.com/gorilla/handlers"
 
 	"github.com/wzshiming/gitd/internal/utils"
-	"github.com/wzshiming/gitd/pkg/backend"
+	backend "github.com/wzshiming/gitd/pkg/backend/http"
 )
 
 // runGitLFSCmd runs a git-lfs command in the specified directory.
