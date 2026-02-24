@@ -1,6 +1,9 @@
 package ssh_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/wzshiming/gitd/internal/utils"
 	backendssh "github.com/wzshiming/gitd/pkg/backend/ssh"
+	"golang.org/x/crypto/ssh"
 )
 
 // runGitCmd runs a git command in the specified directory.
@@ -54,7 +58,7 @@ func TestSSHProtocolServer(t *testing.T) {
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate a host key for the SSH server
-	hostKey, err := backendssh.GenerateHostKey()
+	hostKey, err := generateHostKey()
 	if err != nil {
 		t.Fatalf("Failed to generate host key: %v", err)
 	}
@@ -161,4 +165,12 @@ func TestSSHProtocolServer(t *testing.T) {
 			t.Errorf("file2.txt not found after pull")
 		}
 	})
+}
+
+func generateHostKey() (ssh.Signer, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generating host key: %w", err)
+	}
+	return ssh.NewSignerFromKey(priv)
 }
