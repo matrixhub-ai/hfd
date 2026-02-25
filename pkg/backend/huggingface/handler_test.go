@@ -612,3 +612,61 @@ func TestHuggingFaceCommitDeleteFile(t *testing.T) {
 		t.Errorf("Unexpected content for README.md: %q", content)
 	}
 }
+
+func TestHuggingFacePreuploadWithGitAttributes(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create repo first
+	createBody := `{"type":"model","name":"attrs-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Commit a .gitattributes file that marks *.bin and *.safetensors as LFS
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add gitattributes\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"*.bin filter=lfs diff=lfs merge=lfs -text\\n*.safetensors filter=lfs diff=lfs merge=lfs -text\\n\",\"path\":\".gitattributes\",\"encoding\":\"utf-8\"}}\n"
+
+	resp, err = http.Post(endpoint+"/api/models/test-user/attrs-model/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	resp.Body.Close()
+
+	// Test preupload: small .bin file should be LFS (matches .gitattributes pattern),
+	// small .txt file should be regular (doesn't match any LFS pattern)
+	preuploadBody := `{"files":[{"path":"model.bin","size":100,"sample":""},{"path":"README.txt","size":100,"sample":""},{"path":"weights.safetensors","size":50,"sample":""}]}`
+	resp, err = http.Post(endpoint+"/api/models/test-user/attrs-model/preupload/main", "application/json", strings.NewReader(preuploadBody))
+	if err != nil {
+		t.Fatalf("Failed to preupload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result huggingface.HFPreuploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(result.Files) != 3 {
+		t.Fatalf("Expected 3 files, got %d", len(result.Files))
+	}
+	// model.bin matches *.bin pattern → lfs (even though size is small)
+	if result.Files[0].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for model.bin (matches .gitattributes), got %s", result.Files[0].UploadMode)
+	}
+	// README.txt doesn't match any LFS pattern and is small → regular
+	if result.Files[1].UploadMode != "regular" {
+		t.Errorf("Expected regular mode for README.txt, got %s", result.Files[1].UploadMode)
+	}
+	// weights.safetensors matches *.safetensors pattern → lfs
+	if result.Files[2].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for weights.safetensors (matches .gitattributes), got %s", result.Files[2].UploadMode)
+	}
+}

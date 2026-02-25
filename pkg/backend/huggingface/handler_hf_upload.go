@@ -209,18 +209,44 @@ func (h *Handler) handleHFCreateRepo(w http.ResponseWriter, r *http.Request) {
 
 // handleHFPreupload handles POST /api/models/{repo}/preupload/{revision}
 func (h *Handler) handleHFPreupload(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	revision := vars["revision"]
+
 	var req HFPreuploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	if repoPath == "" {
+		responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
+		return
+	}
+
+	repo, err := repository.Open(repoPath)
+	if err != nil {
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Errorf("failed to open repository: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	gitAttrs, err := repo.GitAttributes(revision)
+	if err != nil {
+		responseJSON(w, fmt.Errorf("failed to read .gitattributes: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	var respFiles []HFPreuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
-		if file.Size > lfsThreshold {
+		if file.Size > lfsThreshold || gitAttrs.IsLFS(file.Path) {
 			uploadMode = "lfs"
 		}
+
 		respFiles = append(respFiles, HFPreuploadResponseFile{
 			Path:       file.Path,
 			UploadMode: uploadMode,
@@ -317,8 +343,8 @@ func (h *Handler) handleHFCommit(w http.ResponseWriter, r *http.Request) {
 			}
 
 			ops = append(ops, repository.CommitOperation{
-				Type:    repository.CommitOperationDelete,
-				Path:    deleted.Path,
+				Type: repository.CommitOperationDelete,
+				Path: deleted.Path,
 			})
 		}
 	}
