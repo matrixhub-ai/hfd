@@ -13,24 +13,6 @@ import (
 	"github.com/wzshiming/gitd/pkg/repository"
 )
 
-// registryHuggingFace registers the HuggingFace-compatible API endpoints.
-// These endpoints allow using huggingface-cli and huggingface_hub library
-// with HF_ENDPOINT pointing to this server.
-func (h *Handler) registryHuggingFace(r *mux.Router) {
-	// Model info endpoint with revision - used by huggingface_hub for snapshot_download
-	r.HandleFunc("/api/models/{repo:.+}/revision/{revision:.*}", h.handleHFModelInfoRevision).Methods(http.MethodGet)
-
-	// Tree endpoint - used by huggingface_hub to list files in the model repository
-	r.HandleFunc("/api/models/{repo:.+}/tree/{refpath:.*}", h.handleHFTree).Methods(http.MethodGet)
-
-	// Model info endpoint - used by huggingface_hub to get model metadata
-	r.HandleFunc("/api/models/{repo:.+}", h.handleHFModelInfo).Methods(http.MethodGet)
-
-	// File download endpoint - used by huggingface_hub to download files
-	r.HandleFunc("/{repo:.+}/resolve/{refpath:.*}", h.handleHFResolve).Methods(http.MethodGet, http.MethodHead)
-
-}
-
 // HFModelInfo represents the model info response for HuggingFace API
 type HFModelInfo struct {
 	ID            string      `json:"id"`
@@ -77,17 +59,16 @@ func (h *Handler) handleHFModelInfo(w http.ResponseWriter, r *http.Request) {
 
 	defaultBranch := repo.DefaultBranch()
 
-	// Get list of files in the repository
-	entries, err := repo.Tree(defaultBranch, "")
+	// Get list of files in the repository (recursive to include files in subdirectories)
+	hfEntries, err := repo.HFTree(defaultBranch, "", &repository.HFTreeOptions{Recursive: true})
 	if err != nil {
 		// Return empty siblings if we can't get the tree
-		entries = nil
+		hfEntries = nil
 	}
 
 	var siblings []HFSibling
-	for _, entry := range entries {
-		// Only include blob entries (files) to keep behavior consistent with handleHFModelInfoRevision.
-		if entry.Type == "blob" {
+	for _, entry := range hfEntries {
+		if entry.Type == repository.HFEntryTypeFile {
 			siblings = append(siblings, HFSibling{
 				RFilename: entry.Path,
 			})
@@ -186,16 +167,16 @@ func (h *Handler) handleHFModelInfoRevision(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get list of files in the repository at the specified revision
-	entries, err := repo.Tree(ref, "")
+	// Get list of files in the repository at the specified revision (recursive to include files in subdirectories)
+	hfEntries, err := repo.HFTree(ref, "", &repository.HFTreeOptions{Recursive: true})
 	if err != nil {
 		// Return empty siblings if we can't get the tree
-		entries = nil
+		hfEntries = nil
 	}
 
 	var siblings []HFSibling
-	for _, entry := range entries {
-		if entry.Type == "blob" {
+	for _, entry := range hfEntries {
+		if entry.Type == repository.HFEntryTypeFile {
 			siblings = append(siblings, HFSibling{
 				RFilename: entry.Path,
 			})
