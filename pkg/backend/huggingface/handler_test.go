@@ -296,6 +296,261 @@ func TestHuggingFaceCommitLFSFile(t *testing.T) {
 	}
 }
 
+func TestHuggingFaceDatasetCreateAndCommit(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a dataset repo
+	body := `{"type":"dataset","name":"test-dataset","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Failed to create dataset repo: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result huggingface.HFCreateRepoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if !strings.Contains(result.URL, "/datasets/test-user/test-dataset") {
+		t.Errorf("Expected URL to contain '/datasets/test-user/test-dataset', got %q", result.URL)
+	}
+
+	// Commit a file via datasets API
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add dataset readme\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"# Test Dataset\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n"
+
+	resp, err = http.Post(endpoint+"/api/datasets/test-user/test-dataset/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit to dataset: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Resolve file via datasets resolve endpoint
+	resp, err = http.Get(endpoint + "/datasets/test-user/test-dataset/resolve/main/README.md")
+	if err != nil {
+		t.Fatalf("Failed to resolve dataset file: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for dataset resolve, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	content, _ := io.ReadAll(resp.Body)
+	if string(content) != "# Test Dataset\n" {
+		t.Errorf("Unexpected dataset content: %q", content)
+	}
+
+	// Verify dataset info endpoint works
+	resp, err = http.Get(endpoint + "/api/datasets/test-user/test-dataset")
+	if err != nil {
+		t.Fatalf("Failed to get dataset info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for dataset info, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var modelInfo huggingface.HFModelInfo
+	if err := json.NewDecoder(resp.Body).Decode(&modelInfo); err != nil {
+		t.Fatalf("Failed to decode dataset info: %v", err)
+	}
+	if len(modelInfo.Siblings) != 1 || modelInfo.Siblings[0].RFilename != "README.md" {
+		t.Errorf("Expected 1 sibling 'README.md', got %v", modelInfo.Siblings)
+	}
+}
+
+func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a space repo
+	body := `{"type":"space","name":"test-space","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("Failed to create space repo: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result huggingface.HFCreateRepoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if !strings.Contains(result.URL, "/spaces/test-user/test-space") {
+		t.Errorf("Expected URL to contain '/spaces/test-user/test-space', got %q", result.URL)
+	}
+
+	// Commit a file via spaces API
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add space app\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"# Test Space\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n"
+
+	resp, err = http.Post(endpoint+"/api/spaces/test-user/test-space/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit to space: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Resolve file via spaces resolve endpoint
+	resp, err = http.Get(endpoint + "/spaces/test-user/test-space/resolve/main/README.md")
+	if err != nil {
+		t.Fatalf("Failed to resolve space file: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for space resolve, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	content, _ := io.ReadAll(resp.Body)
+	if string(content) != "# Test Space\n" {
+		t.Errorf("Unexpected space content: %q", content)
+	}
+
+	// Verify space info endpoint works
+	resp, err = http.Get(endpoint + "/api/spaces/test-user/test-space")
+	if err != nil {
+		t.Fatalf("Failed to get space info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for space info, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var modelInfo huggingface.HFModelInfo
+	if err := json.NewDecoder(resp.Body).Decode(&modelInfo); err != nil {
+		t.Fatalf("Failed to decode space info: %v", err)
+	}
+	if len(modelInfo.Siblings) != 1 || modelInfo.Siblings[0].RFilename != "README.md" {
+		t.Errorf("Expected 1 sibling 'README.md', got %v", modelInfo.Siblings)
+	}
+}
+
+func TestHuggingFaceDatasetPreupload(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create dataset repo first
+	createBody := `{"type":"dataset","name":"test-dataset","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Test preupload via datasets API
+	preuploadBody := `{"files":[{"path":"data.csv","size":100,"sample":""}]}`
+	resp, err = http.Post(endpoint+"/api/datasets/test-user/test-dataset/preupload/main", "application/json", strings.NewReader(preuploadBody))
+	if err != nil {
+		t.Fatalf("Failed to preupload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result huggingface.HFPreuploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(result.Files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(result.Files))
+	}
+	if result.Files[0].UploadMode != "regular" {
+		t.Errorf("Expected regular mode, got %s", result.Files[0].UploadMode)
+	}
+}
+
+func TestHuggingFaceRepoTypeIsolation(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create repos with the same name but different types
+	for _, repoType := range []string{"model", "dataset", "space"} {
+		body := `{"type":"` + repoType + `","name":"shared-name","organization":"test-user"}`
+		resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create %s repo: %v", repoType, err)
+		}
+		resp.Body.Close()
+	}
+
+	// Commit different content to each
+	for _, tc := range []struct {
+		repoType   string
+		apiPrefix  string
+		content    string
+	}{
+		{"model", "/api/models", "model content"},
+		{"dataset", "/api/datasets", "dataset content"},
+		{"space", "/api/spaces", "space content"},
+	} {
+		ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add readme\"}}\n" +
+			"{\"key\":\"file\",\"value\":{\"content\":\"" + tc.content + "\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n"
+
+		resp, err := http.Post(endpoint+tc.apiPrefix+"/test-user/shared-name/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+		if err != nil {
+			t.Fatalf("Failed to commit to %s: %v", tc.repoType, err)
+		}
+		resp.Body.Close()
+	}
+
+	// Verify each type has its own content
+	for _, tc := range []struct {
+		resolvePrefix string
+		expected      string
+	}{
+		{"", "model content\n"},
+		{"/datasets", "dataset content\n"},
+		{"/spaces", "space content\n"},
+	} {
+		resp, err := http.Get(endpoint + tc.resolvePrefix + "/test-user/shared-name/resolve/main/README.md")
+		if err != nil {
+			t.Fatalf("Failed to resolve: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			t.Fatalf("Expected 200 for prefix %q, got %d: %s", tc.resolvePrefix, resp.StatusCode, respBody)
+		}
+
+		content, _ := io.ReadAll(resp.Body)
+		if string(content) != tc.expected {
+			t.Errorf("For prefix %q: expected %q, got %q", tc.resolvePrefix, tc.expected, content)
+		}
+	}
+}
+
 func TestHuggingFaceCommitDeleteFile(t *testing.T) {
 	server, _ := setupTestServer(t)
 	endpoint := server.URL

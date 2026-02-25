@@ -41,7 +41,7 @@ func (h *Handler) handleHFModelInfo(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
@@ -109,7 +109,7 @@ func (h *Handler) handleHFTree(w http.ResponseWriter, r *http.Request) {
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
@@ -151,7 +151,7 @@ func (h *Handler) handleHFModelInfoRevision(w http.ResponseWriter, r *http.Reque
 	repoName := vars["repo"]
 	ref := vars["revision"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
@@ -215,7 +215,7 @@ func (h *Handler) handleHFResolve(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	refpath := vars["refpath"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return

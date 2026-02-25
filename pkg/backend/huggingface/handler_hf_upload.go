@@ -123,6 +123,32 @@ func (h *Handler) handleHFValidateYAML(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
+// repoTypeStoragePrefix returns the storage directory prefix for the given repo type.
+// Datasets and spaces are stored under their respective subdirectories,
+// while models are stored at the root for backward compatibility.
+func repoTypeStoragePrefix(repoType string) string {
+	switch repoType {
+	case "dataset":
+		return "datasets"
+	case "space":
+		return "spaces"
+	default:
+		return ""
+	}
+}
+
+// repoTypeURLPrefix returns the URL path prefix for the given repo type.
+func repoTypeURLPrefix(repoType string) string {
+	switch repoType {
+	case "dataset":
+		return "/datasets"
+	case "space":
+		return "/spaces"
+	default:
+		return ""
+	}
+}
+
 // handleHFCreateRepo handles POST /api/repos/create
 func (h *Handler) handleHFCreateRepo(w http.ResponseWriter, r *http.Request) {
 	var req HFCreateRepoRequest
@@ -136,7 +162,18 @@ func (h *Handler) handleHFCreateRepo(w http.ResponseWriter, r *http.Request) {
 		repoName = req.Organization + "/" + repoName
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	// Build the URL-facing name (includes type prefix for datasets/spaces)
+	urlPrefix := repoTypeURLPrefix(req.Type)
+	urlName := urlPrefix + "/" + repoName
+
+	// Build the storage name (includes type prefix for datasets/spaces)
+	storagePrefix := repoTypeStoragePrefix(req.Type)
+	storageName := repoName
+	if storagePrefix != "" {
+		storageName = storagePrefix + "/" + repoName
+	}
+
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("invalid repository name: %q", repoName), http.StatusBadRequest)
 		return
@@ -145,7 +182,7 @@ func (h *Handler) handleHFCreateRepo(w http.ResponseWriter, r *http.Request) {
 	// Check if repository already exists
 	if repository.IsRepository(repoPath) {
 		resp := HFCreateRepoResponse{
-			URL: fmt.Sprintf("%s/%s", requestOrigin(r), repoName),
+			URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
 		}
 		responseJSON(w, resp, http.StatusOK)
 		return
@@ -165,7 +202,7 @@ func (h *Handler) handleHFCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := HFCreateRepoResponse{
-		URL: fmt.Sprintf("%s/%s", requestOrigin(r), repoName),
+		URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
 	}
 	responseJSON(w, resp, http.StatusOK)
 }
@@ -202,7 +239,7 @@ func (h *Handler) handleHFCommit(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	revision := vars["revision"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
