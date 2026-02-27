@@ -141,13 +141,13 @@ func readRequest(r io.Reader) (service string, repoPath string, err error) {
 
 	// Split "service path"
 	cmd := parts[0]
-	spaceIdx := strings.Index(cmd, " ")
-	if spaceIdx < 0 {
+	before, after, ok := strings.Cut(cmd, " ")
+	if !ok {
 		return "", "", fmt.Errorf("invalid request: no space separator in %q", cmd)
 	}
 
-	service = cmd[:spaceIdx]
-	repoPath = cmd[spaceIdx+1:]
+	service = before
+	repoPath = after
 
 	return service, repoPath, nil
 }

@@ -28,8 +28,8 @@ type HFMoveRepoRequest struct {
 
 // HFRepoSettingsRequest represents the repo settings update request body.
 type HFRepoSettingsRequest struct {
-	Private *bool       `json:"private,omitempty"`
-	Gated   interface{} `json:"gated,omitempty"`
+	Private *bool `json:"private,omitempty"`
+	Gated   any   `json:"gated,omitempty"`
 }
 
 // HFCreateBranchRequest represents the create branch request body.

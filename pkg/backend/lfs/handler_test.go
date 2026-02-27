@@ -175,7 +175,7 @@ func TestLFSProxyMode(t *testing.T) {
 
 		// Verify the object is eventually cached locally on the proxy (async fetch)
 		cached := false
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			if proxyStorage.ContentStore().Exists(lfsOid) {
 				cached = true
 				break
