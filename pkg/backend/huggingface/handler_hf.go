@@ -312,10 +312,8 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					if err != nil {
-						responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, repoName, ref), http.StatusNotFound)
-						return
-					}
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, repoName, ref), http.StatusNotFound)
+					return
 				}
 				defer func() {
 					_ = content.Close()
