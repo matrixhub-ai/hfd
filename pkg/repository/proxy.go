@@ -58,6 +58,10 @@ func (p *ProxyManager) initProxyRepo(ctx context.Context, repoPath, repoName str
 	// Double-check after acquiring lock
 	repo, err := Open(repoPath)
 	if err == nil {
+		if err := repo.SyncMirror(ctx); err != nil {
+			log.Printf("Proxy: failed to sync mirror for %q: %v", repoName, err)
+			return nil, ErrRepositoryNotExists
+		}
 		return repo, nil
 	}
 
@@ -75,7 +79,6 @@ func (p *ProxyManager) initProxyRepo(ctx context.Context, repoPath, repoName str
 
 	if err := repo.SyncMirror(ctx); err != nil {
 		log.Printf("Proxy: failed to sync mirror for %q: %v", repoName, err)
-		_ = os.RemoveAll(repoPath)
 		return nil, ErrRepositoryNotExists
 	}
 
