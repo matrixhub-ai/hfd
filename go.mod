@@ -11,7 +11,7 @@ require (
 	github.com/gorilla/context v1.1.2
 	github.com/gorilla/mux v1.8.1
 	github.com/wzshiming/httpseek v0.5.0
-	github.com/wzshiming/ioswmr v0.0.0-20260226051154-fae7dbd04a51
+	github.com/wzshiming/ioswmr v0.0.0-20260302055634-59c8070e7d03
 	golang.org/x/crypto v0.45.0
 )
 

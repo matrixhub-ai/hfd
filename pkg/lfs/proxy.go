@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 
 	"github.com/wzshiming/ioswmr"
@@ -15,11 +14,10 @@ import (
 type ProxyFlight struct {
 	swmr ioswmr.SWMR
 	Size int64
-	done chan struct{}
 }
 
 // NewReadSeeker returns a new ReadSeeker for serving in-flight content.
-func (f *ProxyFlight) NewReadSeeker() io.ReadSeeker {
+func (f *ProxyFlight) NewReadSeeker() io.ReadSeekCloser {
 	return f.swmr.NewReadSeeker(0, int(f.Size))
 }
 
@@ -82,36 +80,26 @@ func (m *ProxyManager) FetchFromProxy(ctx context.Context, sourceURL string, obj
 			continue
 		}
 
-		go m.fetchSingleObject(context.Background(), obj.Oid, obj.Size, downloadAction)
+		log.Printf("LFS proxy: fetching object %s from upstream", obj.Oid)
+		m.fetchSingleObject(context.Background(), obj.Oid, obj.Size, downloadAction)
 	}
 }
 
 // FetchSingleObject fetches a single LFS object from upstream with single-flight
 // deduplication using ioswmr.
 func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size int64, downloadAction Action) {
-	tmp, err := os.CreateTemp("", "hfd-lfs-proxy-*")
-	if err != nil {
-		log.Printf("LFS proxy: failed to create temp file for object %s: %v", oid, err)
-		return
-	}
-	defer os.Remove(tmp.Name())
-
 	f := &ProxyFlight{
-		swmr: ioswmr.NewSWMR(tmp),
+		swmr: ioswmr.NewSWMR(
+			ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
+			ioswmr.WithAutoClose(),
+			ioswmr.WithBeforeCloseFunc(func() {
+				m.flights.Delete(oid)
+			}),
+		),
 		Size: size,
-		done: make(chan struct{}),
 	}
 
-	_, loaded := m.flights.LoadOrStore(oid, f)
-	if loaded {
-		return
-	}
-
-	// We are the first — perform the download
-	defer func() {
-		close(f.done)
-		m.flights.Delete(oid)
-	}()
+	m.flights.Store(oid, f)
 
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
@@ -131,27 +119,20 @@ func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size i
 		return
 	}
 
-	// Stream upstream data through SWMR: writer goroutine copies from upstream,
-	// reader feeds the content store.
-	writerErr := make(chan error, 1)
 	go func() {
-		defer f.swmr.Close()
+		sw := f.swmr.Writer()
+		defer sw.Close()
 		defer resp.Body.Close()
-		_, err := io.Copy(f.swmr, resp.Body)
-		writerErr <- err
+		_, err := io.Copy(sw, resp.Body)
+		sw.CloseWithError(err)
 	}()
 
-	reader := f.swmr.NewReader()
-	if err := m.putFn(oid, reader, size); err != nil {
-		log.Printf("LFS proxy: failed to store object %s: %v", oid, err)
-		return
-	}
-
-	// Ensure the writer goroutine completed successfully
-	if err := <-writerErr; err != nil {
-		log.Printf("LFS proxy: error streaming object %s: %v", oid, err)
-		return
-	}
-
-	log.Printf("LFS proxy: successfully fetched object %s (%d bytes)", oid, size)
+	go func() {
+		reader := f.swmr.NewReader(0)
+		defer reader.Close()
+		if err := m.putFn(oid, reader, size); err != nil {
+			log.Printf("LFS proxy: failed to store object %s: %v", oid, err)
+			return
+		}
+	}()
 }

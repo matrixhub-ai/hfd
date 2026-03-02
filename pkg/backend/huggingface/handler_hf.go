@@ -305,7 +305,9 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							}
 
 							if pf != nil {
-								http.ServeContent(w, r, ptr.Oid, time.Now(), pf.NewReadSeeker())
+								rs := pf.NewReadSeeker()
+								defer rs.Close()
+								http.ServeContent(w, r, ptr.Oid, time.Now(), rs)
 								return
 							}
 						}

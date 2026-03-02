@@ -151,7 +151,9 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	if h.lfsProxyManager != nil {
 		pf := h.lfsProxyManager.GetFlight(rv.Oid)
 		if pf != nil {
-			http.ServeContent(w, r, rv.Oid, time.Now(), pf.NewReadSeeker())
+			rs := pf.NewReadSeeker()
+			defer rs.Close()
+			http.ServeContent(w, r, rv.Oid, time.Now(), rs)
 			return
 		}
 	}
