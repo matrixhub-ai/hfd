@@ -18,13 +18,15 @@ type LFSPointer struct {
 // ScanLFSPointers scans all branches in the repository for LFS pointer files
 // and returns a list of unique LFS pointers
 func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
-	seen := make(map[string]LFSPointer)
+	item := make(map[string]LFSPointer)
 
 	// Get all branches
 	branches, err := r.repo.Branches()
 	if err != nil {
 		return nil, err
 	}
+
+	seen := map[plumbing.Hash]bool{}
 
 	err = branches.ForEach(func(ref *plumbing.Reference) error {
 		commit, err := r.repo.CommitObject(ref.Hash())
@@ -40,7 +42,7 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 		}
 
 		// Walk all files in the tree
-		walker := object.NewTreeWalker(tree, true, nil)
+		walker := object.NewTreeWalker(tree, true, seen)
 		defer walker.Close()
 
 		for {
@@ -48,6 +50,8 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 			if err != nil {
 				break
 			}
+
+			seen[entry.Hash] = true
 
 			if !entry.Mode.IsFile() {
 				continue
@@ -63,7 +67,7 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 				continue
 			}
 
-			seen[ptr.Oid] = *ptr
+			item[ptr.Oid] = *ptr
 		}
 
 		return nil
@@ -73,8 +77,8 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 	}
 
 	// Convert map to slice
-	result := make([]LFSPointer, 0, len(seen))
-	for _, ptr := range seen {
+	result := make([]LFSPointer, 0, len(item))
+	for _, ptr := range item {
 		result = append(result, ptr)
 	}
 
