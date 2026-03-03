@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/wzshiming/hfd/pkg/lfs"
 )
 
 // LFSPointer represents a Git LFS pointer found in the repository
@@ -83,8 +84,7 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 // parseLFSPointerFromBlob parses an LFS pointer from a git blob
 // Returns nil if the blob is not an LFS pointer
 func parseLFSPointerFromBlob(blob *object.Blob) (*LFSPointer, error) {
-	// LFS pointers are small (typically < 200 bytes)
-	if blob.Size > 1024 {
+	if blob.Size > lfs.MaxLFSPointerSize {
 		return nil, nil
 	}
 
