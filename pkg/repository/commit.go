@@ -9,11 +9,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-func (r *Repository) Commits(ref string, limit int) ([]Commit, error) {
-	if ref == "" {
-		ref = r.DefaultBranch()
+func (r *Repository) Commits(rev string, limit int) ([]Commit, error) {
+	if rev == "" {
+		rev = r.DefaultBranch()
 	}
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(ref))
+	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}

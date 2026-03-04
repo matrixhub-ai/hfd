@@ -107,16 +107,16 @@ func (r *Repository) lastCommit(commit *object.Commit) (*HFTreeLastCommit, error
 	}, nil
 }
 
-func (r *Repository) Tree(ref string, path string, opts *TreeOptions) ([]TreeEntry, error) {
-	if ref == "" {
-		ref = r.DefaultBranch()
+func (r *Repository) Tree(rev string, path string, opts *TreeOptions) ([]TreeEntry, error) {
+	if rev == "" {
+		rev = r.DefaultBranch()
 	}
 
 	if opts == nil {
 		opts = &TreeOptions{}
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(ref))
+	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
@@ -159,9 +159,9 @@ func (r *Repository) Tree(ref string, path string, opts *TreeOptions) ([]TreeEnt
 	return entries, nil
 }
 
-// TreeSize returns the total size of all files under the given path at the given ref.
-func (r *Repository) TreeSize(ref string, treePath string) (int64, error) {
-	entries, err := r.Tree(ref, treePath, &TreeOptions{Recursive: true})
+// TreeSize returns the total size of all files under the given path at the given rev.
+func (r *Repository) TreeSize(rev string, treePath string) (int64, error) {
+	entries, err := r.Tree(rev, treePath, &TreeOptions{Recursive: true})
 	if err != nil {
 		return 0, err
 	}

@@ -36,12 +36,12 @@ func (b *Blob) Hash() string {
 	return b.hash
 }
 
-func (r *Repository) Blob(ref string, path string) (b *Blob, err error) {
-	if ref == "" {
-		ref = r.DefaultBranch()
+func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
+	if rev == "" {
+		rev = r.DefaultBranch()
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(ref))
+	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
