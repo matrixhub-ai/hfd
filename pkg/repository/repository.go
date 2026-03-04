@@ -312,6 +312,37 @@ func (r *Repository) Move(newPath string) error {
 	return os.Rename(r.repoPath, newPath)
 }
 
+// DiskUsage returns the total disk usage of the repository in bytes.
+// This includes the on-disk size of the git repository directory plus the
+// declared sizes of any LFS-tracked objects (from their pointer files).
+func (r *Repository) DiskUsage() (int64, error) {
+	var total int64
+	err := filepath.Walk(r.repoPath, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	// Add declared LFS content sizes. LFS objects are stored outside the git
+	// repo directory, so the walk above only captures the tiny pointer blobs.
+	lfsPointers, err := r.ScanLFSPointers()
+	if err != nil {
+		return 0, err
+	}
+	for _, ptr := range lfsPointers {
+		total += ptr.Size
+	}
+
+	return total, nil
+}
+
 func (r *Repository) IsMirror() (bool, string, error) {
 	config, err := r.repo.Config()
 	if err != nil {
