@@ -163,13 +163,16 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Repo-Commit", commitHash)
 				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.Oid))
 				if h.storage.S3Store() != nil {
-					url, err := h.storage.S3Store().SignGet(ptr.Oid)
-					if err != nil {
-						responseJSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+					fi, _ := h.storage.S3Store().Info(ptr.Oid)
+					if fi != nil {
+						url, err := h.storage.S3Store().SignGet(ptr.Oid)
+						if err != nil {
+							responseJSON(w, fmt.Errorf("failed to sign S3 URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+							return
+						}
+						http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 						return
 					}
-					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-					return
 				}
 				content, stat, err := h.storage.ContentStore().Get(ptr.Oid)
 				if err != nil {

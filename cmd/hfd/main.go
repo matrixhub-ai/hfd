@@ -131,10 +131,19 @@ func main() {
 	if proxyURL != "" {
 		log.Printf("Proxy mode enabled with source: %s\n", proxyURL)
 		proxyManager = repository.NewProxyManager(proxyURL)
+		putFn := storage.ContentStore().Put
+		existsFn := storage.ContentStore().Exists
+		if storage.S3Store() != nil {
+			putFn = storage.S3Store().Put
+			existsFn = func(oid string) bool {
+				fi, _ := storage.S3Store().Info(oid)
+				return fi != nil
+			}
+		}
 		lfsProxyManager = lfs.NewProxyManager(
 			utils.HTTPClient,
-			storage.ContentStore().Put,
-			storage.ContentStore().Exists,
+			putFn,
+			existsFn,
 		)
 	}
 	var handler http.Handler
