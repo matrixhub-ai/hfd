@@ -29,6 +29,7 @@ type HFRepoInfo struct {
 	CreatedAt     string      `json:"createdAt,omitempty"`
 	LastModified  string      `json:"lastModified,omitempty"`
 	DefaultBranch string      `json:"defaultBranch,omitempty"`
+	UsedStorage   int64       `json:"usedStorage"`
 }
 
 // HFSibling represents a file in the model repository
@@ -125,6 +126,8 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	usedStorage, _ := repo.DiskUsage()
+
 	// Get the commit SHA for this revision
 	sha := ""
 	commits, err := repo.Commits(rev, 1)
@@ -184,6 +187,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Siblings:      siblings,
 		DefaultBranch: rev,
 		CardData:      cardData,
+		UsedStorage:   usedStorage,
 	}
 
 	// For models, also set the modelId field which is required by some HuggingFace clients. For datasets and spaces, the client doesn't require it and it can be confusing to have it be different from the ID, so we leave it empty.

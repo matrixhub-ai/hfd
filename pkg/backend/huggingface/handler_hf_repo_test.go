@@ -514,6 +514,33 @@ func TestHuggingFaceListRefs(t *testing.T) {
 	}
 }
 
+func TestHuggingFaceRepoInfoUsedStorage(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a repo and commit a file
+	createRepoAndCommit(t, endpoint, "model", "test-user", "storage-model")
+
+	// Get repo info
+	resp, err := http.Get(endpoint + "/api/models/test-user/storage-model")
+	if err != nil {
+		t.Fatalf("Failed to get repo info: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+
+	var info backendhuggingface.HFRepoInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		t.Fatalf("Failed to decode repo info: %v", err)
+	}
+
+	if info.UsedStorage <= 0 {
+		t.Errorf("Expected usedStorage > 0, got %d", info.UsedStorage)
+	}
+}
+
 func TestHuggingFaceDatasetBranchAndTag(t *testing.T) {
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
