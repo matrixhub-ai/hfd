@@ -670,3 +670,85 @@ func TestHuggingFacePreuploadWithGitAttributes(t *testing.T) {
 		t.Errorf("Expected lfs mode for weights.safetensors (matches .gitattributes), got %s", result.Files[2].UploadMode)
 	}
 }
+
+func TestHuggingFaceTreeSize(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create and populate a repo with two files
+	createBody := `{"type":"model","name":"treesize-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add files\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"hello\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"world\\n\",\"path\":\"sub/data.txt\",\"encoding\":\"utf-8\"}}\n"
+
+	resp, err = http.Post(endpoint+"/api/models/test-user/treesize-model/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	resp.Body.Close()
+
+	// Get size of the root tree
+	resp, err = http.Get(endpoint + "/api/models/test-user/treesize-model/treesize/main/")
+	if err != nil {
+		t.Fatalf("Failed to get treesize: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for treesize, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result backendhuggingface.HFTreeSize
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode treesize response: %v", err)
+	}
+
+	// "hello\n" = 6 bytes, "world\n" = 6 bytes → total 12
+	if result.Size != 12 {
+		t.Errorf("Expected treesize 12, got %d", result.Size)
+	}
+
+	// Get size of the sub/ subdirectory only
+	resp, err = http.Get(endpoint + "/api/models/test-user/treesize-model/treesize/main/sub")
+	if err != nil {
+		t.Fatalf("Failed to get treesize for sub: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for treesize sub, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var subResult backendhuggingface.HFTreeSize
+	if err := json.NewDecoder(resp.Body).Decode(&subResult); err != nil {
+		t.Fatalf("Failed to decode treesize sub response: %v", err)
+	}
+
+	// "world\n" = 6 bytes
+	if subResult.Size != 6 {
+		t.Errorf("Expected treesize 6 for sub/, got %d", subResult.Size)
+	}
+}
+
+func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	resp, err := http.Get(endpoint + "/api/models/nonexistent/no-repo/treesize/main/")
+	if err != nil {
+		t.Fatalf("Failed to request treesize: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
+	}
+}
