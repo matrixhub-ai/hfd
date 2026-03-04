@@ -37,25 +37,24 @@ type HFSibling struct {
 	RFilename string `json:"rfilename"`
 }
 
-// handleInfo handles the /api/models/{repo_id} endpoint
+// handleInfo handles the /api/{repoType}/{repo_id} endpoint
 // This is used by huggingface_hub to get model metadata
 func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	repoName := vars["repo"]
+	ri := repoInfo(r)
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoStorageName(r))
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -85,8 +84,8 @@ func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	modelInfo := HFModelInfo{
-		ID:            repoName,
-		ModelID:       repoName,
+		ID:            ri.RepoPath,
+		ModelID:       ri.RepoPath,
 		SHA:           sha,
 		Private:       false,
 		Disabled:      false,
@@ -104,32 +103,32 @@ func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	repoName := vars["repo"]
-	refpath := vars["refpath"]
+	ri := repoInfo(r)
+	revpath := vars["revpath"]
 
 	query := r.URL.Query()
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoStorageName(r))
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	ref, path, err := repo.SplitRevisionAndPath(refpath)
+	ref, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -138,49 +137,49 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		Expand:    expand,
 	})
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q and path %q: %v", repoName, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q and path %q: %v", ri.RepoPath, ref, path, err), http.StatusInternalServerError)
 		return
 	}
 
 	responseJSON(w, entries, http.StatusOK)
 }
 
-// handleInfoRevision handles the /api/models/{repo_id}/revision/{revision} endpoint
+// handleInfoRevision handles the /api/{repoType}/{repo_id}/revision/{rev} endpoint
 // This is used by huggingface_hub for snapshot_download to get model info at specific revision
 func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	repoName := vars["repo"]
-	ref := vars["revision"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoStorageName(r))
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
 	// Get list of files in the repository at the specified revision (recursive to include files in subdirectories)
-	hfEntries, err := repo.Tree(ref, "", &repository.TreeOptions{Recursive: true})
+	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
 	if err != nil {
 		//TODO(@wzshiming): In hf binarys, it only use main as default branch,
 		// if the ref is main but not exist, we can try to fallback to the real default branch to be compatible with hf client.
 		defaultBranch := repo.DefaultBranch()
-		if ref == "main" && defaultBranch != ref {
+		if rev == "main" && defaultBranch != rev {
 			hfEntries, err = repo.Tree(defaultBranch, "", &repository.TreeOptions{Recursive: true})
 			if err != nil {
 				hfEntries = nil
 			} else {
-				ref = defaultBranch
+				rev = defaultBranch
 			}
 		}
 	}
@@ -196,14 +195,14 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	// Get the commit SHA for this revision
 	sha := ""
-	commits, err := repo.Commits(ref, 1)
+	commits, err := repo.Commits(rev, 1)
 	if err == nil && len(commits) > 0 {
 		sha = commits[0].SHA
 	}
 
 	modelInfo := HFModelInfo{
-		ID:            repoName,
-		ModelID:       repoName,
+		ID:            ri.RepoPath,
+		ModelID:       ri.RepoPath,
 		SHA:           sha,
 		Private:       false,
 		Disabled:      false,
@@ -223,28 +222,28 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	repoName := vars["repo"]
-	refpath := vars["refpath"]
+	ri := repoInfo(r)
+	revpath := vars["revpath"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoStorageName(r))
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	ref, path, err := repo.SplitRevisionAndPath(refpath)
+	ref, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -257,7 +256,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	blob, err := repo.Blob(ref, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, repoName, ref), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, ri.RepoPath, ref), http.StatusNotFound)
 		return
 	}
 
@@ -312,7 +311,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, repoName, ref), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, ref), http.StatusNotFound)
 					return
 				}
 				defer func() {
@@ -342,7 +341,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := blob.NewReader()
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, repoName, ref, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoPath, ref, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {

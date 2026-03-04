@@ -70,10 +70,10 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		repoName = req.Organization + "/" + repoName
 	}
 
-	storagePrefix := repoTypeStoragePrefix(req.Type)
+	prefix := repoTypePrefix(req.Type)
 	storageName := repoName
-	if storagePrefix != "" {
-		storageName = storagePrefix + "/" + repoName
+	if prefix != "" {
+		storageName = prefix + "/" + repoName
 	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
@@ -108,15 +108,15 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storagePrefix := repoTypeStoragePrefix(req.Type)
+	prefix := repoTypePrefix(req.Type)
 
 	fromName := req.FromRepo
-	if storagePrefix != "" {
-		fromName = storagePrefix + "/" + fromName
+	if prefix != "" {
+		fromName = prefix + "/" + fromName
 	}
 	toName := req.ToRepo
-	if storagePrefix != "" {
-		toName = storagePrefix + "/" + toName
+	if prefix != "" {
+		toName = prefix + "/" + toName
 	}
 
 	fromPath := repository.ResolvePath(h.storage.RepositoriesDir(), fromName)
@@ -155,19 +155,18 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleRepoSettings handles PUT /api/{repoType}s/{repo}/settings
+// handleRepoSettings handles PUT /api/{repoType}/{repo}/settings
 func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	repoName := vars["repo"]
+	ri := repoInfo(r)
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
 	if !repository.IsRepository(repoPath) {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
@@ -181,36 +180,36 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleCreateBranch handles POST /api/{repoType}s/{repo}/branch/{branch}
+// handleCreateBranch handles POST /api/{repoType}/{repo}/branch/{rev}
 func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repoName := vars["repo"]
-	branch := vars["branch"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
 	// Check if branch already exists
-	exists, err := repo.BranchExists(branch)
+	exists, err := repo.BranchExists(rev)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to check branch %q: %v", branch, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to check branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 	if exists {
-		responseJSON(w, fmt.Errorf("branch %q already exists", branch), http.StatusConflict)
+		responseJSON(w, fmt.Errorf("branch %q already exists", rev), http.StatusConflict)
 		return
 	}
 
@@ -223,79 +222,79 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	revision := req.StartingPoint
-	if err := repo.CreateBranch(branch, revision); err != nil {
-		responseJSON(w, fmt.Errorf("failed to create branch %q: %v", branch, err), http.StatusInternalServerError)
+	if err := repo.CreateBranch(rev, revision); err != nil {
+		responseJSON(w, fmt.Errorf("failed to create branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleDeleteBranch handles DELETE /api/{repoType}s/{repo}/branch/{branch}
+// handleDeleteBranch handles DELETE /api/{repoType}/{repo}/branch/{rev}
 func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repoName := vars["repo"]
-	branch := vars["branch"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
 	// Prevent deleting the default branch
-	if branch == repo.DefaultBranch() {
-		responseJSON(w, fmt.Errorf("cannot delete default branch %q", branch), http.StatusForbidden)
+	if rev == repo.DefaultBranch() {
+		responseJSON(w, fmt.Errorf("cannot delete default branch %q", rev), http.StatusForbidden)
 		return
 	}
 
-	exists, err := repo.BranchExists(branch)
+	exists, err := repo.BranchExists(rev)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to check branch %q: %v", branch, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to check branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 	if !exists {
-		responseJSON(w, fmt.Errorf("branch %q not found", branch), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("branch %q not found", rev), http.StatusNotFound)
 		return
 	}
 
-	if err := repo.DeleteBranch(branch); err != nil {
-		responseJSON(w, fmt.Errorf("failed to delete branch %q: %v", branch, err), http.StatusInternalServerError)
+	if err := repo.DeleteBranch(rev); err != nil {
+		responseJSON(w, fmt.Errorf("failed to delete branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleCreateTag handles POST /api/{repoType}s/{repo}/tag/{tag}
+// handleCreateTag handles POST /api/{repoType}/{repo}/tag/{rev}
 func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repoName := vars["repo"]
-	revision := vars["tag"] // URL variable is the revision to tag from
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -323,7 +322,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := repo.CreateTag(req.Tag, revision); err != nil {
+	if err := repo.CreateTag(req.Tag, rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to create tag %q: %v", req.Tag, err), http.StatusInternalServerError)
 		return
 	}
@@ -331,64 +330,63 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleDeleteTag handles DELETE /api/{repoType}s/{repo}/tag/{tag}
+// handleDeleteTag handles DELETE /api/{repoType}/{repo}/tag/{rev}
 func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repoName := vars["repo"]
-	tag := vars["tag"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	exists, err := repo.TagExists(tag)
+	exists, err := repo.TagExists(rev)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to check tag %q: %v", tag, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to check tag %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 	if !exists {
-		responseJSON(w, fmt.Errorf("tag %q not found", tag), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("tag %q not found", rev), http.StatusNotFound)
 		return
 	}
 
-	if err := repo.DeleteTag(tag); err != nil {
-		responseJSON(w, fmt.Errorf("failed to delete tag %q: %v", tag, err), http.StatusInternalServerError)
+	if err := repo.DeleteTag(rev); err != nil {
+		responseJSON(w, fmt.Errorf("failed to delete tag %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleListRefs handles GET /api/{repoType}s/{repo}/refs
+// handleListRefs handles GET /api/{repoType}/{repo}/refs
 func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	repoName := vars["repo"]
+	ri := repoInfo(r)
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoStorageName(r))
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 

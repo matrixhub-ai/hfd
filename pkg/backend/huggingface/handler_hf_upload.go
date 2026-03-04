@@ -123,27 +123,12 @@ func (h *Handler) handleValidateYAML(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
-// repoTypeStoragePrefix returns the storage directory prefix for the given repo type.
-// Datasets and spaces are stored under their respective subdirectories,
-// while models are stored at the root for backward compatibility.
-func repoTypeStoragePrefix(repoType string) string {
+func repoTypePrefix(repoType string) string {
 	switch repoType {
 	case "dataset":
 		return "datasets"
 	case "space":
 		return "spaces"
-	default:
-		return ""
-	}
-}
-
-// repoTypeURLPrefix returns the URL path prefix for the given repo type.
-func repoTypeURLPrefix(repoType string) string {
-	switch repoType {
-	case "dataset":
-		return "/datasets"
-	case "space":
-		return "/spaces"
 	default:
 		return ""
 	}
@@ -162,16 +147,13 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		repoName = req.Organization + "/" + repoName
 	}
 
-	// Build the URL-facing name (includes type prefix for datasets/spaces)
-	urlPrefix := repoTypeURLPrefix(req.Type)
-	urlName := urlPrefix + "/" + repoName
-
-	// Build the storage name (includes type prefix for datasets/spaces)
-	storagePrefix := repoTypeStoragePrefix(req.Type)
 	storageName := repoName
-	if storagePrefix != "" {
-		storageName = storagePrefix + "/" + repoName
+	prefix := repoTypePrefix(req.Type)
+	if prefix != "" {
+		storageName = prefix + "/" + repoName
 	}
+
+	urlName := "/" + storageName
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
 	if repoPath == "" {
@@ -207,10 +189,11 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, resp, http.StatusOK)
 }
 
-// handlePreupload handles POST /api/models/{repo}/preupload/{revision}
+// handlePreupload handles POST /api/{repoType}/{repo}/preupload/{rev}
 func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	revision := vars["revision"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
 	var req HFPreuploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -218,7 +201,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
 		return
@@ -227,16 +210,16 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository: %v", err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	gitAttrs, err := repo.GitAttributes(revision)
+	gitAttrs, err := repo.GitAttributes(rev)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to read .gitattributes: %v", err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to read .gitattributes for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -259,15 +242,15 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, resp, http.StatusOK)
 }
 
-// handleCommit handles POST /api/models/{repo}/commit/{revision}
+// handleCommit handles POST /api/{repoType}/{repo}/commit/{rev}
 func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	repoName := vars["repo"]
-	revision := vars["revision"]
+	ri := repoInfo(r)
+	rev := vars["rev"]
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoStorageName(r))
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 		return
 	}
 
@@ -366,21 +349,22 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	commitHash, err := repo.CreateCommit(r.Context(), revision, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)
+	// TODO: Add support for specifying author/committer in the request body
+	commitHash, err := repo.CreateCommit(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to create commit: %v", err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
 	resp := HFCommitResponse{
-		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), repoName, commitHash),
+		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), ri.RepoPath, commitHash),
 		CommitOid:     commitHash,
 		CommitMessage: message,
 	}
