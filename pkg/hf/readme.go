@@ -19,6 +19,26 @@ type Readme struct {
 	ArxivIDs []string
 }
 
+type lazyCardData struct {
+	yamlData []byte
+	jsonData []byte
+}
+
+func (lcd *lazyCardData) MarshalJSON() ([]byte, error) {
+	if lcd.jsonData != nil {
+		return lcd.jsonData, nil
+	}
+	if lcd.yamlData == nil {
+		return []byte("{}"), nil
+	}
+	jsonData, err := yamlToJSON(lcd.yamlData)
+	if err != nil {
+		return nil, err
+	}
+	lcd.jsonData = jsonData
+	return jsonData, nil
+}
+
 // ParseReadme reads a README.md and extracts metadata from its YAML front matter.
 // It also scans the body (the part after the front matter) for arXiv paper links,
 // which are stored in Readme.ArxivIDs.
@@ -40,18 +60,10 @@ func ParseReadme(r io.Reader) (*Readme, error) {
 			return nil, fmt.Errorf("failed to parse card front matter: %w", err)
 		}
 	}
-	var cardData json.Marshaler
-	if fm != nil {
-		yamlToJSONData, err := yamlToJSON(fm)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert YAML front matter to JSON: %w", err)
-		}
-		cardData = json.RawMessage(yamlToJSONData)
-	}
 
 	readme := &Readme{
 		Card:     &card,
-		CardData: cardData,
+		CardData: &lazyCardData{yamlData: fm},
 		ArxivIDs: extractArxivIDs(body),
 	}
 	return readme, nil

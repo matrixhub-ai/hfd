@@ -9,7 +9,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
 
-	"github.com/wzshiming/hfd/pkg/hf"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -135,44 +134,12 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		sha = commits[0].SHA
 	}
 
-	// Collect tags from all sources, deduplicating across them.
-	seen := make(map[string]struct{})
-	tags := []string{}
-	addTag := func(tag string) {
-		if tag == "" {
-			return
-		}
-		if _, ok := seen[tag]; !ok {
-			seen[tag] = struct{}{}
-			tags = append(tags, tag)
-		}
-	}
+	// Collect metadata (tags, cardData, pipeline_tag, etc.) from README.md and config.json.
+	meta := collectRepoMetadata(repo, rev)
 
-	var cardData any
-
-	// Source 1: README.md YAML front matter (HuggingFace card metadata)
-	if blob, err := repo.Blob(rev, "README.md"); err == nil {
-		if rc, err := blob.NewReader(); err == nil {
-			if rm, err := hf.ParseReadme(rc); err == nil {
-				for _, tag := range rm.Tags() {
-					addTag(tag)
-				}
-				cardData = rm.CardData
-			}
-			rc.Close()
-		}
-	}
-
-	// Source 2: config.json (model_type and other fields)
-	if blob, err := repo.Blob(rev, "config.json"); err == nil {
-		if rc, err := blob.NewReader(); err == nil {
-			if cfg, err := hf.ParseConfigData(rc); err == nil {
-				for _, tag := range cfg.Tags() {
-					addTag(tag)
-				}
-			}
-			rc.Close()
-		}
+	tags := meta.tags
+	if tags == nil {
+		tags = []string{}
 	}
 
 	hfInfo := HFRepoInfo{
@@ -186,7 +153,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Tags:          tags,
 		Siblings:      siblings,
 		DefaultBranch: rev,
-		CardData:      cardData,
+		CardData:      meta.cardData,
 		UsedStorage:   usedStorage,
 	}
 
