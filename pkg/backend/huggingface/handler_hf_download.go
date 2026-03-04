@@ -59,6 +59,53 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, entries, http.StatusOK)
 }
 
+// HFTreeSize represents the response for the Get folder size API.
+type HFTreeSize struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+// handleTreeSize handles GET /api/{repoType}/{namespace}/{repo}/treesize/{revpath}
+func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+
+	ri := repoInfo(r)
+	revpath := vars["revpath"]
+
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	if repoPath == "" {
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		return
+	}
+
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	if err != nil {
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		return
+	}
+
+	ref, path, err := repo.SplitRevisionAndPath(revpath)
+	if err != nil {
+		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		return
+	}
+
+	size, err := repo.TreeSize(ref, path)
+	if err != nil {
+		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at ref %q and path %q: %v", ri.RepoPath, ref, path, err), http.StatusInternalServerError)
+		return
+	}
+
+	responseJSON(w, HFTreeSize{
+		Path: "/" + path,
+		Size: size,
+	}, http.StatusOK)
+}
+
 // handleResolve handles the /{repo_id}/resolve/{revision}/{path} endpoint
 // This is used by huggingface_hub to download files
 func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {

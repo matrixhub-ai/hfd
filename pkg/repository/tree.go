@@ -159,6 +159,26 @@ func (r *Repository) Tree(ref string, path string, opts *TreeOptions) ([]TreeEnt
 	return entries, nil
 }
 
+// TreeSize returns the total size of all files under the given path at the given ref.
+func (r *Repository) TreeSize(ref string, treePath string) (int64, error) {
+	entries, err := r.Tree(ref, treePath, &TreeOptions{Recursive: true})
+	if err != nil {
+		return 0, err
+	}
+
+	var total int64
+	for _, entry := range entries {
+		if entry.Type == EntryTypeFile {
+			if entry.LFS != nil {
+				total += entry.LFS.Size
+			} else {
+				total += entry.Size
+			}
+		}
+	}
+	return total, nil
+}
+
 // walkTree recursively walks a tree and returns all entries.
 func (r *Repository) walkTree(commit *object.Commit, tree *object.Tree, basePath string, opts *TreeOptions, cb func(entry *TreeEntry) error) error {
 	for _, entry := range tree.Entries {
