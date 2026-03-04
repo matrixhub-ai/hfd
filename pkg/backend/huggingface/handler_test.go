@@ -200,11 +200,24 @@ func TestHuggingFaceCommitAndResolve(t *testing.T) {
 		t.Fatalf("Failed to decode model info: %v", err)
 	}
 
-	if len(repoInfo.Siblings) != 1 {
-		t.Fatalf("Expected 1 sibling, got %d", len(repoInfo.Siblings))
+	if len(repoInfo.Siblings) != 2 {
+		t.Fatalf("Expected 2 siblings, got %d", len(repoInfo.Siblings))
 	}
-	if repoInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected sibling filename 'README.md', got %q", repoInfo.Siblings[0].RFilename)
+	foundGitAttrs := false
+	foundReadme := false
+	for _, s := range repoInfo.Siblings {
+		switch s.RFilename {
+		case ".gitattributes":
+			foundGitAttrs = true
+		case "README.md":
+			foundReadme = true
+		}
+	}
+	if !foundGitAttrs {
+		t.Errorf("Expected a sibling with filename '.gitattributes', but none was found")
+	}
+	if !foundReadme {
+		t.Errorf("Expected a sibling with filename 'README.md', but none was found")
 	}
 }
 
@@ -369,8 +382,24 @@ func TestHuggingFaceDatasetCreateAndCommit(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode dataset info: %v", err)
 	}
-	if len(repoInfo.Siblings) != 1 || repoInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected 1 sibling 'README.md', got %v", repoInfo.Siblings)
+	if len(repoInfo.Siblings) != 2 {
+		t.Errorf("Expected 2 siblings, got %v", repoInfo.Siblings)
+	}
+	foundGitAttrs := false
+	foundReadme := false
+	for _, s := range repoInfo.Siblings {
+		switch s.RFilename {
+		case ".gitattributes":
+			foundGitAttrs = true
+		case "README.md":
+			foundReadme = true
+		}
+	}
+	if !foundGitAttrs {
+		t.Errorf("Expected a sibling with filename '.gitattributes', but none was found")
+	}
+	if !foundReadme {
+		t.Errorf("Expected a sibling with filename 'README.md', but none was found")
 	}
 }
 
@@ -447,8 +476,24 @@ func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode space info: %v", err)
 	}
-	if len(repoInfo.Siblings) != 1 || repoInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected 1 sibling 'README.md', got %v", repoInfo.Siblings)
+	if len(repoInfo.Siblings) != 2 {
+		t.Errorf("Expected 2 siblings, got %v", repoInfo.Siblings)
+	}
+	foundGitAttrs := false
+	foundReadme := false
+	for _, s := range repoInfo.Siblings {
+		switch s.RFilename {
+		case ".gitattributes":
+			foundGitAttrs = true
+		case "README.md":
+			foundReadme = true
+		}
+	}
+	if !foundGitAttrs {
+		t.Errorf("Expected a sibling with filename '.gitattributes', but none was found")
+	}
+	if !foundReadme {
+		t.Errorf("Expected a sibling with filename 'README.md', but none was found")
 	}
 }
 
@@ -710,9 +755,27 @@ func TestHuggingFaceTreeSize(t *testing.T) {
 		t.Fatalf("Failed to decode treesize response: %v", err)
 	}
 
-	// "hello\n" = 6 bytes, "world\n" = 6 bytes → total 12
-	if result.Size != 12 {
-		t.Errorf("Expected treesize 12, got %d", result.Size)
+	// Compute the size of .gitattributes dynamically to avoid brittle, hard-coded values.
+	gitattributesResp, err := http.Get(endpoint + "/test-user/treesize-model/resolve/main/.gitattributes")
+	if err != nil {
+		t.Fatalf("Failed to get .gitattributes: %v", err)
+	}
+	defer gitattributesResp.Body.Close()
+
+	if gitattributesResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(gitattributesResp.Body)
+		t.Fatalf("Expected 200 for .gitattributes, got %d: %s", gitattributesResp.StatusCode, respBody)
+	}
+
+	gitattributesBody, err := io.ReadAll(gitattributesResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read .gitattributes body: %v", err)
+	}
+
+	// "hello\n" = 6 bytes, "world\n" = 6 bytes, ".gitattributes" = len(gitattributesBody) bytes
+	expectedRootSize := int64(6 + 6 + len(gitattributesBody)) // README.md + sub/data.txt + .gitattributes
+	if result.Size != expectedRootSize {
+		t.Errorf("Expected treesize %d, got %d", expectedRootSize, result.Size)
 	}
 
 	// Get size of the sub/ subdirectory only

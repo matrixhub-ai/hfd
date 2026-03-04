@@ -683,3 +683,40 @@ func TestHuggingFaceRepoDatasetBranchTagE2E(t *testing.T) {
 	runHFCmd(t, endpoint, "repo", "branch", "delete", "test-user/bt-dataset", "dev", "--repo-type", "dataset")
 	runHFCmd(t, endpoint, "repo", "tag", "delete", "test-user/bt-dataset", "v1.0", "--repo-type", "dataset", "--yes")
 }
+
+func TestCreateRepoHasDefaultGitAttributes(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a repo via the HF API
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json",
+		strings.NewReader(`{"type":"model","name":"gitattrs-model","organization":"test-user"}`))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 creating repo, got %d", resp.StatusCode)
+	}
+
+	// Verify .gitattributes is accessible and contains LFS patterns
+	gaResp, err := http.Get(endpoint + "/test-user/gitattrs-model/resolve/main/.gitattributes")
+	if err != nil {
+		t.Fatalf("Failed to get .gitattributes: %v", err)
+	}
+	defer gaResp.Body.Close()
+	if gaResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for .gitattributes, got %d", gaResp.StatusCode)
+	}
+
+	body, err := io.ReadAll(gaResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read .gitattributes: %v", err)
+	}
+
+	for _, pattern := range []string{"*.bin", "*.safetensors", "*.pt", "filter=lfs"} {
+		if !strings.Contains(string(body), pattern) {
+			t.Errorf("Expected .gitattributes to contain %q, got:\n%s", pattern, body)
+		}
+	}
+}

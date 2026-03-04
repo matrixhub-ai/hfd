@@ -2,6 +2,7 @@ package huggingface
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -177,10 +178,28 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defaultBranch := "main"
+
 	// Initialize bare repository
-	_, err := repository.Init(repoPath, "main")
+	repo, err := repository.Init(repoPath, defaultBranch)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to initialize repository: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create initial commit with default .gitattributes
+	_, err = repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", "HuggingFace", "hf@users.noreply.huggingface.co", []repository.CommitOperation{
+		{
+			Type:    repository.CommitOperationAdd,
+			Path:    repository.GitattributesFileName,
+			Content: repository.GitattributesText,
+		},
+	}, "")
+	if err != nil {
+		// Cleanup partially initialized repository so subsequent create
+		// attempts don't see an inconsistent repo as already existing.
+		_ = os.RemoveAll(repoPath)
+		responseJSON(w, fmt.Errorf("failed to create initial commit: %v", err), http.StatusInternalServerError)
 		return
 	}
 

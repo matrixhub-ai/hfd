@@ -1,10 +1,20 @@
 package repository
 
 import (
+	_ "embed"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitattributes"
 )
+
+// GitattributesFileName is the name of the .gitattributes file in the repository.
+const GitattributesFileName = ".gitattributes"
+
+// GitattributesText is the content of a default .gitattributes file that marks common large/binary
+// file types to be tracked with Git LFS.
+//
+//go:embed gitattributes.txt
+var GitattributesText []byte
 
 // GitAttributes represents parsed .gitattributes content and provides
 // methods to check if a file path matches LFS filter patterns.
@@ -30,7 +40,7 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 // GitAttributes reads and parses the .gitattributes file from the repository
 // at the given revision. Returns nil (not an error) if the file does not exist.
 func (r *Repository) GitAttributes(ref string) (*GitAttributes, error) {
-	blob, err := r.Blob(ref, ".gitattributes")
+	blob, err := r.Blob(ref, GitattributesFileName)
 	if err != nil {
 		return nil, nil
 	}
