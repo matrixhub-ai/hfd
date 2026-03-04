@@ -195,16 +195,16 @@ func TestHuggingFaceCommitAndResolve(t *testing.T) {
 		t.Fatalf("Expected 200 for model info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var modelInfo backendhuggingface.HFModelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&modelInfo); err != nil {
+	var repoInfo backendhuggingface.HFRepoInfo
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode model info: %v", err)
 	}
 
-	if len(modelInfo.Siblings) != 1 {
-		t.Fatalf("Expected 1 sibling, got %d", len(modelInfo.Siblings))
+	if len(repoInfo.Siblings) != 1 {
+		t.Fatalf("Expected 1 sibling, got %d", len(repoInfo.Siblings))
 	}
-	if modelInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected sibling filename 'README.md', got %q", modelInfo.Siblings[0].RFilename)
+	if repoInfo.Siblings[0].RFilename != "README.md" {
+		t.Errorf("Expected sibling filename 'README.md', got %q", repoInfo.Siblings[0].RFilename)
 	}
 }
 
@@ -365,12 +365,12 @@ func TestHuggingFaceDatasetCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200 for dataset info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var modelInfo backendhuggingface.HFModelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&modelInfo); err != nil {
+	var repoInfo backendhuggingface.HFRepoInfo
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode dataset info: %v", err)
 	}
-	if len(modelInfo.Siblings) != 1 || modelInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected 1 sibling 'README.md', got %v", modelInfo.Siblings)
+	if len(repoInfo.Siblings) != 1 || repoInfo.Siblings[0].RFilename != "README.md" {
+		t.Errorf("Expected 1 sibling 'README.md', got %v", repoInfo.Siblings)
 	}
 }
 
@@ -443,12 +443,12 @@ func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200 for space info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var modelInfo backendhuggingface.HFModelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&modelInfo); err != nil {
+	var repoInfo backendhuggingface.HFRepoInfo
+	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode space info: %v", err)
 	}
-	if len(modelInfo.Siblings) != 1 || modelInfo.Siblings[0].RFilename != "README.md" {
-		t.Errorf("Expected 1 sibling 'README.md', got %v", modelInfo.Siblings)
+	if len(repoInfo.Siblings) != 1 || repoInfo.Siblings[0].RFilename != "README.md" {
+		t.Errorf("Expected 1 sibling 'README.md', got %v", repoInfo.Siblings)
 	}
 }
 

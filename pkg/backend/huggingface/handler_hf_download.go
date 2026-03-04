@@ -15,17 +15,17 @@ import (
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
-// HFModelInfo represents the model info response for HuggingFace API
-type HFModelInfo struct {
+// HFRepoInfo represents the info response for HuggingFace API
+type HFRepoInfo struct {
 	ID            string      `json:"id"`
-	ModelID       string      `json:"modelId"`
+	ModelID       string      `json:"modelId,omitempty"`
 	SHA           string      `json:"sha"`
 	Private       bool        `json:"private"`
 	Disabled      bool        `json:"disabled"`
 	Gated         bool        `json:"gated"`
 	Downloads     int         `json:"downloads"`
 	Likes         int         `json:"likes"`
-	Tags          []string    `json:"tags"`
+	Tags          []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
 	Siblings      []HFSibling `json:"siblings"`
 	CreatedAt     string      `json:"createdAt,omitempty"`
 	LastModified  string      `json:"lastModified,omitempty"`
@@ -35,69 +35,6 @@ type HFModelInfo struct {
 // HFSibling represents a file in the model repository
 type HFSibling struct {
 	RFilename string `json:"rfilename"`
-}
-
-// handleInfo handles the /api/{repoType}/{repo_id} endpoint
-// This is used by huggingface_hub to get model metadata
-func (h *Handler) handleInfo(w http.ResponseWriter, r *http.Request) {
-	ri := repoInfo(r)
-
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
-		return
-	}
-
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
-		return
-	}
-
-	defaultBranch := repo.DefaultBranch()
-
-	// Get list of files in the repository (recursive to include files in subdirectories)
-	hfEntries, err := repo.Tree(defaultBranch, "", &repository.TreeOptions{Recursive: true})
-	if err != nil {
-		// Return empty siblings if we can't get the tree
-		hfEntries = nil
-	}
-
-	var siblings []HFSibling
-	for _, entry := range hfEntries {
-		if entry.Type == repository.EntryTypeFile {
-			siblings = append(siblings, HFSibling{
-				RFilename: entry.Path,
-			})
-		}
-	}
-
-	// Get the latest commit SHA if available
-	sha := ""
-	commits, err := repo.Commits(defaultBranch, 1)
-	if err == nil && len(commits) > 0 {
-		sha = commits[0].SHA
-	}
-
-	modelInfo := HFModelInfo{
-		ID:            ri.RepoPath,
-		ModelID:       ri.RepoPath,
-		SHA:           sha,
-		Private:       false,
-		Disabled:      false,
-		Gated:         false,
-		Downloads:     0,
-		Likes:         0,
-		Tags:          []string{},
-		Siblings:      siblings,
-		DefaultBranch: defaultBranch,
-	}
-
-	responseJSON(w, modelInfo, http.StatusOK)
 }
 
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
@@ -144,8 +81,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, entries, http.StatusOK)
 }
 
-// handleInfoRevision handles the /api/{repoType}/{repo_id}/revision/{rev} endpoint
-// This is used by huggingface_hub for snapshot_download to get model info at specific revision
+// handleInfoRevision handles the /api/{repoType}/{repo_id}/revision/{rev} and /api/{repoType}/{repo_id} endpoint
 func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
@@ -168,20 +104,15 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if rev == "" {
+		rev = repo.DefaultBranch()
+	}
+
 	// Get list of files in the repository at the specified revision (recursive to include files in subdirectories)
 	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
 	if err != nil {
-		//TODO(@wzshiming): In hf binarys, it only use main as default branch,
-		// if the ref is main but not exist, we can try to fallback to the real default branch to be compatible with hf client.
-		defaultBranch := repo.DefaultBranch()
-		if rev == "main" && defaultBranch != rev {
-			hfEntries, err = repo.Tree(defaultBranch, "", &repository.TreeOptions{Recursive: true})
-			if err != nil {
-				hfEntries = nil
-			} else {
-				rev = defaultBranch
-			}
-		}
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
+		return
 	}
 
 	var siblings []HFSibling
@@ -200,9 +131,8 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		sha = commits[0].SHA
 	}
 
-	modelInfo := HFModelInfo{
-		ID:            ri.RepoPath,
-		ModelID:       ri.RepoPath,
+	hfInfo := HFRepoInfo{
+		ID:            ri.FullName,
 		SHA:           sha,
 		Private:       false,
 		Disabled:      false,
@@ -211,10 +141,15 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Likes:         0,
 		Tags:          []string{},
 		Siblings:      siblings,
-		DefaultBranch: repo.DefaultBranch(),
+		DefaultBranch: rev,
 	}
 
-	responseJSON(w, modelInfo, http.StatusOK)
+	// For models, also set the modelId field which is required by some HuggingFace clients. For datasets and spaces, the client doesn't require it and it can be confusing to have it be different from the ID, so we leave it empty.
+	if ri.RepoType == "models" {
+		hfInfo.ModelID = hfInfo.ID
+	}
+
+	responseJSON(w, hfInfo, http.StatusOK)
 }
 
 // handleResolve handles the /{repo_id}/resolve/{revision}/{path} endpoint
