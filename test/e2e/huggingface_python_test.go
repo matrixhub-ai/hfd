@@ -748,4 +748,3 @@ api.delete_file(path_in_repo="delete.txt", repo_id="py-user/delete-file-model")
 		t.Fatalf("Expected 200 for kept file, got %d", resp.StatusCode)
 	}
 }
-

@@ -14,21 +14,20 @@ import (
 
 // HFRepoInfo represents the info response for HuggingFace API
 type HFRepoInfo struct {
-	ID            string      `json:"id"`
-	ModelID       string      `json:"modelId,omitempty"`
-	SHA           string      `json:"sha"`
-	Private       bool        `json:"private"`
-	Disabled      bool        `json:"disabled"`
-	Gated         bool        `json:"gated"`
-	Downloads     int         `json:"downloads"`
-	Likes         int         `json:"likes"`
-	Tags          []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
-	CardData      any         `json:"cardData,omitempty"`
-	Siblings      []HFSibling `json:"siblings"`
-	CreatedAt     string      `json:"createdAt,omitempty"`
-	LastModified  string      `json:"lastModified,omitempty"`
-	DefaultBranch string      `json:"defaultBranch,omitempty"`
-	UsedStorage   int64       `json:"usedStorage"`
+	ID           string      `json:"id"`
+	ModelID      string      `json:"modelId,omitempty"`
+	SHA          string      `json:"sha"`
+	Private      bool        `json:"private"`
+	Disabled     bool        `json:"disabled"`
+	Gated        bool        `json:"gated"`
+	Downloads    int         `json:"downloads"`
+	Likes        int         `json:"likes"`
+	Tags         []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
+	CardData     any         `json:"cardData,omitempty"`
+	Siblings     []HFSibling `json:"siblings"`
+	CreatedAt    string      `json:"createdAt,omitempty"`
+	LastModified string      `json:"lastModified,omitempty"`
+	UsedStorage  int64       `json:"usedStorage"`
 }
 
 // HFSibling represents a file in the model repository
@@ -143,18 +142,17 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hfInfo := HFRepoInfo{
-		ID:            ri.FullName,
-		SHA:           sha,
-		Private:       false,
-		Disabled:      false,
-		Gated:         false,
-		Downloads:     0,
-		Likes:         0,
-		Tags:          tags,
-		Siblings:      siblings,
-		DefaultBranch: rev,
-		CardData:      meta.cardData,
-		UsedStorage:   usedStorage,
+		ID:          ri.FullName,
+		SHA:         sha,
+		Private:     false,
+		Disabled:    false,
+		Gated:       false,
+		Downloads:   0,
+		Likes:       0,
+		Tags:        tags,
+		Siblings:    siblings,
+		CardData:    meta.cardData,
+		UsedStorage: usedStorage,
 	}
 
 	// For models, also set the modelId field which is required by some HuggingFace clients. For datasets and spaces, the client doesn't require it and it can be confusing to have it be different from the ID, so we leave it empty.
