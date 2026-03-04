@@ -112,6 +112,7 @@ func requestOrigin(r *http.Request) string {
 
 // handleValidateYAML handles POST /api/validate-yaml
 // This endpoint is called by huggingface_hub to validate YAML front matter in files like README.md.
+// https://github.com/huggingface/huggingface_hub/blob/8708631a463d9a6dc8ec7b046e748cc14844474e/src/huggingface_hub/repocard.py#L189-L224
 func (h *Handler) handleValidateYAML(w http.ResponseWriter, r *http.Request) {
 	// Return a successful validation response
 	responseJSON(w, struct {
