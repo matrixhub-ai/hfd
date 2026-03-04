@@ -39,8 +39,8 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 
 // GitAttributes reads and parses the .gitattributes file from the repository
 // at the given revision. Returns nil (not an error) if the file does not exist.
-func (r *Repository) GitAttributes(ref string) (*GitAttributes, error) {
-	blob, err := r.Blob(ref, GitattributesFileName)
+func (r *Repository) GitAttributes(rev string) (*GitAttributes, error) {
+	blob, err := r.Blob(rev, GitattributesFileName)
 	if err != nil {
 		return nil, nil
 	}

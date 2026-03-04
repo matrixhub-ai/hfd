@@ -42,18 +42,18 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ref, path, err := repo.SplitRevisionAndPath(revpath)
+	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	entries, err := repo.Tree(ref, path, &repository.TreeOptions{
+	entries, err := repo.Tree(rev, path, &repository.TreeOptions{
 		Recursive: recursive,
 		Expand:    expand,
 	})
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q and path %q: %v", ri.RepoPath, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoPath, rev, path, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -89,15 +89,15 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ref, path, err := repo.SplitRevisionAndPath(revpath)
+	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
-	size, err := repo.TreeSize(ref, path)
+	size, err := repo.TreeSize(rev, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at ref %q and path %q: %v", ri.RepoPath, ref, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at rev %q and path %q: %v", ri.RepoPath, rev, path, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -131,22 +131,22 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ref, path, err := repo.SplitRevisionAndPath(revpath)
+	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse ref and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
 	}
 
 	// Get commit hash for the HuggingFace client requirements
-	commits, err := repo.Commits(ref, 1)
+	commits, err := repo.Commits(rev, 1)
 	commitHash := ""
 	if err == nil && len(commits) > 0 {
 		commitHash = commits[0].SHA
 	}
 
-	blob, err := repo.Blob(ref, path)
+	blob, err := repo.Blob(rev, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, ri.RepoPath, ref), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, ri.RepoPath, rev), http.StatusNotFound)
 		return
 	}
 
@@ -192,7 +192,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, ref), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, rev), http.StatusNotFound)
 					return
 				}
 				if signer, ok := h.storage.LFSStore().(lfs.SignGetter); ok {
@@ -208,7 +208,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					content, stat, err := getter.Get(ptr.Oid)
 					if err != nil {
 						if os.IsNotExist(err) {
-							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, ref), http.StatusNotFound)
+							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, rev), http.StatusNotFound)
 							return
 						}
 						responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
@@ -244,7 +244,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := blob.NewReader()
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoPath, ref, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoPath, rev, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {

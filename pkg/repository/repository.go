@@ -90,7 +90,7 @@ func Open(repoPath string) (*Repository, error) {
 	}, nil
 }
 
-func (r *Repository) SplitRevisionAndPath(refpath string) (ref string, path string, err error) {
+func (r *Repository) SplitRevisionAndPath(refpath string) (rev string, path string, err error) {
 	if refpath == "" {
 		return r.DefaultBranch(), "", nil
 	}
@@ -164,29 +164,29 @@ func (r *Repository) Remove() error {
 	return os.RemoveAll(r.repoPath)
 }
 
-// validateRefName checks if a git ref name component is valid.
-// It rejects names that could cause problems with git ref storage.
+// validateRefName checks if a git rev name component is valid.
+// It rejects names that could cause problems with git rev storage.
 func validateRefName(name string) error {
 	if name == "" {
-		return fmt.Errorf("ref name cannot be empty")
+		return fmt.Errorf("rev name cannot be empty")
 	}
 	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
-		return fmt.Errorf("ref name cannot start or end with '/'")
+		return fmt.Errorf("rev name cannot start or end with '/'")
 	}
 	if strings.HasPrefix(name, ".") || strings.Contains(name, "..") {
-		return fmt.Errorf("ref name cannot start with '.' or contain '..'")
+		return fmt.Errorf("rev name cannot start with '.' or contain '..'")
 	}
 	if strings.HasSuffix(name, ".lock") {
-		return fmt.Errorf("ref name cannot end with '.lock'")
+		return fmt.Errorf("rev name cannot end with '.lock'")
 	}
 	if strings.ContainsAny(name, " ~^:?*[\\") {
-		return fmt.Errorf("ref name contains invalid characters")
+		return fmt.Errorf("rev name contains invalid characters")
 	}
 	if strings.Contains(name, "@{") {
-		return fmt.Errorf("ref name cannot contain '@{'")
+		return fmt.Errorf("rev name cannot contain '@{'")
 	}
 	if strings.Contains(name, "//") {
-		return fmt.Errorf("ref name cannot contain consecutive slashes")
+		return fmt.Errorf("rev name cannot contain consecutive slashes")
 	}
 	return nil
 }
@@ -259,8 +259,8 @@ func (r *Repository) CreateTag(name string, revision string) error {
 		return fmt.Errorf("failed to resolve revision %q: %w", revision, err)
 	}
 	refName := plumbing.NewTagReferenceName(name)
-	ref := plumbing.NewHashReference(refName, *hash)
-	return r.repo.Storer.SetReference(ref)
+	rev := plumbing.NewHashReference(refName, *hash)
+	return r.repo.Storer.SetReference(rev)
 }
 
 // DeleteTag deletes a tag from the repository.
@@ -295,13 +295,13 @@ func (r *Repository) TagExists(name string) (bool, error) {
 	return false, err
 }
 
-// RefHash returns the commit hash a ref (branch or tag) points to.
+// RefHash returns the commit hash a rev (branch or tag) points to.
 func (r *Repository) RefHash(refName plumbing.ReferenceName) (string, error) {
-	ref, err := r.repo.Storer.Reference(refName)
+	rev, err := r.repo.Storer.Reference(refName)
 	if err != nil {
 		return "", err
 	}
-	return ref.Hash().String(), nil
+	return rev.Hash().String(), nil
 }
 
 // Move renames the repository directory to newPath.

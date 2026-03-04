@@ -111,7 +111,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	// An empty repository (no commits yet) is a valid state; treat it as having no files.
 	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
 	if err != nil && !errors.Is(err, repository.ErrRevisionNotFound) {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -558,7 +558,7 @@ type HFSuperSquashRequest struct {
 }
 
 // handleSuperSquash handles POST /api/{repoType}/{repo}/super-squash/{rev}
-// It squashes all commits in the current ref into a single commit with the given message.
+// It squashes all commits in the current rev into a single commit with the given message.
 // The action is irreversible.
 func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -595,7 +595,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := repo.SuperSquash(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co"); err != nil {
-		responseJSON(w, fmt.Errorf("failed to squash repository %q ref %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to squash repository %q rev %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
 		return
 	}
 

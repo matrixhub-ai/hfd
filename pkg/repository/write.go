@@ -30,11 +30,11 @@ type CommitOperation struct {
 
 // CreateCommit creates a new commit on the given branch with the given operations.
 // This works on bare repositories by directly manipulating git objects and refs.
-// If parentCommit is non-empty, the ref update is made atomic: the current tip
+// If parentCommit is non-empty, the rev update is made atomic: the current tip
 // must match parentCommit, otherwise the operation fails (optimistic concurrency).
-func (r *Repository) CreateCommit(ctx context.Context, ref string, message string, authorName string, authorEmail string, ops []CommitOperation, parentCommit string) (string, error) {
-	if ref == "" {
-		ref = r.DefaultBranch()
+func (r *Repository) CreateCommit(ctx context.Context, rev string, message string, authorName string, authorEmail string, ops []CommitOperation, parentCommit string) (string, error) {
+	if rev == "" {
+		rev = r.DefaultBranch()
 	}
 
 	// Create a temporary index file path (the file must not exist yet for git)
@@ -53,7 +53,7 @@ func (r *Repository) CreateCommit(ctx context.Context, ref string, message strin
 	)
 
 	// Try to read the current tree into the index (ignore error for new branches)
-	refName := "refs/heads/" + ref
+	refName := "refs/heads/" + rev
 	{
 		cmd := utils.Command(ctx, "git", "read-tree", refName)
 		cmd.Env = env
@@ -145,7 +145,7 @@ func (r *Repository) CreateCommit(ctx context.Context, ref string, message strin
 	cmd = utils.Command(ctx, "git", updateRefArgs...)
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to update ref: %w", err)
+		return "", fmt.Errorf("failed to update rev: %w", err)
 	}
 
 	return commitHash, nil
