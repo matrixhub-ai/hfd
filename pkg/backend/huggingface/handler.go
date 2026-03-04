@@ -88,6 +88,7 @@ type repoInfomation struct {
 	RepoType string
 	RepoPath string
 
+	FullName  string
 	Namespace string
 	Name      string
 }
@@ -101,13 +102,14 @@ func repoInfo(r *http.Request) repoInfomation {
 	}
 	namespace := vars["namespace"]
 	name := vars["repo"]
+	fullName := namespace + "/" + name
 
 	var repoPath string
 	switch repoType {
 	case "datasets", "spaces":
-		repoPath = repoType + "/" + namespace + "/" + name
+		repoPath = repoType + "/" + fullName
 	default:
-		repoPath = namespace + "/" + name
+		repoPath = fullName
 	}
 
 	return repoInfomation{
@@ -115,6 +117,7 @@ func repoInfo(r *http.Request) repoInfomation {
 		RepoPath:  repoPath,
 		Namespace: namespace,
 		Name:      name,
+		FullName:  fullName,
 	}
 }
 
@@ -142,9 +145,9 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	// API endpoints for all repo types (models, datasets, spaces)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/preupload/{rev}", h.handlePreupload).Methods(http.MethodPost)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commit/{rev}", h.handleCommit).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tree/{revpath:.*}", h.handleTree).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}", h.handleInfo).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
 
 	// File download endpoints - datasets and spaces use a type prefix, models use the root
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
