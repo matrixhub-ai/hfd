@@ -152,6 +152,7 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	// File download endpoints - datasets and spaces use a type prefix, models use the root
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 }
 
 // openRepo opens a repository, optionally creating a mirror from the proxy source
