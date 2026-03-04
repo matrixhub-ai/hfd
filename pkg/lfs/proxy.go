@@ -119,6 +119,12 @@ func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size i
 		return
 	}
 
+	// Create the reader before starting the writer goroutine.
+	// WithAutoClose triggers TryClose when the writer closes and ReaderUsing()==0.
+	// Holding a reader open before the writer goroutine starts prevents the buffer
+	// from being auto-closed before the put goroutine can read its data.
+	reader := f.swmr.NewReader(0)
+
 	go func() {
 		sw := f.swmr.Writer()
 		defer sw.Close()
@@ -128,7 +134,6 @@ func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size i
 	}()
 
 	go func() {
-		reader := f.swmr.NewReader(0)
 		defer reader.Close()
 		if err := m.putFn(oid, reader, size); err != nil {
 			log.Printf("LFS proxy: failed to store object %s: %v", oid, err)

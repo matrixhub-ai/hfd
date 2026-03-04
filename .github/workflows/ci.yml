@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install huggingface_hub
+        run: pip install 'huggingface_hub[cli]'
+
+      # Unit tests and e2e tests are run together.
+      # E2e tests use httptest.NewServer with a local temp dir and require
+      # no external credentials; they skip gracefully if tools are absent.
+      - name: Test
+        run: go test ./...
