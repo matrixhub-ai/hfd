@@ -9,6 +9,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/hf"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -23,6 +24,7 @@ type HFRepoInfo struct {
 	Downloads     int         `json:"downloads"`
 	Likes         int         `json:"likes"`
 	Tags          []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
+	CardData      any         `json:"cardData,omitempty"`
 	Siblings      []HFSibling `json:"siblings"`
 	CreatedAt     string      `json:"createdAt,omitempty"`
 	LastModified  string      `json:"lastModified,omitempty"`
@@ -107,8 +109,9 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get list of files in the repository at the specified revision (recursive to include files in subdirectories)
+	// An empty repository (no commits yet) is a valid state; treat it as having no files.
 	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
-	if err != nil {
+	if err != nil && !errors.Is(err, repository.ErrRevisionNotFound) {
 		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at ref %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
 		return
 	}
@@ -129,6 +132,46 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		sha = commits[0].SHA
 	}
 
+	// Collect tags from all sources, deduplicating across them.
+	seen := make(map[string]struct{})
+	tags := []string{}
+	addTag := func(tag string) {
+		if tag == "" {
+			return
+		}
+		if _, ok := seen[tag]; !ok {
+			seen[tag] = struct{}{}
+			tags = append(tags, tag)
+		}
+	}
+
+	var cardData any
+
+	// Source 1: README.md YAML front matter (HuggingFace card metadata)
+	if blob, err := repo.Blob(rev, "README.md"); err == nil {
+		if rc, err := blob.NewReader(); err == nil {
+			if rm, err := hf.ParseReadme(rc); err == nil {
+				for _, tag := range rm.Tags() {
+					addTag(tag)
+				}
+				cardData = rm.CardData
+			}
+			rc.Close()
+		}
+	}
+
+	// Source 2: config.json (model_type and other fields)
+	if blob, err := repo.Blob(rev, "config.json"); err == nil {
+		if rc, err := blob.NewReader(); err == nil {
+			if cfg, err := hf.ParseConfigData(rc); err == nil {
+				for _, tag := range cfg.Tags() {
+					addTag(tag)
+				}
+			}
+			rc.Close()
+		}
+	}
+
 	hfInfo := HFRepoInfo{
 		ID:            ri.FullName,
 		SHA:           sha,
@@ -137,9 +180,10 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Gated:         false,
 		Downloads:     0,
 		Likes:         0,
-		Tags:          []string{},
+		Tags:          tags,
 		Siblings:      siblings,
 		DefaultBranch: rev,
+		CardData:      cardData,
 	}
 
 	// For models, also set the modelId field which is required by some HuggingFace clients. For datasets and spaces, the client doesn't require it and it can be confusing to have it be different from the ID, so we leave it empty.

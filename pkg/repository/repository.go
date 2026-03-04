@@ -14,6 +14,7 @@ import (
 
 var (
 	ErrRepositoryNotExists = git.ErrRepositoryNotExists
+	ErrRevisionNotFound    = plumbing.ErrReferenceNotFound
 )
 
 type Repository struct {
