@@ -15,28 +15,6 @@ import (
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
-// HFRepoInfo represents the info response for HuggingFace API
-type HFRepoInfo struct {
-	ID            string      `json:"id"`
-	ModelID       string      `json:"modelId,omitempty"`
-	SHA           string      `json:"sha"`
-	Private       bool        `json:"private"`
-	Disabled      bool        `json:"disabled"`
-	Gated         bool        `json:"gated"`
-	Downloads     int         `json:"downloads"`
-	Likes         int         `json:"likes"`
-	Tags          []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
-	Siblings      []HFSibling `json:"siblings"`
-	CreatedAt     string      `json:"createdAt,omitempty"`
-	LastModified  string      `json:"lastModified,omitempty"`
-	DefaultBranch string      `json:"defaultBranch,omitempty"`
-}
-
-// HFSibling represents a file in the model repository
-type HFSibling struct {
-	RFilename string `json:"rfilename"`
-}
-
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
