@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
 
@@ -19,6 +20,7 @@ type Handler struct {
 	next http.Handler
 
 	lfsProxyManager *lfs.ProxyManager
+	permissionHook  permission.PermissionHook
 }
 
 type Option func(*Handler)
@@ -40,6 +42,13 @@ func WithLFSProxyManager(pm *lfs.ProxyManager) Option {
 func WithNext(next http.Handler) Option {
 	return func(h *Handler) {
 		h.next = next
+	}
+}
+
+// WithPermissionHookFunc sets the authentication hook for verifying operations.
+func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+	return func(h *Handler) {
+		h.permissionHook = hook
 	}
 }
 

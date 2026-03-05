@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -22,6 +23,7 @@ type Handler struct {
 
 	proxyManager    *repository.ProxyManager
 	lfsProxyManager *lfs.ProxyManager
+	permissionHook  permission.PermissionHook
 }
 
 type Option func(*Handler)
@@ -50,6 +52,13 @@ func WithLFSProxyManager(pm *lfs.ProxyManager) Option {
 func WithNext(next http.Handler) Option {
 	return func(h *Handler) {
 		h.next = next
+	}
+}
+
+// WithPermissionHookFunc sets the permission hook for verifying operations.
+func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+	return func(h *Handler) {
+		h.permissionHook = hook
 	}
 }
 
@@ -161,10 +170,24 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 // openRepo opens a repository, optionally creating a mirror from the proxy source
 // if the repository doesn't exist locally and proxy mode is enabled.
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*repository.Repository, error) {
-	if h.proxyManager != nil {
-		return h.proxyManager.OpenOrProxy(ctx, repoPath, repoName, "git-upload-pack")
+	repo, err := repository.Open(repoPath)
+	if err == nil {
+		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+			if err := repo.SyncMirror(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return repo, nil
 	}
-	return repository.Open(repoPath)
+	if err == repository.ErrRepositoryNotExists && h.proxyManager != nil {
+		if h.permissionHook != nil {
+			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+				return repository.Open(repoPath)
+			}
+		}
+		return h.proxyManager.OpenOrProxy(ctx, repoPath, repoName)
+	}
+	return nil, err
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {

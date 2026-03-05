@@ -1,6 +1,8 @@
 package backend_test
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/wzshiming/hfd/internal/utils"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -227,6 +230,142 @@ func TestHTTPProxyMode(t *testing.T) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("Expected 404, got %d", resp.StatusCode)
+		}
+	})
+}
+
+func TestHTTPHandlerAuthHook(t *testing.T) {
+	// Create a temporary directory for the upstream server
+	upstreamDir, err := os.MkdirTemp("", "http-test-authhook")
+	if err != nil {
+		t.Fatalf("Failed to create temp upstream dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(upstreamDir)
+	}()
+
+	// Create a temporary directory for client operations
+	clientDir, err := os.MkdirTemp("", "http-test-authhook-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
+
+	// Create a bare repository on the upstream
+	repoName := "test-repo"
+	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+		t.Fatalf("Failed to create repos dir: %v", err)
+	}
+	runGitCmd(t, "", "init", "--bare", repoPath)
+
+	t.Run("AuthHookAllowsRead", func(t *testing.T) {
+		// Auth hook that allows all operations
+		handler := backendhttp.NewHandler(
+			backendhttp.WithStorage(upstreamStorage),
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+				return nil
+			}),
+		)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		// Clone should succeed
+		cloneDir := filepath.Join(clientDir, "clone-allowed")
+		runGitCmd(t, "", "clone", server.URL+"/"+repoName+".git", cloneDir)
+
+		hfdir := filepath.Join(cloneDir, ".git")
+		if _, err := os.Stat(hfdir); os.IsNotExist(err) {
+			t.Errorf(".git directory not found in cloned repository")
+		}
+	})
+
+	t.Run("AuthHookDeniesRead", func(t *testing.T) {
+		// Auth hook that denies all operations
+		handler := backendhttp.NewHandler(
+			backendhttp.WithStorage(upstreamStorage),
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+				return errors.New("access denied")
+			}),
+		)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		// info/refs request should return 403
+		resp, err := http.Get(server.URL + "/" + repoName + ".git/info/refs?service=git-upload-pack")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("Expected 403, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("AuthHookDeniesWriteAllowsRead", func(t *testing.T) {
+		// Auth hook that allows fetches but denies pushes
+		handler := backendhttp.NewHandler(
+			backendhttp.WithStorage(upstreamStorage),
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+				if op == permission.OperationUpdateRepo {
+					return errors.New("push access denied")
+				}
+				return nil
+			}),
+		)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		// Read (git-upload-pack) should succeed
+		resp, err := http.Get(server.URL + "/" + repoName + ".git/info/refs?service=git-upload-pack")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusForbidden {
+			t.Errorf("Expected read to be allowed, got 403")
+		}
+
+		// Write (git-receive-pack) should be denied
+		resp2, err := http.Get(server.URL + "/" + repoName + ".git/info/refs?service=git-receive-pack")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusForbidden {
+			t.Errorf("Expected write to be denied (403), got %d", resp2.StatusCode)
+		}
+	})
+
+	t.Run("AuthHookReceivesCorrectRepoName", func(t *testing.T) {
+		var capturedRepo string
+		var capturedOp permission.Operation
+		handler := backendhttp.NewHandler(
+			backendhttp.WithStorage(upstreamStorage),
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+				capturedRepo = repo
+				capturedOp = op
+				return nil
+			}),
+		)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		resp, err := http.Get(server.URL + "/" + repoName + ".git/info/refs?service=git-upload-pack")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if capturedRepo != repoName {
+			t.Errorf("Expected repo name %q, got %q", repoName, capturedRepo)
+		}
+		if capturedOp != permission.OperationReadRepo {
+			t.Errorf("Expected operation %v, got %v", permission.OperationReadRepo, capturedOp)
 		}
 	})
 }

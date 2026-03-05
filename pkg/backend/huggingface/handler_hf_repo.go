@@ -9,6 +9,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -86,6 +87,13 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	ri := repoInfo(r)
 	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -182,6 +190,13 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationDeleteRepo, storageName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
@@ -225,6 +240,13 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		toName = prefix + "/" + toName
 	}
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	fromPath := repository.ResolvePath(h.storage.RepositoriesDir(), fromName)
 	if fromPath == "" {
 		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
@@ -265,6 +287,13 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
@@ -291,6 +320,13 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ri := repoInfo(r)
 	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -342,6 +378,13 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
 	rev := vars["rev"]
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
@@ -387,6 +430,13 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ri := repoInfo(r)
 	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -442,6 +492,13 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
 	rev := vars["rev"]
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
@@ -479,6 +536,13 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 // handleListRefs handles GET /api/{repoType}/{repo}/refs
 func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -564,6 +628,13 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ri := repoInfo(r)
 	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {

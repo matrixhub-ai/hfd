@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -17,14 +18,35 @@ import (
 type Server struct {
 	repositoriesDir string
 	proxyManager    *repository.ProxyManager
+	permissionHook  permission.PermissionHook
+}
+
+// Option configures the git protocol server.
+type Option func(*Server)
+
+// WithProxyManager sets the proxy manager for the git protocol server.
+func WithProxyManager(pm *repository.ProxyManager) Option {
+	return func(s *Server) {
+		s.proxyManager = pm
+	}
+}
+
+// WithPermissionHookFunc sets the permission hook for verifying operations.
+func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+	return func(s *Server) {
+		s.permissionHook = hook
+	}
 }
 
 // NewServer creates a new git protocol server.
-func NewServer(repositoriesDir string, proxyManager *repository.ProxyManager) *Server {
-	return &Server{
+func NewServer(repositoriesDir string, opts ...Option) *Server {
+	s := &Server{
 		repositoriesDir: repositoriesDir,
-		proxyManager:    proxyManager,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Serve accepts connections on the listener and handles them.
@@ -58,7 +80,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	if service != "git-upload-pack" && service != "git-receive-pack" {
+	if service != repository.GitUploadPack && service != repository.GitReceivePack {
 		log.Printf("git protocol: unsupported service: %s\n", service)
 		return
 	}
@@ -71,13 +93,24 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	ctx := context.Background()
 
+	if s.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if service == repository.GitReceivePack {
+			op = permission.OperationUpdateRepo
+		}
+		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
+			log.Printf("git protocol: auth hook denied %s on %s: %v\n", service, repoPath, err)
+			return
+		}
+	}
+
 	repo, err := s.openRepo(ctx, fullPath, repoPath, service)
 	if err != nil {
 		log.Printf("git protocol: repository not found: %s\n", repoPath)
 		return
 	}
 
-	if service == "git-receive-pack" {
+	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
 			log.Printf("git protocol: failed to check repository type: %v\n", err)
@@ -100,11 +133,28 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 // openRepo opens a repository, optionally creating a mirror from the proxy source.
 func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if s.proxyManager != nil {
-		return s.proxyManager.OpenOrProxy(ctx, repoPath, repoName, service)
+	repo, err := repository.Open(repoPath)
+	if err == nil {
+		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+			if err := repo.SyncMirror(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return repo, nil
 	}
-
-	return repository.Open(repoPath)
+	// Only proxy for read operations
+	if service != repository.GitUploadPack {
+		return nil, err
+	}
+	if err == repository.ErrRepositoryNotExists && s.proxyManager != nil {
+		if s.permissionHook != nil {
+			if err := s.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+				return repository.Open(repoPath)
+			}
+		}
+		return s.proxyManager.OpenOrProxy(ctx, repoPath, repoName)
+	}
+	return nil, err
 }
 
 // readRequest reads the initial git protocol request from the connection.

@@ -18,6 +18,7 @@ import (
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/s3fs"
 	"github.com/wzshiming/hfd/pkg/storage"
@@ -136,6 +137,12 @@ func main() {
 			storage.LFSStore(),
 		)
 	}
+
+	permissionHook := func(ctx context.Context, op permission.Operation, repoPath string, opCtx permission.Context) error {
+		log.Printf("Permission check: op=%s, repoPath=%s, context=%+v\n", op, repoPath, opCtx)
+		return nil // or return an error to deny permission
+	}
+
 	var handler http.Handler
 
 	handler = backendhuggingface.NewHandler(
@@ -143,18 +150,21 @@ func main() {
 		backendhuggingface.WithNext(handler),
 		backendhuggingface.WithProxyManager(proxyManager),
 		backendhuggingface.WithLFSProxyManager(lfsProxyManager),
+		backendhuggingface.WithPermissionHookFunc(permissionHook),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 		backendlfs.WithLFSProxyManager(lfsProxyManager),
+		backendlfs.WithPermissionHookFunc(permissionHook),
 	)
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithProxyManager(proxyManager),
+		backendhttp.WithPermissionHookFunc(permissionHook),
 	)
 
 	if httpUsername != "" {
@@ -166,7 +176,10 @@ func main() {
 
 	if gitAddr != "" {
 		repositoriesDir := filepath.Join(absRootDir, "repositories")
-		gitServer := backendgit.NewServer(repositoriesDir, proxyManager)
+		gitServer := backendgit.NewServer(repositoriesDir,
+			backendgit.WithPermissionHookFunc(permissionHook),
+			backendgit.WithProxyManager(proxyManager),
+		)
 		log.Printf("Starting git protocol server on %s\n", gitAddr)
 		go func() {
 			if err := gitServer.ListenAndServe(gitAddr); err != nil {
@@ -202,9 +215,9 @@ func main() {
 			}
 			log.Printf("Generated SSH host key and saved to %s\n", hostKeyPath)
 		}
-		var sshOpts []backendssh.Option
-		if proxyManager != nil {
-			sshOpts = append(sshOpts, backendssh.WithProxyManager(proxyManager))
+		sshOpts := []backendssh.Option{
+			backendssh.WithPermissionHookFunc(permissionHook),
+			backendssh.WithProxyManager(proxyManager),
 		}
 		if sshAuthorizedKey != "" {
 			authKeysData, err := os.ReadFile(sshAuthorizedKey)

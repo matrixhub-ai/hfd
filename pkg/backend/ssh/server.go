@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	repositoriesDir string
 	config          *ssh.ServerConfig
 	proxyManager    *repository.ProxyManager
+	permissionHook  permission.PermissionHook
 }
 
 // Option configures the SSH server.
@@ -47,6 +49,13 @@ func WithPublicKeyCallback(callback func(conn ssh.ConnMetadata, key ssh.PublicKe
 func WithProxyManager(pm *repository.ProxyManager) Option {
 	return func(s *Server) {
 		s.proxyManager = pm
+	}
+}
+
+// WithPermissionHookFunc sets the permission hook for verifying operations.
+func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+	return func(s *Server) {
+		s.permissionHook = hook
 	}
 }
 
@@ -229,6 +238,18 @@ func (s *Server) executeCommand(channel ssh.Channel, service string, repoPath st
 
 	ctx := context.Background()
 
+	if s.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if service == repository.GitReceivePack {
+			op = permission.OperationUpdateRepo
+		}
+		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
+			log.Printf("ssh protocol: auth hook denied %s on %s: %v\n", service, repoPath, err)
+			sendExitStatus(channel, 1)
+			return
+		}
+	}
+
 	repo, err := s.openRepo(ctx, fullPath, repoPath, service)
 	if err != nil {
 		log.Printf("ssh protocol: repository not found: %s\n", repoPath)
@@ -236,7 +257,7 @@ func (s *Server) executeCommand(channel ssh.Channel, service string, repoPath st
 		return
 	}
 
-	if service == "git-receive-pack" {
+	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
 			log.Printf("ssh protocol: failed to check repository type: %v\n", err)
@@ -266,11 +287,28 @@ func (s *Server) executeCommand(channel ssh.Channel, service string, repoPath st
 
 // openRepo opens a repository, optionally creating a mirror from the proxy source.
 func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if s.proxyManager != nil {
-		return s.proxyManager.OpenOrProxy(ctx, repoPath, repoName, service)
+	repo, err := repository.Open(repoPath)
+	if err == nil {
+		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+			if err := repo.SyncMirror(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return repo, nil
 	}
-
-	return repository.Open(repoPath)
+	// Only proxy for read operations
+	if service != repository.GitUploadPack {
+		return nil, err
+	}
+	if err == repository.ErrRepositoryNotExists && s.proxyManager != nil {
+		if s.permissionHook != nil {
+			if err := s.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+				return repository.Open(repoPath)
+			}
+		}
+		return s.proxyManager.OpenOrProxy(ctx, repoPath, repoName)
+	}
+	return nil, err
 }
 
 // parseCommand parses an SSH exec command like "git-upload-pack '/repo.git'" or
@@ -282,7 +320,7 @@ func parseCommand(cmdLine string) (service string, repoPath string, err error) {
 	}
 
 	service = parts[0]
-	if service != "git-upload-pack" && service != "git-receive-pack" {
+	if service != repository.GitUploadPack && service != repository.GitReceivePack {
 		return "", "", fmt.Errorf("unsupported service: %s", service)
 	}
 

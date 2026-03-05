@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"log"
 	"os"
 	"strings"
@@ -24,53 +23,13 @@ func NewProxyManager(proxyURL string) *ProxyManager {
 	}
 }
 
-// OpenOrProxy opens a repository. If it doesn't exist locally and proxy mode is
-// enabled and the service is a read operation (git-upload-pack), it creates a
-// mirror from the proxy source.
-func (p *ProxyManager) OpenOrProxy(ctx context.Context, repoPath, repoName, service string) (*Repository, error) {
-	repo, err := Open(repoPath)
-	if err == nil {
-		return repo, nil
-	}
-	if !errors.Is(err, ErrRepositoryNotExists) {
-		return nil, err
-	}
-
-	// Only proxy for read operations
-	if service != "git-upload-pack" {
-		return nil, ErrRepositoryNotExists
-	}
-
-	if p == nil || p.proxyURL == "" {
-		return nil, ErrRepositoryNotExists
-	}
-
-	return p.initProxyRepo(ctx, repoPath, repoName)
-}
-
-func (p *ProxyManager) initProxyRepo(ctx context.Context, repoPath, repoName string) (*Repository, error) {
-	// Use per-repo mutex to prevent concurrent initialization
-	v, _ := p.mutexes.LoadOrStore(repoName, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Double-check after acquiring lock
-	repo, err := Open(repoPath)
-	if err == nil {
-		if err := repo.SyncMirror(ctx); err != nil {
-			log.Printf("Proxy: failed to sync mirror for %q: %v", repoName, err)
-			return nil, ErrRepositoryNotExists
-		}
-		return repo, nil
-	}
-
+func (p *ProxyManager) OpenOrProxy(ctx context.Context, repoPath, repoName string) (*Repository, error) {
 	// Create mirror from proxy source
 	sourceURL := strings.TrimSuffix(p.proxyURL, "/") + "/" + repoName
 
 	log.Printf("Proxy: initializing mirror for %q from %s", repoName, sourceURL)
 
-	repo, err = InitMrror(ctx, repoPath, sourceURL)
+	repo, err := InitMirror(ctx, repoPath, sourceURL)
 	if err != nil {
 		log.Printf("Proxy: failed to initialize mirror for %q: %v", repoName, err)
 		_ = os.RemoveAll(repoPath)

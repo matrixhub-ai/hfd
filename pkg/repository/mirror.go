@@ -8,8 +8,8 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 )
 
-// InitMrror initializes a new bare git repository as a mirror of the remote repository at sourceURL.
-func InitMrror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {
+// InitMirror initializes a new bare git repository as a mirror of the remote repository at sourceURL.
+func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
 	sourceURL = strings.TrimSuffix(sourceURL, ".git") + ".git"
 

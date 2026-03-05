@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 )
 
 var (
@@ -33,6 +34,14 @@ func (h *Handler) registryLFSLock(r *mux.Router) {
 func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
+
+	if h.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+			return
+		}
+	}
 
 	ll := &lfs.LockList{}
 
@@ -56,6 +65,15 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
+
+	if h.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+			return
+		}
+	}
+
 	user := getUserFromRequest(r)
 
 	dec := json.NewDecoder(r.Body)
@@ -98,6 +116,15 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
+
+	if h.permissionHook != nil {
+		op := permission.OperationUpdateRepo
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+			return
+		}
+	}
+
 	user := getUserFromRequest(r)
 
 	dec := json.NewDecoder(r.Body)
@@ -139,6 +166,15 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 	lockId := vars["id"]
+
+	if h.permissionHook != nil {
+		op := permission.OperationUpdateRepo
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+			return
+		}
+	}
+
 	user := getUserFromRequest(r)
 
 	dec := json.NewDecoder(r.Body)
