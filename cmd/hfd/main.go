@@ -175,8 +175,7 @@ func main() {
 	handler = handlers.LoggingHandler(os.Stderr, handler)
 
 	if gitAddr != "" {
-		repositoriesDir := filepath.Join(absRootDir, "repositories")
-		gitServer := backendgit.NewServer(repositoriesDir,
+		gitServer := backendgit.NewServer(storage.RepositoriesDir(),
 			backendgit.WithPermissionHookFunc(permissionHook),
 			backendgit.WithProxyManager(proxyManager),
 		)
@@ -190,7 +189,6 @@ func main() {
 	}
 
 	if sshAddr != "" {
-		repositoriesDir := filepath.Join(absRootDir, "repositories")
 		var hostKeySigner backendssh.Signer
 		hostKeyPath := sshHostKeyFile
 		if hostKeyPath == "" {
@@ -233,7 +231,7 @@ func main() {
 			sshOpts = append(sshOpts, backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback(authorizedKeys)))
 			log.Printf("SSH public key authentication enabled with %d key(s)\n", len(authorizedKeys))
 		}
-		sshServer := backendssh.NewServer(repositoriesDir, hostKeySigner, sshOpts...)
+		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
 		log.Printf("Starting SSH protocol server on %s\n", sshAddr)
 		go func() {
 			if err := sshServer.ListenAndServe(sshAddr); err != nil {
