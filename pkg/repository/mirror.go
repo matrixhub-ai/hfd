@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/wzshiming/hfd/internal/utils"
@@ -37,6 +39,11 @@ func (r *Repository) SyncMirror(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	err = r.fetchUnshallow(ctx)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -51,9 +58,23 @@ func (r *Repository) fetchShallow(ctx context.Context, branch string) error {
 	}
 	cmd := utils.Command(ctx, "git", args...)
 	cmd.Dir = r.repoPath
-	err := cmd.Run()
-	if err != nil {
-		return err
+	return cmd.Run()
+}
+
+func (r *Repository) fetchUnshallow(ctx context.Context) error {
+	// Only unshallow if the repository is actually shallow
+	if _, err := os.Stat(filepath.Join(r.repoPath, "shallow")); os.IsNotExist(err) {
+		return nil
 	}
-	return nil
+
+	args := []string{
+		"fetch",
+		"--unshallow",
+		"--prune",
+		"origin",
+		"--progress",
+	}
+	cmd := utils.Command(ctx, "git", args...)
+	cmd.Dir = r.repoPath
+	return cmd.Run()
 }
