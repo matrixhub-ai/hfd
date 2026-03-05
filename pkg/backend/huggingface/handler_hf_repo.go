@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
@@ -614,6 +615,63 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		Tags:     tags,
 	}
 	responseJSON(w, refs, http.StatusOK)
+}
+
+// handleCompare handles GET /api/{repoType}/{repo}/compare/{compare}
+func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	ri := repoInfo(r)
+	compare := vars["compare"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	if repoPath == "" {
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		return
+	}
+
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	if err != nil {
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		return
+	}
+
+	base, head, found := strings.Cut(compare, "..")
+	if !found || base == "" || head == "" ||
+		strings.HasPrefix(head, ".") || strings.Contains(head, "..") {
+		responseJSON(w, fmt.Errorf("invalid compare format %q, expected base..head", compare), http.StatusBadRequest)
+		return
+	}
+
+	changes, err := repo.Compare(r.Context(), base, head)
+	if err != nil {
+		if errors.Is(err, repository.ErrRevisionNotFound) || errors.Is(err, plumbing.ErrReferenceNotFound) {
+			responseJSON(w, fmt.Errorf("failed to resolve compare revisions %q: %v", compare, err), http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Errorf("failed to compare %q: %v", compare, err), http.StatusInternalServerError)
+		return
+	}
+
+	patch, err := changes.PatchContext(r.Context())
+	if err != nil {
+		responseJSON(w, fmt.Errorf("failed to generate patch for compare %q: %v", compare, err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_ = patch.Encode(w)
 }
 
 // HFSuperSquashRequest represents the super-squash request body.

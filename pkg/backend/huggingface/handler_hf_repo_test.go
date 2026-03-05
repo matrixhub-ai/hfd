@@ -698,3 +698,185 @@ func TestHuggingFaceSuperSquashNotFound(t *testing.T) {
 		t.Fatalf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
 	}
 }
+
+func TestHuggingFaceCompare(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a repo with an initial commit
+	createRepoAndCommit(t, endpoint, "model", "test-user", "compare-model")
+
+	// Make a second commit to have something to compare
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Second commit\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"new content\\n\",\"path\":\"file2.txt\",\"encoding\":\"utf-8\"}}\n"
+	resp, err := http.Post(endpoint+"/api/models/test-user/compare-model/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected commit status 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Compare main..main (same revision, should return empty diff)
+	resp, err = http.Get(endpoint + "/api/models/test-user/compare-model/compare/main..main")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) != 0 {
+		t.Errorf("Expected empty diff for same-rev compare, got %q", body)
+	}
+}
+
+func TestHuggingFaceCompareWithChanges(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a repo with an initial commit
+	commit1SHA := createRepoAndCommit(t, endpoint, "model", "test-user", "compare-changes")
+
+	// Create a branch from the initial commit
+	req, _ := http.NewRequest(http.MethodPost, endpoint+"/api/models/test-user/compare-changes/branch/dev", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to create branch: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("Expected branch creation to return 200, got %d: %s", resp.StatusCode, respBody)
+	}
+	resp.Body.Close()
+
+	// Add a file on the dev branch
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add file on dev\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"dev content\\n\",\"path\":\"dev-file.txt\",\"encoding\":\"utf-8\"}}\n"
+	resp, err = http.Post(endpoint+"/api/models/test-user/compare-changes/commit/dev", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("Expected commit status 200, got %d: %s", resp.StatusCode, respBody)
+	}
+	resp.Body.Close()
+
+	// Compare using commit SHA..dev (should show the new file as a unified diff)
+	resp, err = http.Get(endpoint + "/api/models/test-user/compare-changes/compare/" + commit1SHA + "..dev")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	diff := string(body)
+
+	// Verify the diff contains expected unified diff elements
+	if !strings.Contains(diff, "diff --git") {
+		t.Errorf("Expected diff to contain 'diff --git', got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "dev-file.txt") {
+		t.Errorf("Expected diff to mention 'dev-file.txt', got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "+dev content") {
+		t.Errorf("Expected diff to contain '+dev content', got:\n%s", diff)
+	}
+}
+
+func TestHuggingFaceCompareInvalidFormat(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	createRepoAndCommit(t, endpoint, "model", "test-user", "compare-invalid")
+
+	// Test invalid compare format (missing ..)
+	resp, err := http.Get(endpoint + "/api/models/test-user/compare-invalid/compare/main")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for invalid compare format, got %d", resp.StatusCode)
+	}
+
+	// Test invalid compare format using "..." (three dots) instead of ".." (two dots)
+	resp, err = http.Get(endpoint + "/api/models/test-user/compare-invalid/compare/main...dev")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Expected 400 for three-dot compare format, got %d", resp.StatusCode)
+	}
+}
+
+func TestHuggingFaceCompareNotFound(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	resp, err := http.Get(endpoint + "/api/models/test-user/nonexistent-model/compare/main..dev")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
+	}
+}
+
+func TestHuggingFaceCompareDatasets(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create a dataset repo with an initial commit
+	commit1SHA := createRepoAndCommit(t, endpoint, "dataset", "test-user", "compare-dataset")
+
+	// Add another commit
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add data\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"data content\\n\",\"path\":\"data.csv\",\"encoding\":\"utf-8\"}}\n"
+	resp, err := http.Post(endpoint+"/api/datasets/test-user/compare-dataset/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("Expected commit status 200, got %d: %s", resp.StatusCode, respBody)
+	}
+	resp.Body.Close()
+
+	// Compare the two commits via datasets API
+	resp, err = http.Get(endpoint + "/api/datasets/test-user/compare-dataset/compare/" + commit1SHA + "..main")
+	if err != nil {
+		t.Fatalf("Failed to compare: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	diff := string(body)
+
+	if !strings.Contains(diff, "diff --git") {
+		t.Errorf("Expected diff output, got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "data.csv") {
+		t.Errorf("Expected diff to mention 'data.csv', got:\n%s", diff)
+	}
+}

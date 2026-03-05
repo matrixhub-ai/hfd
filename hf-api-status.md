@@ -9,7 +9,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `DELETE` | `/api/models/{namespace}/{repo}/branch/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/DELETE/api/models/{namespace}/{repo}/branch/{rev}) | Delete a branch |
 | ✅ | `POST` | `/api/models/{namespace}/{repo}/commit/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/commit/{rev}) | Commit |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/commits/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/commits/{rev}) | List commits |
-| ❌ | `GET` | `/api/models/{namespace}/{repo}/compare/{compare}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
+| ✅ | `GET` | `/api/models/{namespace}/{repo}/compare/{compare}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/jwt` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/jwt) | Generate JWT |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/lfs-files` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/lfs-files) | List Large files |
 | ❌ | `POST` | `/api/models/{namespace}/{repo}/lfs-files/batch` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/lfs-files/batch) | Delete Large files |
@@ -43,7 +43,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `DELETE` | `/api/datasets/{namespace}/{repo}/branch/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/DELETE/api/datasets/{namespace}/{repo}/branch/{rev}) | Delete a branch |
 | ✅ | `POST` | `/api/datasets/{namespace}/{repo}/commit/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/commit/{rev}) | Commit |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/commits/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/commits/{rev}) | List commits |
-| ❌ | `GET` | `/api/datasets/{namespace}/{repo}/compare/{compare}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
+| ✅ | `GET` | `/api/datasets/{namespace}/{repo}/compare/{compare}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/jwt` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/jwt) | Generate JWT |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/leaderboard` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/leaderboard) | Get the leaderboard for a dataset |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/lfs-files` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/lfs-files) | List Large files |
@@ -76,7 +76,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `DELETE` | `/api/spaces/{namespace}/{repo}/branch/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/DELETE/api/spaces/{namespace}/{repo}/branch/{rev}) | Delete a branch |
 | ✅ | `POST` | `/api/spaces/{namespace}/{repo}/commit/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/POST/api/spaces/{namespace}/{repo}/commit/{rev}) | Commit |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/commits/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/commits/{rev}) | List commits |
-| ❌ | `GET` | `/api/spaces/{namespace}/{repo}/compare/{compare}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
+| ✅ | `GET` | `/api/spaces/{namespace}/{repo}/compare/{compare}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/compare/{compare}) | Get a compare rev |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/events` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/events) | Stream events |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/jwt` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/jwt) | Generate JWT |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/lfs-files` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/lfs-files) | List Large files |
