@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -31,6 +32,7 @@ type Server struct {
 	config          *ssh.ServerConfig
 	proxyManager    *repository.ProxyManager
 	permissionHook  permission.PermissionHook
+	lfsURL          string
 }
 
 // Option configures the SSH server.
@@ -56,6 +58,14 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(s *Server) {
 		s.permissionHook = hook
+	}
+}
+
+// WithLFSURL sets the base HTTP URL for the server, used by git-lfs-authenticate
+// to tell LFS clients the LFS API endpoint. For example: "http://localhost:8080".
+func WithLFSURL(lfsURL string) Option {
+	return func(s *Server) {
+		s.lfsURL = lfsURL
 	}
 }
 
@@ -205,7 +215,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			}
 			cmdLine := string(req.Payload[4 : 4+cmdLen])
 
-			service, repoPath, err := parseCommand(cmdLine)
+			cmd, err := parseCommand(cmdLine)
 			if err != nil {
 				log.Printf("ssh protocol: invalid command: %v\n", err)
 				_ = req.Reply(false, nil)
@@ -213,7 +223,17 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			}
 
 			_ = req.Reply(true, nil)
-			s.executeCommand(channel, service, repoPath)
+
+			switch cmd.service {
+			case repository.GitLFSAuthenticate:
+				s.executeLFSAuthenticate(channel, cmd.repoPath, cmd.operation)
+			case repository.GitLFSTransfer:
+				log.Printf("ssh protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate\n")
+				_, _ = fmt.Fprintf(channel.Stderr(), "git-lfs-transfer is not supported\n")
+				sendExitStatus(channel, 1)
+			default:
+				s.executeCommand(channel, cmd.service, cmd.repoPath)
+			}
 			return
 
 		default:
@@ -311,24 +331,114 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 	return nil, err
 }
 
-// parseCommand parses an SSH exec command like "git-upload-pack '/repo.git'" or
-// "git-upload-pack /repo.git".
-func parseCommand(cmdLine string) (service string, repoPath string, err error) {
+// lfsAuthResponse is the JSON response returned by git-lfs-authenticate.
+type lfsAuthResponse struct {
+	Href      string            `json:"href"`
+	Header    map[string]string `json:"header,omitempty"`
+	ExpiresIn int               `json:"expires_in,omitempty"`
+}
+
+// executeLFSAuthenticate handles the git-lfs-authenticate command by returning
+// a JSON response with the LFS API endpoint URL.
+func (s *Server) executeLFSAuthenticate(channel ssh.Channel, repoPath string, operation string) {
+	defer channel.Close()
+
+	if s.lfsURL == "" {
+		_, _ = fmt.Fprintf(channel.Stderr(), "LFS authentication is not configured on this server\n")
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	if operation != "download" && operation != "upload" {
+		log.Printf("ssh protocol: git-lfs-authenticate: invalid operation %q\n", operation)
+		_, _ = fmt.Fprintf(channel.Stderr(), "invalid LFS operation: %s\n", operation)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
+	if fullPath == "" {
+		log.Printf("ssh protocol: repository not found: %s\n", repoPath)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	ctx := context.Background()
+
+	if s.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if operation == "upload" {
+			op = permission.OperationUpdateRepo
+		}
+		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
+			log.Printf("ssh protocol: auth hook denied lfs-%s on %s: %v\n", operation, repoPath, err)
+			sendExitStatus(channel, 1)
+			return
+		}
+	}
+
+	// Build the LFS API href
+	href := repository.LFSHref(s.lfsURL, repoPath)
+
+	resp := lfsAuthResponse{
+		Href:      href,
+		Header:    make(map[string]string),
+		ExpiresIn: 3600,
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("ssh protocol: failed to marshal LFS auth response: %v\n", err)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	if _, err := channel.Write(data); err != nil {
+		log.Printf("ssh protocol: failed to write LFS auth response: %v\n", err)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	sendExitStatus(channel, 0)
+}
+
+// parsedCommand holds the result of parsing an SSH exec command.
+type parsedCommand struct {
+	service   string
+	repoPath  string
+	operation string // only for git-lfs-authenticate and git-lfs-transfer
+}
+
+// parseCommand parses an SSH exec command like "git-upload-pack '/repo.git'",
+// "git-upload-pack /repo.git", or "git-lfs-authenticate '/repo.git' download".
+func parseCommand(cmdLine string) (*parsedCommand, error) {
 	parts := strings.SplitN(strings.TrimSpace(cmdLine), " ", 2)
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid command format: %q", cmdLine)
+		return nil, fmt.Errorf("invalid command format: %q", cmdLine)
 	}
 
-	service = parts[0]
-	if service != repository.GitUploadPack && service != repository.GitReceivePack {
-		return "", "", fmt.Errorf("unsupported service: %s", service)
+	service := parts[0]
+	rest := parts[1]
+
+	switch service {
+	case repository.GitUploadPack, repository.GitReceivePack:
+		repoPath := strings.Trim(rest, "'")
+		return &parsedCommand{service: service, repoPath: repoPath}, nil
+
+	case repository.GitLFSAuthenticate, repository.GitLFSTransfer:
+		// Format: git-lfs-authenticate <path> <operation>
+		// or: git-lfs-transfer <path> <operation>
+		subParts := strings.SplitN(rest, " ", 2)
+		if len(subParts) != 2 {
+			return nil, fmt.Errorf("invalid %s format: %q", service, cmdLine)
+		}
+		repoPath := strings.Trim(subParts[0], "'")
+		operation := strings.TrimSpace(subParts[1])
+		return &parsedCommand{service: service, repoPath: repoPath, operation: operation}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported service: %s", service)
 	}
-
-	repoPath = parts[1]
-	// Remove surrounding single quotes if present (git client sends 'path')
-	repoPath = strings.Trim(repoPath, "'")
-
-	return service, repoPath, nil
 }
 
 // sendExitStatus sends the exit status to the SSH client.

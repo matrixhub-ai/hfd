@@ -18,9 +18,21 @@ var (
 )
 
 const (
-	GitUploadPack  = "git-upload-pack"
-	GitReceivePack = "git-receive-pack"
+	GitUploadPack      = "git-upload-pack"
+	GitReceivePack     = "git-receive-pack"
+	GitLFSAuthenticate = "git-lfs-authenticate"
+	GitLFSTransfer     = "git-lfs-transfer"
 )
+
+// LFSHref constructs the LFS API endpoint URL from a base HTTP URL and a repo path.
+func LFSHref(httpURL, repoPath string) string {
+	href := strings.TrimRight(httpURL, "/") + "/" + strings.TrimPrefix(repoPath, "/")
+	if !strings.HasSuffix(href, ".git") {
+		href += ".git"
+	}
+	href += "/info/lfs"
+	return href
+}
 
 type Repository struct {
 	repo     *git.Repository

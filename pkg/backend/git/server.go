@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,7 @@ type Server struct {
 	repositoriesDir string
 	proxyManager    *repository.ProxyManager
 	permissionHook  permission.PermissionHook
+	lfsURL          string
 }
 
 // Option configures the git protocol server.
@@ -35,6 +37,14 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(s *Server) {
 		s.permissionHook = hook
+	}
+}
+
+// WithLFSURL sets the base HTTP URL for the server, used by git-lfs-authenticate
+// to tell LFS clients the LFS API endpoint. For example: "http://localhost:8080".
+func WithLFSURL(lfsURL string) Option {
+	return func(s *Server) {
+		s.lfsURL = lfsURL
 	}
 }
 
@@ -80,11 +90,20 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	if service != repository.GitUploadPack && service != repository.GitReceivePack {
+	switch service {
+	case repository.GitUploadPack, repository.GitReceivePack:
+		s.executeGitCommand(conn, service, repoPath)
+	case repository.GitLFSAuthenticate:
+		s.handleLFSAuthenticate(conn, repoPath)
+	case repository.GitLFSTransfer:
+		log.Printf("git protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate\n")
+	default:
 		log.Printf("git protocol: unsupported service: %s\n", service)
-		return
 	}
+}
 
+// executeGitCommand runs a git service command and pipes I/O through the connection.
+func (s *Server) executeGitCommand(conn net.Conn, service string, repoPath string) {
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
 	if fullPath == "" {
 		log.Printf("git protocol: repository not found: %s\n", repoPath)
@@ -155,6 +174,75 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 		return s.proxyManager.OpenOrProxy(ctx, repoPath, repoName)
 	}
 	return nil, err
+}
+
+// lfsAuthResponse is the JSON response returned by git-lfs-authenticate.
+type lfsAuthResponse struct {
+	Href      string            `json:"href"`
+	Header    map[string]string `json:"header,omitempty"`
+	ExpiresIn int               `json:"expires_in,omitempty"`
+}
+
+// handleLFSAuthenticate handles a git-lfs-authenticate request over the git protocol.
+// The repoPath may contain the operation appended after a space (e.g. "repo.git download").
+func (s *Server) handleLFSAuthenticate(conn net.Conn, repoPath string) {
+	if s.lfsURL == "" {
+		log.Printf("git protocol: LFS authentication is not configured on this server\n")
+		return
+	}
+
+	// Parse operation from repoPath: "path operation"
+	actualPath, operation, ok := strings.Cut(repoPath, " ")
+	if !ok {
+		log.Printf("git protocol: git-lfs-authenticate: missing operation in %q\n", repoPath)
+		return
+	}
+	actualPath = strings.Trim(actualPath, "'")
+	operation = strings.TrimSpace(operation)
+
+	if operation != "download" && operation != "upload" {
+		log.Printf("git protocol: git-lfs-authenticate: invalid operation %q\n", operation)
+		return
+	}
+
+	fullPath := repository.ResolvePath(s.repositoriesDir, actualPath)
+	if fullPath == "" {
+		log.Printf("git protocol: repository not found: %s\n", actualPath)
+		return
+	}
+
+	ctx := context.Background()
+
+	if s.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if operation == "upload" {
+			op = permission.OperationUpdateRepo
+		}
+		if err := s.permissionHook(ctx, op, actualPath, permission.Context{}); err != nil {
+			log.Printf("git protocol: auth hook denied lfs-%s on %s: %v\n", operation, actualPath, err)
+			return
+		}
+	}
+
+	// Build the LFS API href
+	href := repository.LFSHref(s.lfsURL, actualPath)
+
+	resp := lfsAuthResponse{
+		Href:      href,
+		Header:    make(map[string]string),
+		ExpiresIn: 3600,
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("git protocol: failed to marshal LFS auth response: %v\n", err)
+		return
+	}
+
+	if _, err := conn.Write(data); err != nil {
+		log.Printf("git protocol: failed to write LFS auth response: %v\n", err)
+		return
+	}
 }
 
 // readRequest reads the initial git protocol request from the connection.
