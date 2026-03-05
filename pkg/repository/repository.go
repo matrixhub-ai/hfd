@@ -365,17 +365,14 @@ func (r *Repository) IsMirror() (bool, string, error) {
 	if err != nil {
 		return false, "", err
 	}
-	isMirror := false
+
 	sourceURL := ""
 	if config != nil {
 		if remote, ok := config.Remotes["origin"]; ok {
-			if remote.Mirror {
-				isMirror = true
-			}
 			if len(remote.URLs) > 0 {
 				sourceURL = remote.URLs[0]
 			}
 		}
 	}
-	return isMirror, sourceURL, nil
+	return sourceURL != "", sourceURL, nil
 }
