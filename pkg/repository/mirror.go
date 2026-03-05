@@ -75,7 +75,7 @@ func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 	const prefix = "ref: refs/heads/"
 	// Search all output lines for the symref declaration, e.g.:
 	//   ref: refs/heads/main\tHEAD
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		ref, found := strings.CutSuffix(line, "\tHEAD")
 		if !found {
 			continue
