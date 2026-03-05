@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,6 +45,7 @@ var (
 	httpPassword     = ""
 
 	proxyURL = ""
+	lfsURL   = ""
 )
 
 func init() {
@@ -66,8 +68,21 @@ func init() {
 	flag.StringVar(&httpPassword, "http-password", "", "Password for HTTP basic authentication")
 
 	flag.StringVar(&proxyURL, "proxy", "", "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
+	flag.StringVar(&lfsURL, "lfs-url", "", "External LFS URL for the server, used by git-lfs-authenticate over SSH (e.g. http://localhost:8080)")
 
 	flag.Parse()
+
+	if lfsURL == "" {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid address format: %v\n", err)
+			os.Exit(1)
+		}
+		if host == "" {
+			host = "localhost"
+		}
+		lfsURL = fmt.Sprintf("http://%s:%s", host, port)
+	}
 }
 
 func main() {
@@ -178,10 +193,14 @@ func main() {
 	handler = handlers.LoggingHandler(os.Stderr, handler)
 
 	if gitAddr != "" {
-		gitServer := backendgit.NewServer(storage.RepositoriesDir(),
+		gitOpts := []backendgit.Option{
 			backendgit.WithPermissionHookFunc(permissionHook),
 			backendgit.WithProxyManager(proxyManager),
-		)
+		}
+		if lfsURL != "" {
+			gitOpts = append(gitOpts, backendgit.WithLFSURL(lfsURL))
+		}
+		gitServer := backendgit.NewServer(storage.RepositoriesDir(), gitOpts...)
 		log.Printf("Starting git protocol server on %s\n", gitAddr)
 		go func() {
 			if err := gitServer.ListenAndServe(gitAddr); err != nil {
@@ -219,6 +238,9 @@ func main() {
 		sshOpts := []backendssh.Option{
 			backendssh.WithPermissionHookFunc(permissionHook),
 			backendssh.WithProxyManager(proxyManager),
+		}
+		if lfsURL != "" {
+			sshOpts = append(sshOpts, backendssh.WithLFSURL(lfsURL))
 		}
 		if sshAuthorizedKey != "" {
 			authKeysData, err := os.ReadFile(sshAuthorizedKey)

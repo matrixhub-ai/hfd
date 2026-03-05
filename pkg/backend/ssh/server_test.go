@@ -3,6 +3,7 @@ package ssh_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -368,4 +369,206 @@ func TestAuthorizedKeysCallback(t *testing.T) {
 			t.Error("Expected unauthorized key to be rejected")
 		}
 	})
+}
+
+func TestSSHLFSAuthenticate(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshlfs-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	// Create a bare repository
+	repoName := "lfs-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	// Generate host key
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	httpURL := "http://localhost:8080"
+
+	// Start SSH server with HTTP URL configured
+	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithLFSURL(httpURL))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().String()
+
+	t.Run("LFSAuthenticateDownload", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User:            "git",
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		client, err := ssh.Dial("tcp", addr, config)
+		if err != nil {
+			t.Fatalf("Failed to dial SSH: %v", err)
+		}
+		defer client.Close()
+
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("Failed to create session: %v", err)
+		}
+		defer session.Close()
+
+		output, err := session.Output("git-lfs-authenticate '/lfs-test-repo' download")
+		if err != nil {
+			t.Fatalf("git-lfs-authenticate failed: %v", err)
+		}
+
+		// Parse the JSON response
+		var resp struct {
+			Href      string            `json:"href"`
+			Header    map[string]string `json:"header"`
+			ExpiresIn int               `json:"expires_in"`
+		}
+		if err := json.Unmarshal(output, &resp); err != nil {
+			t.Fatalf("Failed to parse LFS auth response: %v\nOutput: %s", err, output)
+		}
+
+		expectedHref := "http://localhost:8080/lfs-test-repo.git/info/lfs"
+		if resp.Href != expectedHref {
+			t.Errorf("href = %q, want %q", resp.Href, expectedHref)
+		}
+		if resp.ExpiresIn != 3600 {
+			t.Errorf("expires_in = %d, want 3600", resp.ExpiresIn)
+		}
+	})
+
+	t.Run("LFSAuthenticateUpload", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User:            "git",
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		client, err := ssh.Dial("tcp", addr, config)
+		if err != nil {
+			t.Fatalf("Failed to dial SSH: %v", err)
+		}
+		defer client.Close()
+
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("Failed to create session: %v", err)
+		}
+		defer session.Close()
+
+		output, err := session.Output("git-lfs-authenticate '/lfs-test-repo' upload")
+		if err != nil {
+			t.Fatalf("git-lfs-authenticate failed: %v", err)
+		}
+
+		var resp struct {
+			Href string `json:"href"`
+		}
+		if err := json.Unmarshal(output, &resp); err != nil {
+			t.Fatalf("Failed to parse LFS auth response: %v\nOutput: %s", err, output)
+		}
+
+		expectedHref := "http://localhost:8080/lfs-test-repo.git/info/lfs"
+		if resp.Href != expectedHref {
+			t.Errorf("href = %q, want %q", resp.Href, expectedHref)
+		}
+	})
+
+	t.Run("LFSTransferReturnsError", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User:            "git",
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		client, err := ssh.Dial("tcp", addr, config)
+		if err != nil {
+			t.Fatalf("Failed to dial SSH: %v", err)
+		}
+		defer client.Close()
+
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("Failed to create session: %v", err)
+		}
+		defer session.Close()
+
+		err = session.Run("git-lfs-transfer '/lfs-test-repo' download")
+		if err == nil {
+			t.Fatal("Expected git-lfs-transfer to fail, but it succeeded")
+		}
+	})
+}
+
+func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshlfs-nourl-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	repoName := "lfs-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	// Start SSH server WITHOUT HTTP URL configured
+	server := backendssh.NewServer(repositoriesDir, hostKey)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().String()
+
+	config := &ssh.ClientConfig{
+		User:            "git",
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	client, err := ssh.Dial("tcp", addr, config)
+	if err != nil {
+		t.Fatalf("Failed to dial SSH: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	defer session.Close()
+
+	err = session.Run("git-lfs-authenticate '/lfs-test-repo' download")
+	if err == nil {
+		t.Fatal("Expected git-lfs-authenticate to fail when HTTP URL is not configured")
+	}
 }
