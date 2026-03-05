@@ -54,7 +54,7 @@ func TestGitProtocolServer(t *testing.T) {
 	runGitCmd(t, "", "init", "--bare", repoPath)
 
 	// Start git protocol server on a random port
-	server := backendgit.NewServer(repositoriesDir, nil)
+	server := backendgit.NewServer(repositoriesDir)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)

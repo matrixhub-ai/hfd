@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -31,6 +32,18 @@ func (h *Handler) registryLFS(r *mux.Router) {
 // handleBatch provides the batch api
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	bv := unpackBatch(r)
+
+	if h.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if bv.Operation == "upload" {
+			op = permission.OperationUpdateRepo
+		}
+		repoName := bv.repoName()
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	var responseObjects []*lfsRepresentation
 
@@ -55,7 +68,14 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	// Try to fetch missing objects from proxy source
 	if len(missingObjects) > 0 {
 		proxyURL := h.getProxySourceURL(bv)
-		if proxyURL != "" && h.lfsProxyManager != nil {
+		proxyAllowed := true
+		if proxyURL != "" && h.lfsProxyManager != nil && h.permissionHook != nil {
+			repoName := bv.repoName()
+			if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+				proxyAllowed = false
+			}
+		}
+		if proxyURL != "" && h.lfsProxyManager != nil && proxyAllowed {
 			lfsObjects := make([]lfs.LFSObject, len(missingObjects))
 			for i, obj := range missingObjects {
 				lfsObjects[i] = lfs.LFSObject{Oid: obj.Oid, Size: obj.Size}

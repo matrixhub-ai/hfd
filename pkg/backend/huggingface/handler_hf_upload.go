@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -155,6 +156,13 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationCreateRepo, storageName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	urlName := "/" + storageName
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
@@ -215,6 +223,13 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
 	rev := vars["rev"]
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	var req HFPreuploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
@@ -267,6 +282,13 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ri := repoInfo(r)
 	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {

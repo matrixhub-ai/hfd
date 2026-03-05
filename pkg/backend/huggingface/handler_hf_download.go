@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -25,6 +26,13 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -73,6 +81,13 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	ri := repoInfo(r)
 	revpath := vars["revpath"]
 
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
@@ -114,6 +129,13 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	ri := repoInfo(r)
 	revpath := vars["revpath"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
 	if repoPath == "" {
@@ -167,8 +189,14 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				if !h.storage.LFSStore().Exists(ptr.Oid) {
 					// Try proxy fetch if proxy manager is configured
 					if h.lfsProxyManager != nil {
+						proxyAllowed := true
+						if h.permissionHook != nil {
+							if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, ri.RepoPath, permission.Context{}); err != nil {
+								proxyAllowed = false
+							}
+						}
 						sourceURL := h.getLFSProxySourceURL(repoPath)
-						if sourceURL != "" {
+						if sourceURL != "" && proxyAllowed {
 							h.lfsProxyManager.FetchFromProxy(context.Background(), sourceURL, []lfs.LFSObject{
 								{Oid: ptr.Oid, Size: ptr.Size},
 							})

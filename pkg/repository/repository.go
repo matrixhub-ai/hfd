@@ -17,6 +17,11 @@ var (
 	ErrRevisionNotFound    = plumbing.ErrReferenceNotFound
 )
 
+const (
+	GitUploadPack  = "git-upload-pack"
+	GitReceivePack = "git-receive-pack"
+)
+
 type Repository struct {
 	repo     *git.Repository
 	repoPath string

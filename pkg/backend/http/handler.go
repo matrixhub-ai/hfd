@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -18,7 +19,8 @@ type Handler struct {
 
 	next http.Handler
 
-	proxyManager *repository.ProxyManager
+	proxyManager   *repository.ProxyManager
+	permissionHook permission.PermissionHook
 }
 
 type Option func(*Handler)
@@ -40,6 +42,13 @@ func WithNext(next http.Handler) Option {
 func WithProxyManager(pm *repository.ProxyManager) Option {
 	return func(h *Handler) {
 		h.proxyManager = pm
+	}
+}
+
+// WithPermissionHookFunc sets the permission hook for verifying operations.
+func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+	return func(h *Handler) {
+		h.permissionHook = hook
 	}
 }
 

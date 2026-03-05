@@ -8,6 +8,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -31,9 +32,20 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if service != "git-upload-pack" && service != "git-receive-pack" {
+	if service != repository.GitUploadPack && service != repository.GitReceivePack {
 		responseText(w, "unsupported service", http.StatusForbidden)
 		return
+	}
+
+	if h.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if service == repository.GitReceivePack {
+			op = permission.OperationUpdateRepo
+		}
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseText(w, err.Error(), http.StatusForbidden)
+			return
+		}
 	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
@@ -51,7 +63,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
-	if service == "git-receive-pack" {
+	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
 			responseText(w, fmt.Sprintf("Failed to check repository type for %q: %v", repoName, err), http.StatusInternalServerError)
@@ -75,18 +87,29 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 
 // handleUploadPack handles the git-upload-pack endpoint (fetch/clone).
 func (h *Handler) handleUploadPack(w http.ResponseWriter, r *http.Request) {
-	h.handleService(w, r, "git-upload-pack")
+	h.handleService(w, r, repository.GitUploadPack)
 }
 
 // handleReceivePack handles the git-receive-pack endpoint (push).
 func (h *Handler) handleReceivePack(w http.ResponseWriter, r *http.Request) {
-	h.handleService(w, r, "git-receive-pack")
+	h.handleService(w, r, repository.GitReceivePack)
 }
 
 // handleService handles a git service request.
 func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service string) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
+
+	if h.permissionHook != nil {
+		op := permission.OperationReadRepo
+		if service == repository.GitReceivePack {
+			op = permission.OperationUpdateRepo
+		}
+		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseText(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
 
 	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
 	if repoPath == "" {
@@ -103,7 +126,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
-	if service == "git-receive-pack" {
+	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
 			responseText(w, fmt.Sprintf("Failed to check repository type for %q: %v", repoName, err), http.StatusInternalServerError)
@@ -129,9 +152,26 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 // if the repository doesn't exist locally and proxy mode is enabled.
 // Proxy is only used for read operations (git-upload-pack).
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if h.proxyManager != nil {
-		return h.proxyManager.OpenOrProxy(ctx, repoPath, repoName, service)
+	repo, err := repository.Open(repoPath)
+	if err == nil {
+		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+			if err := repo.SyncMirror(ctx); err != nil {
+				return nil, err
+			}
+		}
+		return repo, nil
 	}
-
-	return repository.Open(repoPath)
+	// Only proxy for read operations
+	if service != repository.GitUploadPack {
+		return nil, err
+	}
+	if err == repository.ErrRepositoryNotExists && h.proxyManager != nil {
+		if h.permissionHook != nil {
+			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+				return repository.Open(repoPath)
+			}
+		}
+		return h.proxyManager.OpenOrProxy(ctx, repoPath, repoName)
+	}
+	return nil, err
 }
