@@ -134,6 +134,9 @@ func repoInfo(r *http.Request) repoInformation {
 // These endpoints allow using huggingface-cli and huggingface_hub library
 // with HF_ENDPOINT pointing to this server.
 func (h *Handler) registryHuggingFace(r *mux.Router) {
+	// Auth endpoint - used by huggingface-cli auth commands (login, whoami)
+	r.HandleFunc("/api/whoami-v2", h.handleWhoami).Methods(http.MethodGet)
+
 	// Repository management endpoints - used by huggingface_hub for repo CRUD
 	r.HandleFunc("/api/repos/create", h.handleCreateRepo).Methods(http.MethodPost)
 	r.HandleFunc("/api/repos/delete", h.handleDeleteRepo).Methods(http.MethodDelete)

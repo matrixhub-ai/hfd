@@ -139,7 +139,8 @@ func main() {
 	}
 
 	permissionHook := func(ctx context.Context, op permission.Operation, repoPath string, opCtx permission.Context) error {
-		log.Printf("Permission check: op=%s, repoPath=%s, context=%+v\n", op, repoPath, opCtx)
+		user, _ := authenticate.GetUser(ctx)
+		log.Printf("Permission check: user=%s, op=%s, repoPath=%s, context=%+v\n", user, op, repoPath, opCtx)
 		return nil // or return an error to deny permission
 	}
 
@@ -169,6 +170,8 @@ func main() {
 
 	if httpUsername != "" {
 		handler = authenticate.Authenticate(httpUsername, httpPassword, handler)
+	} else {
+		handler = authenticate.NoAuthenticate(handler)
 	}
 
 	handler = handlers.CompressHandler(handler)

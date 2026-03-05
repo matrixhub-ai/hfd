@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
 )
@@ -217,9 +217,6 @@ func randomLockId() string {
 }
 
 func getUserFromRequest(r *http.Request) string {
-	user := context.Get(r, "USER")
-	if user == nil {
-		return ""
-	}
-	return user.(string)
+	user, _ := authenticate.GetUser(r.Context())
+	return user
 }

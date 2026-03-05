@@ -218,7 +218,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `GET` | `/api/users/{username}/billing/usage/live` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/users/{username}/billing/usage/live) | Stream usage |
 | ❌ | `GET` | `/api/users/{username}/overview` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/users/{username}/overview) | User overview |
 | ❌ | `GET` | `/api/users/{username}/socials` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/users/{username}/socials) | Get social handles |
-| ❌ | `GET` | `/api/whoami-v2` | [auth](https://huggingface.co/spaces/huggingface/openapi#tag/auth/GET/api/whoami-v2) | Get user info |
+| ✅ | `GET` | `/api/whoami-v2` | [auth](https://huggingface.co/spaces/huggingface/openapi#tag/auth/GET/api/whoami-v2) | Get user info |
 | ❌ | `GET` | `/api/{repoType}/{namespace}/{repo}/discussions` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/GET/api/{repoType}/{namespace}/{repo}/discussions) | List discussions |
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/discussions` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/{repoType}/{namespace}/{repo}/discussions) | Create a new discussion |
 | ❌ | `GET` | `/api/{repoType}/{namespace}/{repo}/discussions/{num}` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/GET/api/{repoType}/{namespace}/{repo}/discussions/{num}) | Get discussion details |
