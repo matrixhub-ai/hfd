@@ -93,7 +93,7 @@ func (h *Handler) register() {
 	h.root.NotFoundHandler = h.next
 }
 
-type repoInfomation struct {
+type repoInformation struct {
 	RepoType string
 	RepoPath string
 
@@ -103,7 +103,7 @@ type repoInfomation struct {
 }
 
 // repoInfo returns the repository information extracted from the request, including repo type, storage path, namespace, and name.
-func repoInfo(r *http.Request) repoInfomation {
+func repoInfo(r *http.Request) repoInformation {
 	vars := mux.Vars(r)
 	repoType := vars["repoType"]
 	if repoType == "" {
@@ -121,7 +121,7 @@ func repoInfo(r *http.Request) repoInfomation {
 		repoPath = fullName
 	}
 
-	return repoInfomation{
+	return repoInformation{
 		RepoType:  repoType,
 		RepoPath:  repoPath,
 		Namespace: namespace,
