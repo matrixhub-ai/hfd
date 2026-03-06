@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -136,10 +137,10 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	usedStorage, _ := repo.DiskUsage()
 
 	// Get the commit SHA for this revision
-	sha := ""
-	commits, err := repo.Commits(rev, 1)
+	commitHash := ""
+	commits, err := repo.Commits(rev, 1, nil)
 	if err == nil && len(commits) > 0 {
-		sha = commits[0].SHA
+		commitHash = commits[0].SHA
 	}
 
 	// Collect metadata (tags, cardData, pipeline_tag, etc.) from README.md and config.json.
@@ -152,7 +153,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	hfInfo := HFRepoInfo{
 		ID:          ri.FullName,
-		SHA:         sha,
+		SHA:         commitHash,
 		Private:     false,
 		Disabled:    false,
 		Gated:       false,
@@ -615,6 +616,108 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		Tags:     tags,
 	}
 	responseJSON(w, refs, http.StatusOK)
+}
+
+// HFCommitAuthor represents the author entry in a commit's authors list.
+type HFCommitAuthor struct {
+	User string `json:"user"`
+}
+
+// HFCommitInfo represents a single commit in the list commits response.
+type HFCommitInfo struct {
+	ID      string           `json:"id"`
+	Title   string           `json:"title"`
+	Message string           `json:"message"`
+	Authors []HFCommitAuthor `json:"authors"`
+	Date    string           `json:"date"`
+}
+
+// handleListCommits handles GET /api/{repoType}/{repo}/commits/{rev}
+// It returns a paginated list of commits for the given revision.
+func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	ri := repoInfo(r)
+	rev := vars["rev"]
+
+	if h.permissionHook != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	if repoPath == "" {
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		return
+	}
+
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	if err != nil {
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		return
+	}
+
+	query := r.URL.Query()
+
+	limit := 50
+	if l := query.Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+
+	var page int
+	var offset int
+	if pageStr := query.Get("p"); pageStr != "" {
+		if page, err = strconv.Atoi(pageStr); err == nil && page >= 0 {
+			offset = page * limit
+		}
+	}
+
+	// Fetch one extra commit so we can detect whether a next page exists.
+	rawCommits, err := repo.Commits(rev, limit+1, &repository.CommitsOptions{Offset: offset})
+	if err != nil {
+		responseJSON(w, fmt.Errorf("failed to list commits for %q: %v", rev, err), http.StatusInternalServerError)
+		return
+	}
+
+	if len(rawCommits) > limit {
+		rawCommits = rawCommits[:limit]
+		nextURL := buildNextCommitPageURL(r, page+1, limit)
+		w.Header().Set("Link", fmt.Sprintf("<%s>; rel=\"next\"", nextURL))
+	}
+
+	commitInfos := make([]HFCommitInfo, 0, len(rawCommits))
+	for _, c := range rawCommits {
+		title := c.Message
+		if idx := strings.IndexByte(title, '\n'); idx >= 0 {
+			title = title[:idx]
+		}
+		commitInfos = append(commitInfos, HFCommitInfo{
+			ID:      c.SHA,
+			Title:   title,
+			Message: c.Message,
+			Authors: []HFCommitAuthor{{User: c.Author}},
+			Date:    c.Date,
+		})
+	}
+
+	responseJSON(w, commitInfos, http.StatusOK)
+}
+
+// buildNextCommitPageURL constructs the URL for the next commits page,
+// replacing the p parameter with the given page number.
+func buildNextCommitPageURL(r *http.Request, nextPage, limit int) string {
+	origin := requestOrigin(r)
+	q := r.URL.Query()
+	q.Set("p", strconv.Itoa(nextPage))
+	q.Set("limit", strconv.Itoa(limit))
+	return origin + r.URL.Path + "?" + q.Encode()
 }
 
 // handleCompare handles GET /api/{repoType}/{repo}/compare/{compare}

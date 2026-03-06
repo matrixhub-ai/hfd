@@ -9,13 +9,23 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
+// CommitsOptions provides options for the Commits method.
+type CommitsOptions struct {
+	Offset int
+}
+
 // Commits returns a list of commits starting from the given revision.
 // If rev is empty, it defaults to the repository's default branch.
 // The limit parameter specifies the maximum number of commits to return.
-func (r *Repository) Commits(rev string, limit int) ([]Commit, error) {
+func (r *Repository) Commits(rev string, limit int, opts *CommitsOptions) ([]Commit, error) {
 	if rev == "" {
 		rev = r.DefaultBranch()
 	}
+
+	if opts == nil {
+		opts = &CommitsOptions{}
+	}
+
 	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
@@ -26,8 +36,13 @@ func (r *Repository) Commits(rev string, limit int) ([]Commit, error) {
 		return nil, fmt.Errorf("failed to get commit log: %w", err)
 	}
 
+	var offset int
 	var commits []Commit
 	err = commitIter.ForEach(func(c *object.Commit) error {
+		if offset < opts.Offset {
+			offset++
+			return nil // Skip until we reach the offset
+		}
 		commits = append(commits, Commit{
 			SHA:     c.Hash.String(),
 			Message: c.Message,
@@ -35,7 +50,7 @@ func (r *Repository) Commits(rev string, limit int) ([]Commit, error) {
 			Email:   c.Author.Email,
 			Date:    c.Author.When.UTC().Format(TimeFormat),
 		})
-		if len(commits) >= limit {
+		if limit > 0 && len(commits) >= limit {
 			return io.EOF // Stop after reaching the limit
 		}
 		return nil

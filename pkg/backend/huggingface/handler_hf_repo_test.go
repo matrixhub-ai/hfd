@@ -880,3 +880,176 @@ func TestHuggingFaceCompareDatasets(t *testing.T) {
 		t.Errorf("Expected diff to mention 'data.csv', got:\n%s", diff)
 	}
 }
+
+func TestHuggingFaceListCommits(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// createRepoAndCommit makes 2 commits (.gitattributes + README.md).
+	commit1SHA := createRepoAndCommit(t, endpoint, "model", "test-user", "commits-model")
+
+	// Add a third commit.
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Second commit\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"v2\\n\",\"path\":\"v2.txt\",\"encoding\":\"utf-8\"}}\n"
+	resp, err := http.Post(endpoint+"/api/models/test-user/commits-model/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("Expected commit status 200, got %d: %s", resp.StatusCode, respBody)
+	}
+	resp.Body.Close()
+
+	// List commits for the main branch.
+	resp, err = http.Get(endpoint + "/api/models/test-user/commits-model/commits/main")
+	if err != nil {
+		t.Fatalf("Failed to list commits: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var commits []backendhuggingface.HFCommitInfo
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// 3 commits total: .gitattributes, README.md, v2.txt
+	if len(commits) != 3 {
+		t.Fatalf("Expected 3 commits, got %d", len(commits))
+	}
+	if commits[0].Title != "Second commit" {
+		t.Errorf("Expected first commit title 'Second commit', got %q", commits[0].Title)
+	}
+	// commit1SHA is the README.md commit (second oldest).
+	if commits[1].ID != commit1SHA {
+		t.Errorf("Expected second commit SHA %q, got %q", commit1SHA, commits[1].ID)
+	}
+	// No next page on a small repo.
+	if link := resp.Header.Get("Link"); link != "" {
+		t.Errorf("Expected no Link header, got %q", link)
+	}
+}
+
+func TestHuggingFaceListCommitsPagination(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// createRepoAndCommit makes 2 commits; add 2 more → 4 total.
+	createRepoAndCommit(t, endpoint, "model", "test-user", "commits-paged")
+
+	for _, msg := range []string{"second", "third"} {
+		ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"" + msg + "\"}}\n" +
+			"{\"key\":\"file\",\"value\":{\"content\":\"" + msg + "\\n\",\"path\":\"" + msg + ".txt\",\"encoding\":\"utf-8\"}}\n"
+		resp, err := http.Post(endpoint+"/api/models/test-user/commits-paged/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+		if err != nil {
+			t.Fatalf("Failed to commit %q: %v", msg, err)
+		}
+		resp.Body.Close()
+	}
+
+	// First page: limit=2 → should return 2 commits and a Link header.
+	resp, err := http.Get(endpoint + "/api/models/test-user/commits-paged/commits/main?limit=2")
+	if err != nil {
+		t.Fatalf("Failed to list commits page 1: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var page1 []backendhuggingface.HFCommitInfo
+	if err := json.NewDecoder(resp.Body).Decode(&page1); err != nil {
+		t.Fatalf("Failed to decode page 1 response: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("Expected 2 commits on page 1, got %d", len(page1))
+	}
+
+	linkHeader := resp.Header.Get("Link")
+	if linkHeader == "" {
+		t.Fatalf("Expected Link header for page 1, got none")
+	}
+
+	// Extract the next-page URL from the Link header: <url>; rel="next"
+	nextURL := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(linkHeader, ";", 2)[0], "<"), ">")
+
+	// Second page via the Link URL.
+	resp2, err := http.Get(nextURL)
+	if err != nil {
+		t.Fatalf("Failed to list commits page 2: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("Expected 200 on page 2, got %d: %s", resp2.StatusCode, respBody)
+	}
+
+	var page2 []backendhuggingface.HFCommitInfo
+	if err := json.NewDecoder(resp2.Body).Decode(&page2); err != nil {
+		t.Fatalf("Failed to decode page 2 response: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("Expected 2 commits on page 2, got %d", len(page2))
+	}
+	// Last page has no Link header.
+	if link := resp2.Header.Get("Link"); link != "" {
+		t.Errorf("Expected no Link header on last page, got %q", link)
+	}
+
+	// Ensure no overlap between pages.
+	page1SHAs := map[string]bool{}
+	for _, c := range page1 {
+		page1SHAs[c.ID] = true
+	}
+	for _, c := range page2 {
+		if page1SHAs[c.ID] {
+			t.Errorf("Commit %q appears on both pages", c.ID)
+		}
+	}
+}
+
+func TestHuggingFaceListCommitsNotFound(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	resp, err := http.Get(endpoint + "/api/models/test-user/no-such-repo/commits/main")
+	if err != nil {
+		t.Fatalf("Failed to request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
+	}
+}
+
+func TestHuggingFaceListCommitsDatasets(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// createRepoAndCommit makes 2 commits (.gitattributes + README.md).
+	createRepoAndCommit(t, endpoint, "dataset", "test-user", "commits-dataset")
+
+	resp, err := http.Get(endpoint + "/api/datasets/test-user/commits-dataset/commits/main")
+	if err != nil {
+		t.Fatalf("Failed to list commits: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var commits []backendhuggingface.HFCommitInfo
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("Expected 2 commits, got %d", len(commits))
+	}
+}
