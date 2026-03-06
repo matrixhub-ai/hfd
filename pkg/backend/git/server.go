@@ -151,6 +151,15 @@ func (s *Server) executeGitCommand(conn net.Conn, service string, repoPath strin
 		return
 	}
 
+	// Ensure .lfsconfig is present so that git-lfs clients cloning via git://
+	// can discover the correct HTTP endpoint for LFS object downloads.
+	if service == repository.GitUploadPack && s.lfsURL != "" {
+		lfsHref := repository.LFSHref(s.lfsURL, repoPath)
+		if err := repo.EnsureLFSConfig(ctx, lfsHref); err != nil {
+			s.logger.Warn("git protocol: failed to ensure LFS config", "repo", repoPath, "error", err)
+		}
+	}
+
 	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
