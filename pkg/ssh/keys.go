@@ -58,7 +58,7 @@ func ParseHostKeyFile(data []byte) (Signer, error) {
 // GenerateAndSaveHostKey generates an SSH host key of the specified type and
 // saves it to path with 0600 permissions atomically, then returns a signer for the key.
 func GenerateAndSaveHostKey(path string, keyType KeyType) (Signer, error) {
-	var privateKey interface{}
+	var privateKey any
 
 	switch keyType {
 	case KeyTypeEd25519:
@@ -124,4 +124,3 @@ func GenerateAndSaveHostKey(path string, keyType KeyType) (Signer, error) {
 	}
 	return signer, nil
 }
-

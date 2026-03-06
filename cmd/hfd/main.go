@@ -242,7 +242,7 @@ func main() {
 		var hostKeySigner pkgssh.Signer
 		hostKeyPath := sshHostKeyFile
 		if hostKeyPath == "" {
-			hostKeyPath = filepath.Join(absRootDir, "ssh_host_ed25519_key")
+			hostKeyPath = filepath.Join(absRootDir, "ssh_host_rsa_key")
 		}
 		data, err := os.ReadFile(hostKeyPath)
 		if err == nil {
@@ -256,7 +256,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error reading SSH host key file: %v\n", err)
 			os.Exit(1)
 		} else {
-			hostKeySigner, err = pkgssh.GenerateAndSaveHostKey(hostKeyPath, pkgssh.KeyTypeEd25519)
+			hostKeySigner, err = pkgssh.GenerateAndSaveHostKey(hostKeyPath, pkgssh.KeyTypeRSA)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error generating SSH host key: %v\n", err)
 				os.Exit(1)
