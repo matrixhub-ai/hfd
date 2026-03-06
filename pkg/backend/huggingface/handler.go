@@ -24,6 +24,7 @@ type Handler struct {
 	proxyManager    *repository.ProxyManager
 	lfsProxyManager *lfs.ProxyManager
 	permissionHook  permission.PermissionHook
+	lfsStore        lfs.Store
 }
 
 type Option func(*Handler)
@@ -59,6 +60,13 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(h *Handler) {
 		h.permissionHook = hook
+	}
+}
+
+// WithLFSStore configures the LFS storage backend.
+func WithLFSStore(store lfs.Store) Option {
+	return func(h *Handler) {
+		h.lfsStore = store
 	}
 }
 

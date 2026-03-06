@@ -95,12 +95,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	storageOpts := []storage.Option{
+	storage := storage.NewStorage(
 		storage.WithRootDir(absRootDir),
-	}
+	)
 
 	slog.Info("Starting hfd server", "addr", addr, "data", absRootDir)
 
+	var lfsStore = lfs.NewLocal(storage.LFSDir())
 	if s3Endpoint != "" && s3Bucket != "" {
 		if s3Repositories {
 			repositoriesDir := filepath.Join(absRootDir, "repositories")
@@ -127,7 +128,7 @@ func main() {
 			}()
 		}
 
-		lfss3 := lfs.NewS3(
+		lfsStore = lfs.NewS3(
 			"lfs",
 			s3Endpoint,
 			s3AccessKey,
@@ -136,15 +137,8 @@ func main() {
 			s3UsePathStyle,
 			s3SignEndpoint,
 		)
-		storageOpts = append(storageOpts,
-			storage.WithLFSStore(
-				lfss3,
-			),
-		)
-
 	}
 
-	storage := storage.NewStorage(storageOpts...)
 	var proxyManager *repository.ProxyManager
 	var lfsProxyManager *lfs.ProxyManager
 	if proxyURL != "" {
@@ -152,7 +146,7 @@ func main() {
 		proxyManager = repository.NewProxyManager(proxyURL)
 		lfsProxyManager = lfs.NewProxyManager(
 			utils.HTTPClient,
-			storage.LFSStore(),
+			lfsStore,
 		)
 	}
 
@@ -202,17 +196,17 @@ func main() {
 		backendhuggingface.WithProxyManager(proxyManager),
 		backendhuggingface.WithLFSProxyManager(lfsProxyManager),
 		backendhuggingface.WithPermissionHookFunc(permissionHook),
+		backendhuggingface.WithLFSStore(lfsStore),
 	)
 
-	lfsOpts := []backendlfs.Option{
+	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 		backendlfs.WithLFSProxyManager(lfsProxyManager),
 		backendlfs.WithPermissionHookFunc(permissionHook),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
-	}
-
-	handler = backendlfs.NewHandler(lfsOpts...)
+		backendlfs.WithLFSStore(lfsStore),
+	)
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),

@@ -23,6 +23,8 @@ type Handler struct {
 	lfsProxyManager    *lfs.ProxyManager
 	permissionHook     permission.PermissionHook
 	tokenSignValidator authenticate.TokenSignValidator
+	lfsStore           lfs.Store
+	locksStore         *lfs.LockDB
 }
 
 type Option func(*Handler)
@@ -61,10 +63,18 @@ func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
 	}
 }
 
+// WithLFSStore configures the LFS storage backend.
+func WithLFSStore(store lfs.Store) Option {
+	return func(h *Handler) {
+		h.lfsStore = store
+	}
+}
+
 // NewHandler creates a new Handler with the given repository directory.
 func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
-		root: mux.NewRouter(),
+		root:       mux.NewRouter(),
+		locksStore: lfs.NewLock(),
 	}
 
 	for _, opt := range opts {

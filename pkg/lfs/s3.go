@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"      //nolint:staticcheck
 )
 
-type S3 struct {
+type s3Store struct {
 	s3                *s3.S3
 	signS3            *s3.S3
 	basePath          string
@@ -25,7 +25,8 @@ type S3 struct {
 	checksumAlgorithm string
 }
 
-func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathStyle bool, s3SignEndpoint string) *S3 {
+// NewS3 creates a new S3-backed Store. The basePath is a prefix for all object keys in the bucket.
+func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathStyle bool, s3SignEndpoint string) Store {
 	sess := session.Must(session.NewSession(&aws.Config{
 		Endpoint:         &endpoint,
 		Region:           aws.String("us-east-1"),
@@ -44,7 +45,7 @@ func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathSty
 		S3ForcePathStyle: &forcePathStyle,
 	}))
 
-	return &S3{
+	return &s3Store{
 		basePath:          basePath,
 		s3:                s3.New(sess),
 		signS3:            s3.New(signSess),
@@ -54,7 +55,7 @@ func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathSty
 	}
 }
 
-func (s *S3) SignGet(oid string) (string, error) {
+func (s *s3Store) SignGet(oid string) (string, error) {
 	key := path.Join(s.basePath, transformKey(oid))
 	req, _ := s.signS3.GetObjectRequest(&s3.GetObjectInput{
 		Bucket: &s.bucket,
@@ -75,7 +76,7 @@ func hexToBase64(hexStr string) (string, error) {
 	return base64.StdEncoding.EncodeToString(bin), nil
 }
 
-func (s *S3) SignPut(oid string) (string, error) {
+func (s *s3Store) SignPut(oid string) (string, error) {
 	sha256, err := hexToBase64(oid)
 	if err != nil {
 		return "", err
@@ -94,7 +95,7 @@ func (s *S3) SignPut(oid string) (string, error) {
 	return urlStr, nil
 }
 
-func (s *S3) Put(oid string, r io.Reader, size int64) error {
+func (s *s3Store) Put(oid string, r io.Reader, size int64) error {
 	sha256, err := hexToBase64(oid)
 	if err != nil {
 		return err
@@ -131,7 +132,7 @@ func (s *S3) Put(oid string, r io.Reader, size int64) error {
 	return nil
 }
 
-func (s *S3) Info(oid string) (os.FileInfo, error) {
+func (s *s3Store) Info(oid string) (os.FileInfo, error) {
 	key := path.Join(s.basePath, transformKey(oid))
 	output, err := s.s3.HeadObject(&s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -181,7 +182,7 @@ func (f *s3FileInfo) Sys() any {
 }
 
 // Exists returns true if the object exists in S3.
-func (s *S3) Exists(oid string) bool {
+func (s *s3Store) Exists(oid string) bool {
 	_, err := s.Info(oid)
 	return err == nil
 }

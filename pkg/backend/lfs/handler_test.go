@@ -36,6 +36,7 @@ func TestLFSProxyMode(t *testing.T) {
 	// Set up upstream storage and LFS handler
 	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
 
+	upstreamLFSStore := lfs.NewLocal(filepath.Join(upstreamDir, "lfs"))
 	// Create a repository on upstream that looks like a mirror source
 	repoName := "test-repo"
 	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
@@ -54,7 +55,7 @@ func TestLFSProxyMode(t *testing.T) {
 	lfsOid := fmt.Sprintf("%x", lfsHash)
 	lfsSize := int64(len(lfsContent))
 
-	err = upstreamStorage.LFSStore().Put(lfsOid, bytes.NewReader(lfsContent), lfsSize)
+	err = upstreamLFSStore.Put(lfsOid, bytes.NewReader(lfsContent), lfsSize)
 	if err != nil {
 		t.Fatalf("Failed to put LFS object: %v", err)
 	}
@@ -62,6 +63,7 @@ func TestLFSProxyMode(t *testing.T) {
 	// Set up upstream LFS handler
 	upstreamHandler := backendlfs.NewHandler(
 		backendlfs.WithStorage(upstreamStorage),
+		backendlfs.WithLFSStore(upstreamLFSStore),
 	)
 	upstreamServer := httptest.NewServer(upstreamHandler)
 	defer upstreamServer.Close()
@@ -70,6 +72,7 @@ func TestLFSProxyMode(t *testing.T) {
 	proxyStorage := storage.NewStorage(
 		storage.WithRootDir(proxyDir),
 	)
+	proxyLFSStore := lfs.NewLocal(proxyStorage.LFSDir())
 
 	// Create a mirror repo on the proxy that points to upstream
 	proxyRepoPath := filepath.Join(proxyStorage.RepositoriesDir(), repoName+".git")
@@ -99,18 +102,19 @@ func TestLFSProxyMode(t *testing.T) {
 	// Set up proxy LFS handler
 	lfsProxyManager := lfs.NewProxyManager(
 		utils.HTTPClient,
-		proxyStorage.LFSStore(),
+		proxyLFSStore,
 	)
 	proxyHandler := backendlfs.NewHandler(
 		backendlfs.WithStorage(proxyStorage),
 		backendlfs.WithLFSProxyManager(lfsProxyManager),
+		backendlfs.WithLFSStore(proxyLFSStore),
 	)
 	proxyServer := httptest.NewServer(proxyHandler)
 	defer proxyServer.Close()
 
 	t.Run("BatchDownloadProxiesFromUpstream", func(t *testing.T) {
 		// Verify the object doesn't exist locally on proxy
-		if proxyStorage.LFSStore().Exists(lfsOid) {
+		if proxyLFSStore.Exists(lfsOid) {
 			t.Fatal("LFS object should not exist on proxy initially")
 		}
 
@@ -175,7 +179,7 @@ func TestLFSProxyMode(t *testing.T) {
 		// Verify the object is eventually cached locally on the proxy (async fetch)
 		cached := false
 		for range 50 {
-			if proxyStorage.LFSStore().Exists(lfsOid) {
+			if proxyLFSStore.Exists(lfsOid) {
 				cached = true
 				break
 			}
@@ -255,9 +259,11 @@ func TestLFSNoProxyWhenNotConfigured(t *testing.T) {
 
 	// No proxy URL configured
 	stor := storage.NewStorage(storage.WithRootDir(dir))
+	lfsStore := lfs.NewLocal(filepath.Join(dir, "lfs"))
 
 	handler := backendlfs.NewHandler(
 		backendlfs.WithStorage(stor),
+		backendlfs.WithLFSStore(lfsStore),
 	)
 	server := httptest.NewServer(handler)
 	defer server.Close()

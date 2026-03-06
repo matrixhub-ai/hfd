@@ -11,13 +11,6 @@ import (
 	"github.com/wzshiming/hfd/pkg/lfs"
 )
 
-// Compile-time interface compliance checks
-var _ lfs.Store = (*lfs.Content)(nil)
-var _ lfs.Store = (*lfs.S3)(nil)
-var _ lfs.Getter = (*lfs.Content)(nil)
-var _ lfs.SignGetter = (*lfs.S3)(nil)
-var _ lfs.SignPutter = (*lfs.S3)(nil)
-
 func TestContentStore(t *testing.T) {
 	dir, err := os.MkdirTemp("", "lfs-store-test-*")
 	if err != nil {
@@ -25,7 +18,7 @@ func TestContentStore(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	store := lfs.NewContent(dir)
+	store := lfs.NewLocal(dir)
 
 	data := []byte("hello world")
 	hash := sha256.Sum256(data)
@@ -57,7 +50,7 @@ func TestContentStore(t *testing.T) {
 	}
 
 	// Test Get (Content implements Getter)
-	reader, stat, err := store.Get(oid)
+	reader, stat, err := store.(lfs.Getter).Get(oid)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}

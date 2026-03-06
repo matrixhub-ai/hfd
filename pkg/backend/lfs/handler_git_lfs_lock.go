@@ -57,7 +57,7 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 		limit = strtLimit
 	}
 
-	locks, nextCursor, err := h.storage.LocksStore().Filtered(repoName,
+	locks, nextCursor, err := h.locksStore.Filtered(repoName,
 		r.FormValue("path"),
 		r.FormValue("cursor"),
 		limit,
@@ -104,7 +104,7 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ll := &lfs.VerifiableLockList{}
-	locks, nextCursor, err := h.storage.LocksStore().Filtered(repoName,
+	locks, nextCursor, err := h.locksStore.Filtered(repoName,
 		"",
 		reqBody.Cursor,
 		limit,
@@ -150,7 +150,7 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	locks, _, err := h.storage.LocksStore().Filtered(repoName, lockRequest.Path, "", 1)
+	locks, _, err := h.locksStore.Filtered(repoName, lockRequest.Path, "", 1)
 	if err != nil {
 		responseJSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
 		return
@@ -167,7 +167,7 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 		LockedAt: time.Now(),
 	}
 
-	if err := h.storage.LocksStore().Add(repoName, *lock); err != nil {
+	if err := h.locksStore.Add(repoName, *lock); err != nil {
 		responseJSON(w, &lfs.LockResponse{Message: err.Error()}, http.StatusInternalServerError)
 		return
 	}
@@ -206,7 +206,7 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := h.storage.LocksStore().Delete(repoName, user, lockId, unlockRequest.Force)
+	l, err := h.locksStore.Delete(repoName, user, lockId, unlockRequest.Force)
 	if err != nil {
 		if err == ErrNotOwner {
 			responseJSON(w, &lfs.UnlockResponse{Message: err.Error()}, http.StatusForbidden)

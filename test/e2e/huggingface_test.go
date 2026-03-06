@@ -13,6 +13,7 @@ import (
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
 	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
+	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
 
@@ -26,17 +27,20 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
 	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStore := lfs.NewLocal(store.LFSDir())
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
 
 	handler = backendhuggingface.NewHandler(
 		backendhuggingface.WithStorage(store),
+		backendhuggingface.WithLFSStore(lfsStore),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
 		backendlfs.WithNext(handler),
+		backendlfs.WithLFSStore(lfsStore),
 	)
 
 	handler = backendhttp.NewHandler(

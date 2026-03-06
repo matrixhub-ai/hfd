@@ -90,7 +90,7 @@ func (s *LockDB) Filtered(repo, path, cursor string, limit int) (locks []Lock, n
 	}
 
 	if limit > 0 {
-		size := int(limit)
+		size := min(limit, len(locks))
 		if size+1 < len(locks) {
 			next = locks[size].Id
 		}
