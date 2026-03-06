@@ -41,34 +41,37 @@ var (
 
 	// Authentication flags
 	sshAuthorizedKey = ""
-	httpUsername     = ""
-	httpPassword     = ""
+	authUsername     = "admin"
+	authPassword     = ""
+	authToken        = ""
+	authSignKey      = "secret-sign-key"
 
 	proxyURL = ""
 	lfsURL   = ""
 )
 
 func init() {
-	flag.StringVar(&gitAddr, "git-addr", "", "Git protocol server address (e.g. :9418)")
-	flag.StringVar(&addr, "addr", ":8080", "HTTP server address")
-	flag.StringVar(&sshAddr, "ssh-addr", ":2222", "SSH protocol server address")
-	flag.StringVar(&sshHostKeyFile, "ssh-host-key", "", "Path to SSH host key file (PEM format); if empty, a key is generated")
-	flag.StringVar(&dataDir, "data", "./data", "Directory containing git repositories")
-	flag.BoolVar(&s3Repositories, "s3-repositories", false, "Store repositories in S3")
-	flag.StringVar(&s3Endpoint, "s3-endpoint", "", "S3 endpoint")
-	flag.StringVar(&s3SignEndpoint, "s3-sign-endpoint", "", "S3 signing endpoint (if different from s3-endpoint)")
-	flag.StringVar(&s3AccessKey, "s3-access-key", "", "S3 access key")
-	flag.StringVar(&s3SecretKey, "s3-secret-key", "", "S3 secret key")
-	flag.StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket name")
-	flag.BoolVar(&s3UsePathStyle, "s3-use-path-style", false, "Use path style for S3 URLs")
+	flag.StringVar(&gitAddr, "git-addr", gitAddr, "Git protocol server address (e.g. :9418)")
+	flag.StringVar(&addr, "addr", addr, "HTTP server address")
+	flag.StringVar(&sshAddr, "ssh-addr", sshAddr, "SSH protocol server address")
+	flag.StringVar(&sshHostKeyFile, "ssh-host-key", sshHostKeyFile, "Path to SSH host key file (PEM format); if empty, a key is generated")
+	flag.StringVar(&dataDir, "data", dataDir, "Directory containing git repositories")
+	flag.BoolVar(&s3Repositories, "s3-repositories", s3Repositories, "Store repositories in S3")
+	flag.StringVar(&s3Endpoint, "s3-endpoint", s3Endpoint, "S3 endpoint")
+	flag.StringVar(&s3SignEndpoint, "s3-sign-endpoint", s3SignEndpoint, "S3 signing endpoint (if different from s3-endpoint)")
+	flag.StringVar(&s3AccessKey, "s3-access-key", s3AccessKey, "S3 access key")
+	flag.StringVar(&s3SecretKey, "s3-secret-key", s3SecretKey, "S3 secret key")
+	flag.StringVar(&s3Bucket, "s3-bucket", s3Bucket, "S3 bucket name")
+	flag.BoolVar(&s3UsePathStyle, "s3-use-path-style", s3UsePathStyle, "Use path style for S3 URLs")
 
-	// Authentication flags
-	flag.StringVar(&sshAuthorizedKey, "ssh-authorized-key", "", "Path to SSH authorized_keys file for public key authentication")
-	flag.StringVar(&httpUsername, "http-username", "", "Username for HTTP basic authentication")
-	flag.StringVar(&httpPassword, "http-password", "", "Password for HTTP basic authentication")
+	flag.StringVar(&sshAuthorizedKey, "ssh-authorized-key", sshAuthorizedKey, "Path to SSH authorized_keys file for public key authentication")
+	flag.StringVar(&authUsername, "username", authUsername, "Username for authentication (HTTP basic auth and SSH password auth)")
+	flag.StringVar(&authPassword, "password", authPassword, "Password for authentication (HTTP basic auth, bearer token, and SSH password auth)")
+	flag.StringVar(&authToken, "token", authToken, "Static token for authentication (alternative to username/password)")
+	flag.StringVar(&authSignKey, "sign-key", authSignKey, "Key for signing authentication tokens (enables token signing)")
 
-	flag.StringVar(&proxyURL, "proxy", "", "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
-	flag.StringVar(&lfsURL, "lfs-url", "", "External LFS URL for the server, used by git-lfs-authenticate over SSH (e.g. http://localhost:8080)")
+	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
+	flag.StringVar(&lfsURL, "lfs-url", lfsURL, "External LFS URL for the server, used by git-lfs-authenticate over SSH (e.g. http://localhost:8080)")
 
 	flag.Parse()
 
@@ -159,6 +162,38 @@ func main() {
 		return nil // or return an error to deny permission
 	}
 
+	var basicAuthValidator authenticate.BasicAuthValidator
+	var tokenValidator authenticate.TokenValidator
+	var publicKeyValidator authenticate.PublicKeyValidator
+	var tokenSignValidator authenticate.TokenSignValidator
+	if authPassword != "" {
+		basicAuthValidator = authenticate.NewSimpleBasicAuthValidator(authUsername, authPassword)
+	}
+	if authToken != "" {
+		tokenValidator = authenticate.NewSimpleTokenValidator(authUsername, authToken)
+	}
+	if authSignKey != "" {
+		tokenSignValidator = authenticate.NewTokenSignValidator([]byte(authSignKey))
+	}
+	if sshAuthorizedKey != "" {
+		var authorizedKeys [][]byte
+		authKeysData, err := os.ReadFile(sshAuthorizedKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading SSH authorized keys file: %v\n", err)
+			os.Exit(1)
+		}
+		parsedKeys, err := backendssh.ParseAuthorizedKeys(authKeysData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing SSH authorized keys: %v\n", err)
+			os.Exit(1)
+		}
+		for _, k := range parsedKeys {
+			authorizedKeys = append(authorizedKeys, k.Marshal())
+		}
+		log.Printf("Loaded %d SSH authorized key(s)\n", len(parsedKeys))
+		publicKeyValidator = authenticate.NewSimplePublicKeyValidator(authorizedKeys)
+	}
+
 	var handler http.Handler
 
 	handler = backendhuggingface.NewHandler(
@@ -169,12 +204,15 @@ func main() {
 		backendhuggingface.WithPermissionHookFunc(permissionHook),
 	)
 
-	handler = backendlfs.NewHandler(
+	lfsOpts := []backendlfs.Option{
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 		backendlfs.WithLFSProxyManager(lfsProxyManager),
 		backendlfs.WithPermissionHookFunc(permissionHook),
-	)
+		backendlfs.WithTokenSignValidator(tokenSignValidator),
+	}
+
+	handler = backendlfs.NewHandler(lfsOpts...)
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),
@@ -183,11 +221,10 @@ func main() {
 		backendhttp.WithPermissionHookFunc(permissionHook),
 	)
 
-	if httpUsername != "" {
-		handler = authenticate.Authenticate(httpUsername, httpPassword, handler)
-	} else {
-		handler = authenticate.NoAuthenticate(handler)
-	}
+	handler = authenticate.AnonymousAuthenticateHandler(handler)
+	handler = authenticate.TokenValidatorHandler(tokenValidator, handler)
+	handler = authenticate.TokenSignValidatorHandler(tokenSignValidator, handler)
+	handler = authenticate.BasicAuthHandler(basicAuthValidator, handler)
 
 	handler = handlers.CompressHandler(handler)
 	handler = handlers.LoggingHandler(os.Stderr, handler)
@@ -196,9 +233,8 @@ func main() {
 		gitOpts := []backendgit.Option{
 			backendgit.WithPermissionHookFunc(permissionHook),
 			backendgit.WithProxyManager(proxyManager),
-		}
-		if lfsURL != "" {
-			gitOpts = append(gitOpts, backendgit.WithLFSURL(lfsURL))
+			backendgit.WithLFSURL(lfsURL),
+			backendgit.WithTokenSignValidator(tokenSignValidator),
 		}
 		gitServer := backendgit.NewServer(storage.RepositoriesDir(), gitOpts...)
 		log.Printf("Starting git protocol server on %s\n", gitAddr)
@@ -238,24 +274,12 @@ func main() {
 		sshOpts := []backendssh.Option{
 			backendssh.WithPermissionHookFunc(permissionHook),
 			backendssh.WithProxyManager(proxyManager),
+			backendssh.WithLFSURL(lfsURL),
+			backendssh.WithBasicAuthValidator(basicAuthValidator),
+			backendssh.WithPublicKeyValidator(publicKeyValidator),
+			backendssh.WithTokenSignValidator(tokenSignValidator),
 		}
-		if lfsURL != "" {
-			sshOpts = append(sshOpts, backendssh.WithLFSURL(lfsURL))
-		}
-		if sshAuthorizedKey != "" {
-			authKeysData, err := os.ReadFile(sshAuthorizedKey)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading SSH authorized keys file: %v\n", err)
-				os.Exit(1)
-			}
-			authorizedKeys, err := backendssh.ParseAuthorizedKeys(authKeysData)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing SSH authorized keys: %v\n", err)
-				os.Exit(1)
-			}
-			sshOpts = append(sshOpts, backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback(authorizedKeys)))
-			log.Printf("SSH public key authentication enabled with %d key(s)\n", len(authorizedKeys))
-		}
+
 		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
 		log.Printf("Starting SSH protocol server on %s\n", sshAddr)
 		go func() {

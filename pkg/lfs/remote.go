@@ -108,7 +108,7 @@ func (c *Client) GetBatch(ctx context.Context, lfsEndpoint string, objects []LFS
 		return nil, fmt.Errorf("failed to marshal batch request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", batchURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create batch request: %w", err)
 	}

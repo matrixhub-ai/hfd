@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
@@ -53,13 +54,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	// Create a response object
 	for _, object := range bv.Objects {
 		if h.storage.LFSStore().Exists(object.Oid) {
-			responseObjects = append(responseObjects, lfsRepresent(object, true, false))
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, true, false))
 			continue
 		}
 
 		// Object is not found
 		if bv.Operation == "upload" {
-			responseObjects = append(responseObjects, lfsRepresent(object, false, true))
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, false, true))
 		} else {
 			missingObjects = append(missingObjects, object)
 		}
@@ -82,7 +83,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 			}
 			h.lfsProxyManager.FetchFromProxy(context.Background(), proxyURL, lfsObjects)
 			for _, obj := range missingObjects {
-				responseObjects = append(responseObjects, lfsRepresent(obj, true, false))
+				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), obj, true, false))
 			}
 		} else {
 			for _, obj := range missingObjects {
@@ -221,31 +222,50 @@ func (h *Handler) handleVerifyObject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const tokenExpiration = time.Hour
+
 // lfsRepresent takes a RequestVars and Meta and turns it into a Representation suitable
 // for json encoding
-func lfsRepresent(rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
+func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
 	rep := &lfsRepresentation{
 		Oid:     rv.Oid,
 		Size:    rv.Size,
 		Actions: make(map[string]*lfsLink),
 	}
 
-	header := make(map[string]string)
-	verifyHeader := make(map[string]string)
-
-	header["Accept"] = contentMediaType
-
-	if len(rv.Authorization) > 0 {
-		header["Authorization"] = rv.Authorization
-		verifyHeader["Authorization"] = rv.Authorization
-	}
+	user, _ := authenticate.GetUser(ctx)
 
 	if download {
+		header := map[string]string{"Accept": contentMediaType}
+		if h.tokenSignValidator != nil {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodGet, rv.objectsLink(), user, tokenExpiration); token != "" {
+				header["Authorization"] = "Bearer " + token
+			}
+		} else if len(rv.Authorization) > 0 {
+			header["Authorization"] = rv.Authorization
+		}
 		rep.Actions["download"] = &lfsLink{Href: rv.objectsLink(), Header: header}
 	}
 
 	if upload {
+		header := map[string]string{"Accept": contentMediaType}
+		if h.tokenSignValidator != nil {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPut, rv.objectsLink(), user, tokenExpiration); token != "" {
+				header["Authorization"] = "Bearer " + token
+			}
+		} else if len(rv.Authorization) > 0 {
+			header["Authorization"] = rv.Authorization
+		}
 		rep.Actions["upload"] = &lfsLink{Href: rv.objectsLink(), Header: header}
+
+		verifyHeader := make(map[string]string)
+		if h.tokenSignValidator != nil {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPost, rv.verifyLink(), user, tokenExpiration); token != "" {
+				verifyHeader["Authorization"] = "Bearer " + token
+			}
+		} else if len(rv.Authorization) > 0 {
+			verifyHeader["Authorization"] = rv.Authorization
+		}
 		rep.Actions["verify"] = &lfsLink{Href: rv.verifyLink(), Header: verifyHeader}
 	}
 	return rep

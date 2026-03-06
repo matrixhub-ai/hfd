@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
@@ -32,6 +35,7 @@ type Server struct {
 	config          *ssh.ServerConfig
 	proxyManager    *repository.ProxyManager
 	permissionHook  permission.PermissionHook
+	tokenSignValidator     authenticate.TokenSignValidator
 	lfsURL          string
 }
 
@@ -39,7 +43,6 @@ type Server struct {
 type Option func(*Server)
 
 // WithPublicKeyCallback sets the public key authentication callback for the SSH server.
-// When set, clients must authenticate with a public key accepted by the callback.
 func WithPublicKeyCallback(callback func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
@@ -66,6 +69,61 @@ func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 func WithLFSURL(lfsURL string) Option {
 	return func(s *Server) {
 		s.lfsURL = lfsURL
+	}
+}
+
+func permissionsExtensions(user string) *ssh.Permissions {
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			"x-user": user,
+		},
+	}
+}
+
+func getUserFromPermissions(perms *ssh.Permissions) string {
+	if perms == nil {
+		return authenticate.Anonymous
+	}
+	if user, ok := perms.Extensions["x-user"]; ok {
+		return user
+	}
+	return authenticate.Anonymous
+}
+
+// WithBasicAuthValidator configures the SSH server to use the given validator
+// for SSH password authentication.
+func WithBasicAuthValidator(auth authenticate.BasicAuthValidator) Option {
+	return func(s *Server) {
+		s.config.NoClientAuth = false
+		s.config.PasswordCallback = func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			if user, _, ok := auth.Validate(context.Background(), conn.User(), string(password)); ok {
+				return permissionsExtensions(user), nil
+			}
+			return nil, fmt.Errorf("invalid credentials")
+		}
+	}
+}
+
+// WithPublicKeyValidator configures the SSH server to use the given validator
+// for SSH public key authentication.
+func WithPublicKeyValidator(auth authenticate.PublicKeyValidator) Option {
+	return func(s *Server) {
+		s.config.NoClientAuth = false
+		s.config.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if user, _, ok := auth.Validate(context.Background(), conn.User(), key.Type(), key.Marshal()); ok {
+				return permissionsExtensions(user), nil
+			}
+			return nil, fmt.Errorf("public key not authorized")
+		}
+	}
+}
+
+// WithTokenSignValidator configures the SSH server to include authentication
+// headers in git-lfs-authenticate responses so that LFS clients can authenticate
+// with the HTTP server.
+func WithTokenSignValidator(auth authenticate.TokenSignValidator) Option {
+	return func(s *Server) {
+		s.tokenSignValidator = auth
 	}
 }
 
@@ -179,6 +237,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	// Discard global requests
 	go ssh.DiscardRequests(reqs)
 
+	user := getUserFromPermissions(serverConn.Permissions)
+	ctx := authenticate.WithContext(context.Background(), user)
+
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
 			_ = newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
@@ -191,12 +252,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		go s.handleSession(channel, requests)
+		go s.handleSession(ctx, channel, requests)
 	}
 }
 
 // handleSession handles an SSH session channel.
-func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 
 	for req := range requests {
@@ -226,13 +287,13 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 
 			switch cmd.service {
 			case repository.GitLFSAuthenticate:
-				s.executeLFSAuthenticate(channel, cmd.repoPath, cmd.operation)
+				s.executeLFSAuthenticate(ctx, channel, cmd.repoPath, cmd.operation)
 			case repository.GitLFSTransfer:
 				log.Printf("ssh protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate\n")
 				_, _ = fmt.Fprintf(channel.Stderr(), "git-lfs-transfer is not supported\n")
 				sendExitStatus(channel, 1)
 			default:
-				s.executeCommand(channel, cmd.service, cmd.repoPath)
+				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath)
 			}
 			return
 
@@ -246,7 +307,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 }
 
 // executeCommand runs a git service command and pipes I/O through the SSH channel.
-func (s *Server) executeCommand(channel ssh.Channel, service string, repoPath string) {
+func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string) {
 	defer channel.Close()
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
@@ -255,8 +316,6 @@ func (s *Server) executeCommand(channel ssh.Channel, service string, repoPath st
 		sendExitStatus(channel, 1)
 		return
 	}
-
-	ctx := context.Background()
 
 	if s.permissionHook != nil {
 		op := permission.OperationReadRepo
@@ -340,7 +399,7 @@ type lfsAuthResponse struct {
 
 // executeLFSAuthenticate handles the git-lfs-authenticate command by returning
 // a JSON response with the LFS API endpoint URL.
-func (s *Server) executeLFSAuthenticate(channel ssh.Channel, repoPath string, operation string) {
+func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel, repoPath string, operation string) {
 	defer channel.Close()
 
 	if s.lfsURL == "" {
@@ -363,8 +422,6 @@ func (s *Server) executeLFSAuthenticate(channel ssh.Channel, repoPath string, op
 		return
 	}
 
-	ctx := context.Background()
-
 	if s.permissionHook != nil {
 		op := permission.OperationReadRepo
 		if operation == "upload" {
@@ -384,6 +441,16 @@ func (s *Server) executeLFSAuthenticate(channel ssh.Channel, repoPath string, op
 		Href:      href,
 		Header:    make(map[string]string),
 		ExpiresIn: 3600,
+	}
+
+	// Include authentication headers when a token signer is configured,
+	// so LFS clients can authenticate with the HTTP server.
+	if s.tokenSignValidator != nil {
+		user, _ := authenticate.GetUser(ctx)
+		batchURL := href + "/objects/batch"
+		if token := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, user, time.Hour); token != "" {
+			resp.Header["Authorization"] = "Bearer " + token
+		}
 	}
 
 	data, err := json.Marshal(resp)

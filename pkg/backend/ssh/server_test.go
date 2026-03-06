@@ -1,18 +1,21 @@
 package ssh_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"golang.org/x/crypto/ssh"
 )
@@ -571,4 +574,294 @@ func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected git-lfs-authenticate to fail when HTTP URL is not configured")
 	}
+}
+
+func TestSSHPasswordAuth(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshpwdauth-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	clientDir, err := os.MkdirTemp("", "sshpwdauth-test-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	// Create a bare repository
+	repoName := "pwd-auth-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	// Generate host key
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	// Start SSH server with password auth
+	auth := authenticate.NewSimpleBasicAuthValidator("testuser", "testpass")
+	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithBasicAuthValidator(auth))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().(*net.TCPAddr)
+
+	t.Run("PasswordAuthViaDial", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User: "testuser",
+			Auth: []ssh.AuthMethod{
+				ssh.Password("testpass"),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		client, err := ssh.Dial("tcp", addr.String(), config)
+		if err != nil {
+			t.Fatalf("Failed to dial SSH with password: %v", err)
+		}
+		defer client.Close()
+
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("Failed to create session: %v", err)
+		}
+		defer session.Close()
+	})
+
+	t.Run("WrongPasswordViaDial", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User: "testuser",
+			Auth: []ssh.AuthMethod{
+				ssh.Password("wrongpass"),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		_, err := ssh.Dial("tcp", addr.String(), config)
+		if err == nil {
+			t.Fatal("Expected SSH dial to fail with wrong password")
+		}
+	})
+}
+
+func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshpkauth-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	clientDir, err := os.MkdirTemp("", "sshpkauth-test-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	// Create a bare repository
+	repoName := "pk-auth-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	// Generate host key and client key
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	goodKeyFile := filepath.Join(clientDir, "id_good")
+	goodPubKey, err := generateClientKeyFile(goodKeyFile)
+	if err != nil {
+		t.Fatalf("Failed to generate good client key: %v", err)
+	}
+
+	// Start SSH server with public key auth
+	auth := authenticate.NewSimplePublicKeyValidator([][]byte{goodPubKey.Marshal()})
+	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithPublicKeyValidator(auth))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	sshURL := "ssh://git@" + addr.String() + "/" + repoName
+	port := strings.Split(addr.String(), ":")[1]
+
+	goodSSHCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", goodKeyFile, port)
+	goodEnv := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=" + goodSSHCmd,
+	}
+
+	t.Run("CloneWithAuthorizedKeyViaAuthenticator", func(t *testing.T) {
+		cloneDir := filepath.Join(clientDir, "clone-pk-auth")
+		runGitCmd(t, "", goodEnv, "clone", sshURL, cloneDir)
+
+		hfdir := filepath.Join(cloneDir, ".git")
+		if _, err := os.Stat(hfdir); os.IsNotExist(err) {
+			t.Errorf(".git directory not found in cloned repository")
+		}
+	})
+
+	t.Run("CloneWithUnauthorizedKeyViaAuthenticatorFails", func(t *testing.T) {
+		badKeyFile := filepath.Join(clientDir, "id_bad")
+		_, err := generateClientKeyFile(badKeyFile)
+		if err != nil {
+			t.Fatalf("Failed to generate bad client key: %v", err)
+		}
+
+		badSSHCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", badKeyFile, port)
+		badEnv := []string{
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_SSH_COMMAND=" + badSSHCmd,
+		}
+
+		cloneDir := filepath.Join(clientDir, "clone-bad-pk-auth")
+		cmd := utils.Command(t.Context(), "git", "clone", sshURL, cloneDir)
+		cmd.Env = append(os.Environ(), badEnv...)
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("Expected clone to fail with unauthorized key, but it succeeded: %s", output)
+		}
+	})
+}
+
+func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshlfs-auth-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	// Create a bare repository
+	repoName := "lfs-auth-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	// Generate host key
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	httpURL := "http://localhost:8080"
+	basicAuth := authenticate.NewSimpleBasicAuthValidator("admin", "secret")
+	tokenSignValidator := authenticate.NewTokenSignValidator([]byte("secret"))
+
+	// Start SSH server with authenticator and LFS URL
+	server := backendssh.NewServer(repositoriesDir, hostKey,
+		backendssh.WithLFSURL(httpURL),
+		backendssh.WithBasicAuthValidator(basicAuth),
+		backendssh.WithTokenSignValidator(tokenSignValidator),
+	)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().String()
+
+	t.Run("LFSAuthenticateIncludesAuthHeaders", func(t *testing.T) {
+		config := &ssh.ClientConfig{
+			User: "admin",
+			Auth: []ssh.AuthMethod{
+				ssh.Password("secret"),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+		client, err := ssh.Dial("tcp", addr, config)
+		if err != nil {
+			t.Fatalf("Failed to dial SSH: %v", err)
+		}
+		defer client.Close()
+
+		session, err := client.NewSession()
+		if err != nil {
+			t.Fatalf("Failed to create session: %v", err)
+		}
+		defer session.Close()
+
+		output, err := session.Output("git-lfs-authenticate '/lfs-auth-test-repo' download")
+		if err != nil {
+			t.Fatalf("git-lfs-authenticate failed: %v", err)
+		}
+
+		// Parse the JSON response
+		var resp struct {
+			Href      string            `json:"href"`
+			Header    map[string]string `json:"header"`
+			ExpiresIn int               `json:"expires_in"`
+		}
+		if err := json.Unmarshal(output, &resp); err != nil {
+			t.Fatalf("Failed to parse LFS auth response: %v\nOutput: %s", err, output)
+		}
+
+		expectedHref := "http://localhost:8080/lfs-auth-test-repo.git/info/lfs"
+		if resp.Href != expectedHref {
+			t.Errorf("href = %q, want %q", resp.Href, expectedHref)
+		}
+
+		// Verify auth headers are included
+		authHeader, ok := resp.Header["Authorization"]
+		if !ok {
+			t.Fatal("Expected Authorization header in LFS auth response")
+		}
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			t.Fatalf("Expected Bearer token, got %q", authHeader)
+		}
+		// Validate the signed token can be verified and contains the right subject
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		batchURL := expectedHref + "/objects/batch"
+		user, _, valid := tokenSignValidator.Validate(context.Background(), http.MethodPost, batchURL, tokenStr)
+		if !valid {
+			t.Fatal("Expected signed token to be valid")
+		}
+		if user != "admin" {
+			t.Errorf("Expected user 'admin', got %q", user)
+		}
+	})
 }

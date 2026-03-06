@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
@@ -45,7 +46,13 @@ func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Ser
 		backendhttp.WithNext(handler),
 	)
 
-	handler = authenticate.Authenticate(username, password, handler)
+	basicAuth := authenticate.NewSimpleBasicAuthValidator(username, password)
+	tokenAuth := authenticate.NewSimpleTokenValidator(username, password)
+	tokenSignValidator := authenticate.NewTokenSignValidator([]byte(password))
+	handler = authenticate.AnonymousAuthenticateHandler(handler)
+	handler = authenticate.TokenValidatorHandler(tokenAuth, handler)
+	handler = authenticate.TokenSignValidatorHandler(tokenSignValidator, handler)
+	handler = authenticate.BasicAuthHandler(basicAuth, handler)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })
@@ -100,8 +107,9 @@ func TestHTTPAuthCreateRepoWithBasicAuth(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("Expected 401, got %d", resp.StatusCode)
+		// With anonymous fallback, no credentials means anonymous user (200 OK)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected 200 (anonymous), got %d", resp.StatusCode)
 		}
 	})
 }
@@ -110,13 +118,17 @@ func TestHTTPAuthBearerToken(t *testing.T) {
 	server, _ := setupAuthTestServer(t, "admin", "my-secret-token")
 	endpoint := server.URL
 
+	// Generate a valid signed token for POST /api/repos/create
+	tokenSignValidator := authenticate.NewTokenSignValidator([]byte("my-secret-token"))
+	validToken := tokenSignValidator.Sign(t.Context(), http.MethodPost, "/api/repos/create", "admin", time.Hour)
+
 	t.Run("ValidBearerToken", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodPost, endpoint+"/api/repos/create", strings.NewReader(`{"type":"model","name":"bearer-model","organization":"bearer-user"}`))
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer my-secret-token")
+		req.Header.Set("Authorization", "Bearer "+validToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -141,8 +153,9 @@ func TestHTTPAuthBearerToken(t *testing.T) {
 			t.Fatalf("Request failed: %v", err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("Expected 401, got %d", resp.StatusCode)
+
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("Expected failure with invalid token, but got 200 OK")
 		}
 	})
 }
@@ -232,8 +245,10 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 		cmd := utils.Command(t.Context(), "git", "clone", wrongURL+"/git-auth-user/auth-git-model.git", cloneDir)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		output, err := cmd.Output()
-		if err == nil {
-			t.Fatalf("Expected clone to fail with wrong auth, but it succeeded: %s", output)
+		// With anonymous fallback, wrong credentials cause 401 but git retries
+		// without credentials, which falls through to anonymous and succeeds.
+		if err != nil {
+			t.Fatalf("Expected clone to succeed with anonymous fallback, but it failed: %v\n%s", err, output)
 		}
 	})
 

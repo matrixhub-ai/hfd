@@ -8,9 +8,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
@@ -20,6 +23,7 @@ type Server struct {
 	repositoriesDir string
 	proxyManager    *repository.ProxyManager
 	permissionHook  permission.PermissionHook
+	tokenSignValidator     authenticate.TokenSignValidator
 	lfsURL          string
 }
 
@@ -45,6 +49,15 @@ func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 func WithLFSURL(lfsURL string) Option {
 	return func(s *Server) {
 		s.lfsURL = lfsURL
+	}
+}
+
+// WithTokenSignValidator configures the git protocol server to include authentication
+// headers in git-lfs-authenticate responses so that LFS clients can authenticate
+// with the HTTP server.
+func WithTokenSignValidator(auth authenticate.TokenSignValidator) Option {
+	return func(s *Server) {
+		s.tokenSignValidator = auth
 	}
 }
 
@@ -231,6 +244,15 @@ func (s *Server) handleLFSAuthenticate(conn net.Conn, repoPath string) {
 		Href:      href,
 		Header:    make(map[string]string),
 		ExpiresIn: 3600,
+	}
+
+	// Include authentication headers when a token signer is configured,
+	// so LFS clients can authenticate with the HTTP server.
+	if s.tokenSignValidator != nil {
+		batchURL := href + "/objects/batch"
+		if token := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, authenticate.Anonymous, time.Duration(resp.ExpiresIn)*time.Second); token != "" {
+			resp.Header["Authorization"] = "Bearer " + token
+		}
 	}
 
 	data, err := json.Marshal(resp)

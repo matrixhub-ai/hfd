@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/storage"
@@ -19,8 +20,9 @@ type Handler struct {
 
 	next http.Handler
 
-	lfsProxyManager *lfs.ProxyManager
-	permissionHook  permission.PermissionHook
+	lfsProxyManager    *lfs.ProxyManager
+	permissionHook     permission.PermissionHook
+	tokenSignValidator authenticate.TokenSignValidator
 }
 
 type Option func(*Handler)
@@ -49,6 +51,13 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(h *Handler) {
 		h.permissionHook = hook
+	}
+}
+
+// WithTokenSignValidator sets the token signer for signing LFS batch response action headers.
+func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
+	return func(h *Handler) {
+		h.tokenSignValidator = signer
 	}
 }
 

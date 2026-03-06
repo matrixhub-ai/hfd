@@ -125,7 +125,7 @@ func TestLFSProxyMode(t *testing.T) {
 		body, _ := json.Marshal(batchReq)
 
 		url := fmt.Sprintf("%s/%s.git/info/lfs/objects/batch", proxyServer.URL, repoName)
-		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -200,7 +200,7 @@ func TestLFSProxyMode(t *testing.T) {
 		body, _ := json.Marshal(batchReq)
 
 		url := fmt.Sprintf("%s/%s.git/info/lfs/objects/batch", proxyServer.URL, repoName)
-		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -283,7 +283,7 @@ func TestLFSNoProxyWhenNotConfigured(t *testing.T) {
 	body, _ := json.Marshal(batchReq)
 
 	url := fmt.Sprintf("%s/test-repo.git/info/lfs/objects/batch", server.URL)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
 	}
