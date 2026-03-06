@@ -34,17 +34,18 @@ type HFAccessToken struct {
 
 // handleWhoami handles GET /api/whoami-v2
 func (h *Handler) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	user, ok := authenticate.GetUser(r.Context())
-	if !ok || user == authenticate.Anonymous {
+	userInfo, ok := authenticate.GetUserInfo(r.Context())
+	if !ok || userInfo.User == authenticate.Anonymous {
 		responseJSON(w, map[string]string{"error": "Unauthorized"}, http.StatusUnauthorized)
 		return
 	}
 
 	resp := HFWhoamiResponse{
 		Type:          "user",
-		ID:            user,
-		Name:          user,
-		Fullname:      user,
+		ID:            userInfo.User,
+		Name:          userInfo.User,
+		Fullname:      userInfo.User,
+		Email:         userInfo.Email,
 		EmailVerified: false,
 		IsPro:         false,
 		CanPay:        false,

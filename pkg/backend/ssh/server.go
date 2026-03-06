@@ -206,7 +206,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	go ssh.DiscardRequests(reqs)
 
 	user := getUserFromPermissions(serverConn.Permissions)
-	ctx := authenticate.WithContext(context.Background(), user)
+	ctx := authenticate.WithContext(context.Background(), authenticate.UserInfo{User: user})
 
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
@@ -423,9 +423,9 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 	// Include authentication headers when a token signer is configured,
 	// so LFS clients can authenticate with the HTTP server.
 	if s.tokenSignValidator != nil {
-		user, _ := authenticate.GetUser(ctx)
+		userInfo, _ := authenticate.GetUserInfo(ctx)
 		batchURL := href + "/objects/batch"
-		if token := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, user, time.Hour); token != "" {
+		if token := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, userInfo.User, time.Hour); token != "" {
 			resp.Header["Authorization"] = "Bearer " + token
 		}
 	}

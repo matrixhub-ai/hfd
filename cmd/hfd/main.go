@@ -149,8 +149,8 @@ func main() {
 	}
 
 	permissionHook := func(ctx context.Context, op permission.Operation, repoPath string, opCtx permission.Context) error {
-		user, _ := authenticate.GetUser(ctx)
-		slog.Info("Permission check", "user", user, "op", op, "repo", repoPath, "context", opCtx)
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		slog.Info("Permission check", "user", userInfo.User, "op", op, "repo", repoPath, "context", opCtx)
 		return nil // or return an error to deny permission
 	}
 

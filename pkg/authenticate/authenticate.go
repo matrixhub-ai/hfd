@@ -18,22 +18,24 @@ const Anonymous = "<anonymous>"
 
 type contextKey struct{}
 
-type contextValue struct {
-	User string
+// UserInfo holds identity information for an authenticated user.
+type UserInfo struct {
+	User  string
+	Email string
 }
 
-// WithContext returns a new context with the user set.
-func WithContext(ctx context.Context, user string) context.Context {
-	return context.WithValue(ctx, contextKey{}, contextValue{User: user})
+// WithContext returns a new context with the given user info set.
+func WithContext(ctx context.Context, user UserInfo) context.Context {
+	return context.WithValue(ctx, contextKey{}, user)
 }
 
-// GetUser retrieves the user from the context.
-func GetUser(ctx context.Context) (string, bool) {
-	val, ok := ctx.Value(contextKey{}).(contextValue)
+// GetUserInfo retrieves the user info from the context.
+func GetUserInfo(ctx context.Context) (UserInfo, bool) {
+	val, ok := ctx.Value(contextKey{}).(UserInfo)
 	if !ok {
-		return "", false
+		return UserInfo{}, false
 	}
-	return val.User, true
+	return val, true
 }
 
 // BasicAuthValidator validates username/password credentials.
@@ -201,8 +203,8 @@ func BasicAuthHandler(auth BasicAuthValidator, h http.Handler) http.Handler {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := GetUser(r.Context())
-		if ok && user != Anonymous {
+		userInfo, ok := GetUserInfo(r.Context())
+		if ok && userInfo.User != Anonymous {
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -210,7 +212,7 @@ func BasicAuthHandler(auth BasicAuthValidator, h http.Handler) http.Handler {
 		if ok {
 			user, next, valid := auth.Validate(r.Context(), username, password)
 			if valid {
-				r = r.WithContext(WithContext(r.Context(), user))
+				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
 				h.ServeHTTP(w, r)
 				return
 			}
@@ -232,15 +234,15 @@ func TokenSignValidatorHandler(auth TokenSignValidator, h http.Handler) http.Han
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := GetUser(r.Context())
-		if ok && user != Anonymous {
+		userInfo, ok := GetUserInfo(r.Context())
+		if ok && userInfo.User != Anonymous {
 			h.ServeHTTP(w, r)
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
 			user, next, valid := auth.Validate(r.Context(), r.Method, r.URL.RequestURI(), token)
 			if valid {
-				r = r.WithContext(WithContext(r.Context(), user))
+				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
 				h.ServeHTTP(w, r)
 				return
 			}
@@ -261,15 +263,15 @@ func TokenValidatorHandler(auth TokenValidator, h http.Handler) http.Handler {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := GetUser(r.Context())
-		if ok && user != Anonymous {
+		userInfo, ok := GetUserInfo(r.Context())
+		if ok && userInfo.User != Anonymous {
 			h.ServeHTTP(w, r)
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
 			user, next, valid := auth.Validate(r.Context(), token)
 			if valid {
-				r = r.WithContext(WithContext(r.Context(), user))
+				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
 				h.ServeHTTP(w, r)
 				return
 			}
@@ -287,9 +289,9 @@ func TokenValidatorHandler(auth TokenValidator, h http.Handler) http.Handler {
 // context (by an outer auth handler), it passes through unchanged.
 func AnonymousAuthenticateHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, ok := GetUser(r.Context())
+		_, ok := GetUserInfo(r.Context())
 		if !ok {
-			r = r.WithContext(WithContext(r.Context(), Anonymous))
+			r = r.WithContext(WithContext(r.Context(), UserInfo{User: Anonymous}))
 		}
 		h.ServeHTTP(w, r)
 	})

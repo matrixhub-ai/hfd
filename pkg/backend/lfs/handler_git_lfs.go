@@ -233,13 +233,13 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 		Actions: make(map[string]*lfsLink),
 	}
 
-	user, _ := authenticate.GetUser(ctx)
+	user, _ := authenticate.GetUserInfo(ctx)
 
 	if download {
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, user.User, tokenExpiration); token != "" {
 				header["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
@@ -252,7 +252,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, user.User, tokenExpiration); token != "" {
 				header["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
@@ -263,7 +263,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 		verifyHeader := make(map[string]string)
 		verifyLink := rv.verifyLink()
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, user.User, tokenExpiration); token != "" {
 				verifyHeader["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
