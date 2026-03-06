@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gorilla/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	backendgit "github.com/wzshiming/hfd/pkg/backend/git"
@@ -286,6 +287,7 @@ func main() {
 		}()
 	}
 
+	handler = handlers.CombinedLoggingHandler(os.Stderr, handler)
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
 		os.Exit(1)
