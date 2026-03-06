@@ -365,6 +365,15 @@ type lfsAuthResponse struct {
 	ExpiresIn int               `json:"expires_in,omitempty"`
 }
 
+func lfsHref(httpURL, repoPath string) string {
+	href := strings.TrimRight(httpURL, "/") + "/" + strings.TrimPrefix(repoPath, "/")
+	if !strings.HasSuffix(href, ".git") {
+		href += ".git"
+	}
+	href += "/info/lfs"
+	return href
+}
+
 // executeLFSAuthenticate handles the git-lfs-authenticate command by returning
 // a JSON response with the LFS API endpoint URL.
 func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel, repoPath string, operation string) {
@@ -403,7 +412,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 	}
 
 	// Build the LFS API href
-	href := repository.LFSHref(s.lfsURL, repoPath)
+	href := lfsHref(s.lfsURL, repoPath)
 
 	resp := lfsAuthResponse{
 		Href:      href,
