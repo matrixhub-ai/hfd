@@ -3,7 +3,7 @@ package lfs
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -36,15 +36,31 @@ type ProxyManager struct {
 	httpClient *http.Client
 	flights    sync.Map
 	store      Store
+	logger     *slog.Logger
+}
+
+// ProxyManagerOption configures a ProxyManager.
+type ProxyManagerOption func(*ProxyManager)
+
+// WithLogger sets the logger for the ProxyManager.
+func WithLogger(logger *slog.Logger) ProxyManagerOption {
+	return func(p *ProxyManager) {
+		p.logger = logger
+	}
 }
 
 // NewProxyManager creates a new ProxyManager.
 // store is used to store fetched objects and check if objects exist locally.
-func NewProxyManager(httpClient *http.Client, store Store) *ProxyManager {
-	return &ProxyManager{
+func NewProxyManager(httpClient *http.Client, store Store, opts ...ProxyManagerOption) *ProxyManager {
+	p := &ProxyManager{
 		httpClient: httpClient,
 		store:      store,
+		logger:     slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // GetFlight returns the in-flight proxy download for the given OID, if any.
@@ -66,7 +82,7 @@ func (m *ProxyManager) FetchFromProxy(ctx context.Context, sourceURL string, obj
 	client := NewClient(m.httpClient)
 	batchResp, err := client.GetBatch(ctx, sourceURL, objects)
 	if err != nil {
-		log.Printf("LFS proxy: failed to get batch from %s: %v", sourceURL, err)
+		m.logger.Error("LFS proxy: failed to get batch", "url", sourceURL, "error", err)
 		return
 	}
 
@@ -88,7 +104,7 @@ func (m *ProxyManager) FetchFromProxy(ctx context.Context, sourceURL string, obj
 			continue
 		}
 
-		log.Printf("LFS proxy: fetching object %s from upstream", obj.Oid)
+		m.logger.Info("LFS proxy: fetching object from upstream", "oid", obj.Oid)
 		m.fetchSingleObject(context.Background(), obj.Oid, obj.Size, downloadAction)
 	}
 }
@@ -111,19 +127,19 @@ func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size i
 
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
-		log.Printf("LFS proxy: failed to create download request for %s: %v", oid, err)
+		m.logger.Error("LFS proxy: failed to create download request", "oid", oid, "error", err)
 		return
 	}
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		log.Printf("LFS proxy: failed to download object %s: %v", oid, err)
+		m.logger.Error("LFS proxy: failed to download object", "oid", oid, "error", err)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
-		log.Printf("LFS proxy: unexpected status code %d when downloading object %s: %s: %s", resp.StatusCode, oid, req.URL, string(body))
+		m.logger.Error("LFS proxy: unexpected status code when downloading object", "status", resp.StatusCode, "oid", oid, "url", req.URL, "body", string(body))
 		return
 	}
 
@@ -140,7 +156,7 @@ func (m *ProxyManager) fetchSingleObject(ctx context.Context, oid string, size i
 	go func() {
 		defer reader.Close()
 		if err := m.store.Put(oid, reader, size); err != nil {
-			log.Printf("LFS proxy: failed to store object %s: %v", oid, err)
+			m.logger.Error("LFS proxy: failed to store object", "oid", oid, "error", err)
 			return
 		}
 	}()

@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -31,16 +31,24 @@ type PublicKey = ssh.PublicKey
 
 // Server implements the SSH protocol (ssh://) server for git operations.
 type Server struct {
-	repositoriesDir string
-	config          *ssh.ServerConfig
-	proxyManager    *repository.ProxyManager
-	permissionHook  permission.PermissionHook
-	tokenSignValidator     authenticate.TokenSignValidator
-	lfsURL          string
+	repositoriesDir    string
+	config             *ssh.ServerConfig
+	proxyManager       *repository.ProxyManager
+	permissionHook     permission.PermissionHook
+	tokenSignValidator authenticate.TokenSignValidator
+	lfsURL             string
+	logger             *slog.Logger
 }
 
 // Option configures the SSH server.
 type Option func(*Server)
+
+// WithLogger sets the logger for the SSH server.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		s.logger = logger
+	}
+}
 
 // WithPublicKeyCallback sets the public key authentication callback for the SSH server.
 func WithPublicKeyCallback(callback func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)) Option {
@@ -136,6 +144,7 @@ func NewServer(repositoriesDir string, hostKey ssh.Signer, opts ...Option) *Serv
 	s := &Server{
 		repositoriesDir: repositoriesDir,
 		config:          config,
+		logger:          slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -229,7 +238,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	serverConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
-		log.Printf("ssh protocol: handshake failed: %v\n", err)
+		s.logger.Warn("ssh protocol: handshake failed", "error", err)
 		return
 	}
 	defer serverConn.Close()
@@ -248,7 +257,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
-			log.Printf("ssh protocol: could not accept channel: %v\n", err)
+			s.logger.Error("ssh protocol: could not accept channel", "error", err)
 			return
 		}
 
@@ -278,7 +287,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 
 			cmd, err := parseCommand(cmdLine)
 			if err != nil {
-				log.Printf("ssh protocol: invalid command: %v\n", err)
+				s.logger.Error("ssh protocol: invalid command", "error", err)
 				_ = req.Reply(false, nil)
 				continue
 			}
@@ -289,7 +298,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 			case repository.GitLFSAuthenticate:
 				s.executeLFSAuthenticate(ctx, channel, cmd.repoPath, cmd.operation)
 			case repository.GitLFSTransfer:
-				log.Printf("ssh protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate\n")
+				s.logger.Warn("ssh protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate")
 				_, _ = fmt.Fprintf(channel.Stderr(), "git-lfs-transfer is not supported\n")
 				sendExitStatus(channel, 1)
 			default:
@@ -312,7 +321,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
 	if fullPath == "" {
-		log.Printf("ssh protocol: repository not found: %s\n", repoPath)
+		s.logger.Error("ssh protocol: repository not found", "repo", repoPath)
 		sendExitStatus(channel, 1)
 		return
 	}
@@ -323,7 +332,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 			op = permission.OperationUpdateRepo
 		}
 		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
-			log.Printf("ssh protocol: auth hook denied %s on %s: %v\n", service, repoPath, err)
+			s.logger.Warn("ssh protocol: auth hook denied", "service", service, "repo", repoPath, "error", err)
 			sendExitStatus(channel, 1)
 			return
 		}
@@ -331,7 +340,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 
 	repo, err := s.openRepo(ctx, fullPath, repoPath, service)
 	if err != nil {
-		log.Printf("ssh protocol: repository not found: %s\n", repoPath)
+		s.logger.Error("ssh protocol: repository not found", "repo", repoPath)
 		sendExitStatus(channel, 1)
 		return
 	}
@@ -339,12 +348,12 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
-			log.Printf("ssh protocol: failed to check repository type: %v\n", err)
+			s.logger.Error("ssh protocol: failed to check repository type", "error", err)
 			sendExitStatus(channel, 1)
 			return
 		}
 		if isMirror {
-			log.Printf("ssh protocol: push to mirror repository %q is not allowed\n", repoPath)
+			s.logger.Warn("ssh protocol: push to mirror repository is not allowed", "repo", repoPath)
 			sendExitStatus(channel, 1)
 			return
 		}
@@ -356,7 +365,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	cmd.Stderr = channel.Stderr()
 
 	if err := cmd.Run(); err != nil {
-		log.Printf("ssh protocol: command %s failed: %v\n", service, err)
+		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)
 		sendExitStatus(channel, 1)
 		return
 	}
@@ -409,7 +418,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 	}
 
 	if operation != "download" && operation != "upload" {
-		log.Printf("ssh protocol: git-lfs-authenticate: invalid operation %q\n", operation)
+		s.logger.Error("ssh protocol: git-lfs-authenticate: invalid operation", "operation", operation)
 		_, _ = fmt.Fprintf(channel.Stderr(), "invalid LFS operation: %s\n", operation)
 		sendExitStatus(channel, 1)
 		return
@@ -417,7 +426,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
 	if fullPath == "" {
-		log.Printf("ssh protocol: repository not found: %s\n", repoPath)
+		s.logger.Error("ssh protocol: repository not found", "repo", repoPath)
 		sendExitStatus(channel, 1)
 		return
 	}
@@ -428,7 +437,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 			op = permission.OperationUpdateRepo
 		}
 		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
-			log.Printf("ssh protocol: auth hook denied lfs-%s on %s: %v\n", operation, repoPath, err)
+			s.logger.Warn("ssh protocol: auth hook denied lfs operation", "operation", operation, "repo", repoPath, "error", err)
 			sendExitStatus(channel, 1)
 			return
 		}
@@ -455,13 +464,13 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 
 	data, err := json.Marshal(resp)
 	if err != nil {
-		log.Printf("ssh protocol: failed to marshal LFS auth response: %v\n", err)
+		s.logger.Error("ssh protocol: failed to marshal LFS auth response", "error", err)
 		sendExitStatus(channel, 1)
 		return
 	}
 
 	if _, err := channel.Write(data); err != nil {
-		log.Printf("ssh protocol: failed to write LFS auth response: %v\n", err)
+		s.logger.Error("ssh protocol: failed to write LFS auth response", "error", err)
 		sendExitStatus(channel, 1)
 		return
 	}
