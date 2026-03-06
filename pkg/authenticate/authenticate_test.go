@@ -298,12 +298,12 @@ func TestHTTPMiddleware(t *testing.T) {
 	tokenSignValidator := NewTokenSignValidator([]byte("secret"))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := GetUser(r.Context())
+		userInfo, ok := GetUserInfo(r.Context())
 		if !ok {
 			t.Error("Expected user in context")
 		}
-		if user != "admin" {
-			t.Errorf("Expected user 'admin', got %q", user)
+		if userInfo.User != "admin" {
+			t.Errorf("Expected user 'admin', got %q", userInfo.User)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
@@ -335,12 +335,12 @@ func TestHTTPMiddleware(t *testing.T) {
 
 func TestNoAuthenticate(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, ok := GetUser(r.Context())
+		userInfo, ok := GetUserInfo(r.Context())
 		if !ok {
 			t.Error("Expected user in context")
 		}
-		if user != Anonymous {
-			t.Errorf("Expected user 'anonymous', got %q", user)
+		if userInfo.User != Anonymous {
+			t.Errorf("Expected user 'anonymous', got %q", userInfo.User)
 		}
 		w.WriteHeader(http.StatusOK)
 	})
