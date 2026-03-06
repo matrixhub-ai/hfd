@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -98,12 +98,12 @@ func main() {
 		storage.WithRootDir(absRootDir),
 	}
 
-	log.Printf("Starting hfd server on %s, serving repositories from %s\n", addr, absRootDir)
+	slog.Info("Starting hfd server", "addr", addr, "data", absRootDir)
 
 	if s3Endpoint != "" && s3Bucket != "" {
 		if s3Repositories {
 			repositoriesDir := filepath.Join(absRootDir, "repositories")
-			log.Printf("Mounting S3 bucket %s at %s\n", s3Bucket, repositoriesDir)
+			slog.Info("Mounting S3 bucket", "bucket", s3Bucket, "path", repositoriesDir)
 			err := s3fs.Mount(
 				context.Background(),
 				repositoriesDir,
@@ -119,7 +119,7 @@ func main() {
 				os.Exit(1)
 			}
 			defer func() {
-				log.Printf("Unmounting S3 bucket from %s\n", repositoriesDir)
+				slog.Info("Unmounting S3 bucket", "path", repositoriesDir)
 				if err := s3fs.Unmount(context.Background(), repositoriesDir); err != nil {
 					fmt.Fprintf(os.Stderr, "Error unmounting S3 bucket: %v\n", err)
 				}
@@ -147,7 +147,7 @@ func main() {
 	var proxyManager *repository.ProxyManager
 	var lfsProxyManager *lfs.ProxyManager
 	if proxyURL != "" {
-		log.Printf("Proxy mode enabled with source: %s\n", proxyURL)
+		slog.Info("Proxy mode enabled", "source", proxyURL)
 		proxyManager = repository.NewProxyManager(proxyURL)
 		lfsProxyManager = lfs.NewProxyManager(
 			utils.HTTPClient,
@@ -157,7 +157,7 @@ func main() {
 
 	permissionHook := func(ctx context.Context, op permission.Operation, repoPath string, opCtx permission.Context) error {
 		user, _ := authenticate.GetUser(ctx)
-		log.Printf("Permission check: user=%s, op=%s, repoPath=%s, context=%+v\n", user, op, repoPath, opCtx)
+		slog.Info("Permission check", "user", user, "op", op, "repo", repoPath, "context", opCtx)
 		return nil // or return an error to deny permission
 	}
 
@@ -189,7 +189,7 @@ func main() {
 		for _, k := range parsedKeys {
 			authorizedKeys = append(authorizedKeys, k.Marshal())
 		}
-		log.Printf("Loaded %d SSH authorized key(s)\n", len(parsedKeys))
+		slog.Info("Loaded SSH authorized keys", "count", len(parsedKeys))
 		publicKeyValidator = authenticate.NewSimplePublicKeyValidator(authorizedKeys)
 	}
 
@@ -233,7 +233,7 @@ func main() {
 			backendgit.WithTokenSignValidator(tokenSignValidator),
 		}
 		gitServer := backendgit.NewServer(storage.RepositoriesDir(), gitOpts...)
-		log.Printf("Starting git protocol server on %s\n", gitAddr)
+		slog.Info("Starting git protocol server", "addr", gitAddr)
 		go func() {
 			if err := gitServer.ListenAndServe(gitAddr); err != nil {
 				fmt.Fprintf(os.Stderr, "Error starting git protocol server on %s: %v\n", gitAddr, err)
@@ -255,7 +255,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error parsing SSH host key file: %v\n", err)
 				os.Exit(1)
 			}
-			log.Printf("Loaded SSH host key from %s\n", hostKeyPath)
+			slog.Info("Loaded SSH host key", "path", hostKeyPath)
 		} else if sshHostKeyFile != "" {
 			fmt.Fprintf(os.Stderr, "Error reading SSH host key file: %v\n", err)
 			os.Exit(1)
@@ -265,7 +265,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error generating SSH host key: %v\n", err)
 				os.Exit(1)
 			}
-			log.Printf("Generated SSH host key and saved to %s\n", hostKeyPath)
+			slog.Info("Generated SSH host key", "path", hostKeyPath)
 		}
 		sshOpts := []backendssh.Option{
 			backendssh.WithPermissionHookFunc(permissionHook),
@@ -277,7 +277,7 @@ func main() {
 		}
 
 		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
-		log.Printf("Starting SSH protocol server on %s\n", sshAddr)
+		slog.Info("Starting SSH protocol server", "addr", sshAddr)
 		go func() {
 			if err := sshServer.ListenAndServe(sshAddr); err != nil {
 				fmt.Fprintf(os.Stderr, "Error starting SSH protocol server on %s: %v\n", sshAddr, err)

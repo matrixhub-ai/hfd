@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -20,15 +20,23 @@ import (
 
 // Server implements the git protocol (git://) server.
 type Server struct {
-	repositoriesDir string
-	proxyManager    *repository.ProxyManager
-	permissionHook  permission.PermissionHook
-	tokenSignValidator     authenticate.TokenSignValidator
-	lfsURL          string
+	repositoriesDir    string
+	proxyManager       *repository.ProxyManager
+	permissionHook     permission.PermissionHook
+	tokenSignValidator authenticate.TokenSignValidator
+	lfsURL             string
+	logger             *slog.Logger
 }
 
 // Option configures the git protocol server.
 type Option func(*Server)
+
+// WithLogger sets the logger for the git protocol server.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		s.logger = logger
+	}
+}
 
 // WithProxyManager sets the proxy manager for the git protocol server.
 func WithProxyManager(pm *repository.ProxyManager) Option {
@@ -65,6 +73,7 @@ func WithTokenSignValidator(auth authenticate.TokenSignValidator) Option {
 func NewServer(repositoriesDir string, opts ...Option) *Server {
 	s := &Server{
 		repositoriesDir: repositoriesDir,
+		logger:          slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -99,7 +108,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	service, repoPath, err := readRequest(conn)
 	if err != nil {
-		log.Printf("git protocol: error reading request: %v\n", err)
+		s.logger.Error("git protocol: error reading request", "error", err)
 		return
 	}
 
@@ -109,9 +118,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 	case repository.GitLFSAuthenticate:
 		s.handleLFSAuthenticate(conn, repoPath)
 	case repository.GitLFSTransfer:
-		log.Printf("git protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate\n")
+		s.logger.Warn("git protocol: git-lfs-transfer is not supported, clients should fall back to git-lfs-authenticate")
 	default:
-		log.Printf("git protocol: unsupported service: %s\n", service)
+		s.logger.Warn("git protocol: unsupported service", "service", service)
 	}
 }
 
@@ -119,7 +128,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) executeGitCommand(conn net.Conn, service string, repoPath string) {
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
 	if fullPath == "" {
-		log.Printf("git protocol: repository not found: %s\n", repoPath)
+		s.logger.Error("git protocol: repository not found", "repo", repoPath)
 		return
 	}
 
@@ -131,25 +140,25 @@ func (s *Server) executeGitCommand(conn net.Conn, service string, repoPath strin
 			op = permission.OperationUpdateRepo
 		}
 		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
-			log.Printf("git protocol: auth hook denied %s on %s: %v\n", service, repoPath, err)
+			s.logger.Warn("git protocol: auth hook denied", "service", service, "repo", repoPath, "error", err)
 			return
 		}
 	}
 
 	repo, err := s.openRepo(ctx, fullPath, repoPath, service)
 	if err != nil {
-		log.Printf("git protocol: repository not found: %s\n", repoPath)
+		s.logger.Error("git protocol: repository not found", "repo", repoPath)
 		return
 	}
 
 	if service == repository.GitReceivePack {
 		isMirror, _, err := repo.IsMirror()
 		if err != nil {
-			log.Printf("git protocol: failed to check repository type: %v\n", err)
+			s.logger.Error("git protocol: failed to check repository type", "error", err)
 			return
 		}
 		if isMirror {
-			log.Printf("git protocol: push to mirror repository %q is not allowed\n", repoPath)
+			s.logger.Warn("git protocol: push to mirror repository is not allowed", "repo", repoPath)
 			return
 		}
 	}
@@ -158,7 +167,7 @@ func (s *Server) executeGitCommand(conn net.Conn, service string, repoPath strin
 	cmd.Stdin = conn
 	cmd.Stdout = conn
 	if err := cmd.Run(); err != nil {
-		log.Printf("git protocol: command %s failed: %v\n", service, err)
+		s.logger.Error("git protocol: command failed", "service", service, "error", err)
 		return
 	}
 }
@@ -200,27 +209,27 @@ type lfsAuthResponse struct {
 // The repoPath may contain the operation appended after a space (e.g. "repo.git download").
 func (s *Server) handleLFSAuthenticate(conn net.Conn, repoPath string) {
 	if s.lfsURL == "" {
-		log.Printf("git protocol: LFS authentication is not configured on this server\n")
+		s.logger.Warn("git protocol: LFS authentication is not configured on this server")
 		return
 	}
 
 	// Parse operation from repoPath: "path operation"
 	actualPath, operation, ok := strings.Cut(repoPath, " ")
 	if !ok {
-		log.Printf("git protocol: git-lfs-authenticate: missing operation in %q\n", repoPath)
+		s.logger.Error("git protocol: git-lfs-authenticate: missing operation", "repo", repoPath)
 		return
 	}
 	actualPath = strings.Trim(actualPath, "'")
 	operation = strings.TrimSpace(operation)
 
 	if operation != "download" && operation != "upload" {
-		log.Printf("git protocol: git-lfs-authenticate: invalid operation %q\n", operation)
+		s.logger.Error("git protocol: git-lfs-authenticate: invalid operation", "operation", operation)
 		return
 	}
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, actualPath)
 	if fullPath == "" {
-		log.Printf("git protocol: repository not found: %s\n", actualPath)
+		s.logger.Error("git protocol: repository not found", "repo", actualPath)
 		return
 	}
 
@@ -232,7 +241,7 @@ func (s *Server) handleLFSAuthenticate(conn net.Conn, repoPath string) {
 			op = permission.OperationUpdateRepo
 		}
 		if err := s.permissionHook(ctx, op, actualPath, permission.Context{}); err != nil {
-			log.Printf("git protocol: auth hook denied lfs-%s on %s: %v\n", operation, actualPath, err)
+			s.logger.Warn("git protocol: auth hook denied lfs operation", "operation", operation, "repo", actualPath, "error", err)
 			return
 		}
 	}
@@ -257,12 +266,12 @@ func (s *Server) handleLFSAuthenticate(conn net.Conn, repoPath string) {
 
 	data, err := json.Marshal(resp)
 	if err != nil {
-		log.Printf("git protocol: failed to marshal LFS auth response: %v\n", err)
+		s.logger.Error("git protocol: failed to marshal LFS auth response", "error", err)
 		return
 	}
 
 	if _, err := conn.Write(data); err != nil {
-		log.Printf("git protocol: failed to write LFS auth response: %v\n", err)
+		s.logger.Error("git protocol: failed to write LFS auth response", "error", err)
 		return
 	}
 }
