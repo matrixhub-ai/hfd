@@ -2,16 +2,11 @@ package ssh
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -154,22 +149,7 @@ func NewServer(repositoriesDir string, hostKey ssh.Signer, opts ...Option) *Serv
 	return s
 }
 
-// ParseAuthorizedKeys parses an OpenSSH authorized_keys file and returns
-// the parsed public keys. Lines that are empty or start with '#' are skipped.
-func ParseAuthorizedKeys(data []byte) ([]ssh.PublicKey, error) {
-	var keys []ssh.PublicKey
-	rest := data
-	for len(rest) > 0 {
-		var key ssh.PublicKey
-		var err error
-		key, _, _, rest, err = ssh.ParseAuthorizedKey(rest)
-		if err != nil {
-			return nil, fmt.Errorf("parsing authorized key: %w", err)
-		}
-		keys = append(keys, key)
-	}
-	return keys, nil
-}
+
 
 // AuthorizedKeysCallback returns a PublicKeyCallback that checks incoming keys
 // against the provided list of authorized public keys.
@@ -186,30 +166,7 @@ func AuthorizedKeysCallback(authorizedKeys []ssh.PublicKey) func(conn ssh.ConnMe
 	}
 }
 
-// GenerateAndSaveHostKey generates an ED25519 host key and saves it to the given file path
-// with 0600 permissions.
-func GenerateAndSaveHostKey(path string) (ssh.Signer, error) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generating host key: %w", err)
-	}
 
-	derBytes, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling host key: %w", err)
-	}
-
-	pemBlock := &pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: derBytes,
-	}
-
-	if err := os.WriteFile(path, pem.EncodeToMemory(pemBlock), 0600); err != nil {
-		return nil, fmt.Errorf("writing host key to %s: %w", path, err)
-	}
-
-	return ssh.NewSignerFromKey(priv)
-}
 
 // Serve accepts connections on the listener and handles them.
 func (s *Server) Serve(listener net.Listener) error {
@@ -528,11 +485,4 @@ func sendExitStatus(channel ssh.Channel, status uint32) {
 	_, _ = channel.SendRequest("exit-status", false, payload)
 }
 
-// ParseHostKeyFile reads a PEM-encoded private key file and returns an SSH signer.
-func ParseHostKeyFile(data []byte) (ssh.Signer, error) {
-	signer, err := ssh.ParsePrivateKey(data)
-	if err != nil {
-		return nil, fmt.Errorf("parsing host key: %w", err)
-	}
-	return signer, nil
-}
+

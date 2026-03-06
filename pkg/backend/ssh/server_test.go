@@ -17,6 +17,7 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
+	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -311,7 +312,7 @@ func TestParseAuthorizedKeys(t *testing.T) {
 	authorizedKey := ssh.MarshalAuthorizedKey(pubKey)
 
 	t.Run("SingleKey", func(t *testing.T) {
-		keys, err := backendssh.ParseAuthorizedKeys(authorizedKey)
+		keys, err := pkgssh.ParseAuthorizedKeys(authorizedKey)
 		if err != nil {
 			t.Fatalf("Failed to parse authorized keys: %v", err)
 		}
@@ -329,7 +330,7 @@ func TestParseAuthorizedKeys(t *testing.T) {
 		authorizedKey2 := ssh.MarshalAuthorizedKey(signer2.PublicKey())
 
 		combined := append(authorizedKey, authorizedKey2...)
-		keys, err := backendssh.ParseAuthorizedKeys(combined)
+		keys, err := pkgssh.ParseAuthorizedKeys(combined)
 		if err != nil {
 			t.Fatalf("Failed to parse authorized keys: %v", err)
 		}
@@ -339,7 +340,7 @@ func TestParseAuthorizedKeys(t *testing.T) {
 	})
 
 	t.Run("InvalidData", func(t *testing.T) {
-		_, err := backendssh.ParseAuthorizedKeys([]byte("invalid-key-data"))
+		_, err := pkgssh.ParseAuthorizedKeys([]byte("invalid-key-data"))
 		if err == nil {
 			t.Error("Expected error for invalid key data")
 		}
