@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -52,8 +53,8 @@ type PublicKeyValidator interface {
 
 // TokenSignValidator is an interface for signing and validating tokens.
 type TokenSignValidator interface {
-	Sign(ctx context.Context, method, url string, username string, expiration time.Duration) (token string)
-	Validate(ctx context.Context, method, url string, token string) (user string, next, ok bool)
+	Sign(ctx context.Context, method, path string, username string, expiration time.Duration) (token string)
+	Validate(ctx context.Context, method, path string, token string) (user string, next, ok bool)
 }
 
 // simpleBasicAuthValidator implements BasicAuthValidator with in-memory credentials.
@@ -145,19 +146,27 @@ func NewTokenSignValidator(key []byte) TokenSignValidator {
 
 const signedTokenPrefix = "sign:"
 
-func (a *tokenSignValidator) Sign(_ context.Context, method, url string, username string, expiration time.Duration) string {
+func (a *tokenSignValidator) Sign(_ context.Context, method, path string, username string, expiration time.Duration) string {
 	if len(a.key) == 0 {
 		return ""
 	}
 
-	token, err := signToken(a.key, username, time.Now().Add(expiration), method, url)
+	if !strings.HasPrefix(path, "/") {
+		u, err := url.Parse(path)
+		if err != nil {
+			return ""
+		}
+		path = u.Path
+	}
+
+	token, err := signToken(a.key, username, time.Now().Add(expiration), method, path)
 	if err != nil {
 		return ""
 	}
 	return signedTokenPrefix + token
 }
 
-func (a *tokenSignValidator) Validate(_ context.Context, method, url string, token string) (string, bool, bool) {
+func (a *tokenSignValidator) Validate(_ context.Context, method, path string, token string) (string, bool, bool) {
 	if len(a.key) == 0 {
 		return "", true, false
 	}
@@ -168,7 +177,15 @@ func (a *tokenSignValidator) Validate(_ context.Context, method, url string, tok
 
 	token = strings.TrimPrefix(token, signedTokenPrefix)
 
-	username, ok := verifyToken(a.key, token, method, url)
+	if !strings.HasPrefix(path, "/") {
+		u, err := url.Parse(path)
+		if err != nil {
+			return "", false, false
+		}
+		path = u.Path
+	}
+
+	username, ok := verifyToken(a.key, token, method, path)
 	if !ok {
 		return "", false, false
 	}

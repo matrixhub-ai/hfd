@@ -236,37 +236,40 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 	user, _ := authenticate.GetUser(ctx)
 
 	if download {
+		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodGet, rv.objectsLink(), user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, user, tokenExpiration); token != "" {
 				header["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
 			header["Authorization"] = rv.Authorization
 		}
-		rep.Actions["download"] = &lfsLink{Href: rv.objectsLink(), Header: header}
+		rep.Actions["download"] = &lfsLink{Href: link, Header: header}
 	}
 
 	if upload {
+		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodPut, rv.objectsLink(), user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, user, tokenExpiration); token != "" {
 				header["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
 			header["Authorization"] = rv.Authorization
 		}
-		rep.Actions["upload"] = &lfsLink{Href: rv.objectsLink(), Header: header}
+		rep.Actions["upload"] = &lfsLink{Href: link, Header: header}
 
 		verifyHeader := make(map[string]string)
+		verifyLink := rv.verifyLink()
 		if h.tokenSignValidator != nil {
-			if token := h.tokenSignValidator.Sign(ctx, http.MethodPost, rv.verifyLink(), user, tokenExpiration); token != "" {
+			if token := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, user, tokenExpiration); token != "" {
 				verifyHeader["Authorization"] = "Bearer " + token
 			}
 		} else if len(rv.Authorization) > 0 {
 			verifyHeader["Authorization"] = rv.Authorization
 		}
-		rep.Actions["verify"] = &lfsLink{Href: rv.verifyLink(), Header: verifyHeader}
+		rep.Actions["verify"] = &lfsLink{Href: verifyLink, Header: verifyHeader}
 	}
 	return rep
 }

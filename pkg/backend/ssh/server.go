@@ -96,6 +96,9 @@ func getUserFromPermissions(perms *ssh.Permissions) string {
 // WithBasicAuthValidator configures the SSH server to use the given validator
 // for SSH password authentication.
 func WithBasicAuthValidator(auth authenticate.BasicAuthValidator) Option {
+	if auth == nil {
+		return func(s *Server) {}
+	}
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PasswordCallback = func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
@@ -110,6 +113,9 @@ func WithBasicAuthValidator(auth authenticate.BasicAuthValidator) Option {
 // WithPublicKeyValidator configures the SSH server to use the given validator
 // for SSH public key authentication.
 func WithPublicKeyValidator(auth authenticate.PublicKeyValidator) Option {
+	if auth == nil {
+		return func(s *Server) {}
+	}
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -149,8 +155,6 @@ func NewServer(repositoriesDir string, hostKey ssh.Signer, opts ...Option) *Serv
 	return s
 }
 
-
-
 // AuthorizedKeysCallback returns a PublicKeyCallback that checks incoming keys
 // against the provided list of authorized public keys.
 func AuthorizedKeysCallback(authorizedKeys []ssh.PublicKey) func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
@@ -165,8 +169,6 @@ func AuthorizedKeysCallback(authorizedKeys []ssh.PublicKey) func(conn ssh.ConnMe
 		return nil, fmt.Errorf("public key not found in authorized keys")
 	}
 }
-
-
 
 // Serve accepts connections on the listener and handles them.
 func (s *Server) Serve(listener net.Listener) error {
@@ -484,5 +486,3 @@ func sendExitStatus(channel ssh.Channel, status uint32) {
 	}
 	_, _ = channel.SendRequest("exit-status", false, payload)
 }
-
-
