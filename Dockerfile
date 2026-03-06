@@ -34,7 +34,6 @@ RUN --mount=type=cache,target=/var/cache/apk \
 
 COPY --from=builder /hfd /usr/local/bin/hfd
 
-EXPOSE 9418
 EXPOSE 8080
 EXPOSE 2222
 

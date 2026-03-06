@@ -13,7 +13,6 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
-	backendgit "github.com/wzshiming/hfd/pkg/backend/git"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
 	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
@@ -27,7 +26,6 @@ import (
 )
 
 var (
-	gitAddr        = ""
 	addr           = ":8080"
 	sshAddr        = ":2222"
 	sshHostKeyFile = ""
@@ -52,7 +50,6 @@ var (
 )
 
 func init() {
-	flag.StringVar(&gitAddr, "git-addr", gitAddr, "Git protocol server address (e.g. :9418)")
 	flag.StringVar(&addr, "addr", addr, "HTTP server address")
 	flag.StringVar(&sshAddr, "ssh-addr", sshAddr, "SSH protocol server address")
 	flag.StringVar(&sshHostKeyFile, "ssh-host-key", sshHostKeyFile, "Path to SSH host key file (PEM format); if empty, a key is generated")
@@ -220,23 +217,6 @@ func main() {
 	handler = authenticate.TokenValidatorHandler(tokenValidator, handler)
 	handler = authenticate.TokenSignValidatorHandler(tokenSignValidator, handler)
 	handler = authenticate.BasicAuthHandler(basicAuthValidator, handler)
-
-	if gitAddr != "" {
-		gitOpts := []backendgit.Option{
-			backendgit.WithPermissionHookFunc(permissionHook),
-			backendgit.WithProxyManager(proxyManager),
-			backendgit.WithLFSURL(lfsURL),
-			backendgit.WithTokenSignValidator(tokenSignValidator),
-		}
-		gitServer := backendgit.NewServer(storage.RepositoriesDir(), gitOpts...)
-		slog.Info("Starting git protocol server", "addr", gitAddr)
-		go func() {
-			if err := gitServer.ListenAndServe(gitAddr); err != nil {
-				fmt.Fprintf(os.Stderr, "Error starting git protocol server on %s: %v\n", gitAddr, err)
-				os.Exit(1)
-			}
-		}()
-	}
 
 	if sshAddr != "" {
 		var hostKeySigner pkgssh.Signer

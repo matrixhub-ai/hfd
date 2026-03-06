@@ -3,7 +3,6 @@ services:
     build: .
     ports:
       - "8080:8080"
-      - "9418:9418"
       - "2222:2222"
     volumes:
       - ./data/:/data/
