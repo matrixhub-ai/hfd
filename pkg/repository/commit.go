@@ -30,7 +30,7 @@ func (r *Repository) Commits(rev string, limit int) ([]Commit, error) {
 			Message: c.Message,
 			Author:  c.Author.Name,
 			Email:   c.Author.Email,
-			Date:    c.Author.When.Format("2006-01-02T15:04:05Z"),
+			Date:    c.Author.When.UTC().Format(TimeFormat),
 		})
 		if len(commits) >= limit {
 			return io.EOF // Stop after reaching the limit

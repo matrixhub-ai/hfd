@@ -18,6 +18,10 @@ var (
 )
 
 const (
+	TimeFormat = "2006-01-02T15:04:05.000Z"
+)
+
+const (
 	GitUploadPack      = "git-upload-pack"
 	GitReceivePack     = "git-receive-pack"
 	GitLFSAuthenticate = "git-lfs-authenticate"

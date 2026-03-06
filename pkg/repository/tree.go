@@ -103,7 +103,7 @@ func (r *Repository) lastCommit(commit *object.Commit) (*HFTreeLastCommit, error
 	return &HFTreeLastCommit{
 		ID:    c.Hash.String(),
 		Title: title,
-		Date:  c.Author.When.UTC().Format("2006-01-02T15:04:05.000Z"),
+		Date:  c.Author.When.UTC().Format(TimeFormat),
 	}, nil
 }
 
