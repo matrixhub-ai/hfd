@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/wzshiming/hfd/internal/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	backendgit "github.com/wzshiming/hfd/pkg/backend/git"
@@ -225,9 +224,6 @@ func main() {
 	handler = authenticate.TokenValidatorHandler(tokenValidator, handler)
 	handler = authenticate.TokenSignValidatorHandler(tokenSignValidator, handler)
 	handler = authenticate.BasicAuthHandler(basicAuthValidator, handler)
-
-	handler = handlers.CompressHandler(handler)
-	handler = handlers.LoggingHandler(os.Stderr, handler)
 
 	if gitAddr != "" {
 		gitOpts := []backendgit.Option{
