@@ -14,7 +14,7 @@ type Blob struct {
 	size      int64
 	modTime   time.Time
 	newReader func() (io.ReadCloser, error)
-	hash      string
+	hash      Hash
 }
 
 // Name returns the file name of the blob.
@@ -38,11 +38,16 @@ func (b *Blob) NewReader() (io.ReadCloser, error) {
 }
 
 // Hash returns the Git object hash of the blob content.
-func (b *Blob) Hash() string {
+func (b *Blob) Hash() Hash {
 	return b.hash
 }
 
-// serveBlob serves the content of the blob over HTTP, handling LFS pointers if necessary.
+// String returns a string representation of the blob, including its name and size.
+func (b *Blob) String() string {
+	return fmt.Sprintf("%s (%d bytes)", b.name, b.size)
+}
+
+// Blob returns the Blob object for this entry if it is a file, or an error if it is a directory or if the blob cannot be accessed.
 func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
 	if rev == "" {
 		rev = r.DefaultBranch()
@@ -68,6 +73,6 @@ func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
 		size:      file.Size,
 		modTime:   commit.Committer.When,
 		newReader: file.Reader,
-		hash:      file.Hash.String(),
+		hash:      file.Hash,
 	}, nil
 }

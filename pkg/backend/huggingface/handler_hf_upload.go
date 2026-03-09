@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gorilla/mux"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"

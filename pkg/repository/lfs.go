@@ -1,26 +1,14 @@
 package repository
 
 import (
-	"bufio"
-	"strconv"
-	"strings"
-
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/wzshiming/hfd/pkg/lfs"
 )
 
-// LFSPointer represents a Git LFS pointer found in the repository
-type LFSPointer struct {
-	Oid  string // SHA256 hash of the LFS object
-	Size int64  // Size of the LFS object in bytes
-}
-
 // ScanLFSPointers scans all branches in the repository for LFS pointer files
 // and returns a list of unique LFS pointers
-func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
-	item := make(map[string]LFSPointer)
-
+func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
 	// Get all branches
 	branches, err := r.repo.Branches()
 	if err != nil {
@@ -28,6 +16,8 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 	}
 
 	seen := map[plumbing.Hash]bool{}
+
+	result := []*lfs.Pointer{}
 
 	err = branches.ForEach(func(ref *plumbing.Reference) error {
 		commit, err := r.repo.CommitObject(ref.Hash())
@@ -63,12 +53,22 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 				continue
 			}
 
-			ptr, err := parseLFSPointerFromBlob(blob)
+			if blob.Size > lfs.MaxLFSPointerSize {
+				continue
+			}
+
+			reader, err := blob.Reader()
+			if err != nil {
+				continue
+			}
+
+			ptr, err := lfs.DecodePointer(reader)
+			_ = reader.Close()
 			if err != nil || ptr == nil {
 				continue
 			}
 
-			item[ptr.Oid] = *ptr
+			result = append(result, ptr)
 		}
 
 		return nil
@@ -77,64 +77,5 @@ func (r *Repository) ScanLFSPointers() ([]LFSPointer, error) {
 		return nil, err
 	}
 
-	// Convert map to slice
-	result := make([]LFSPointer, 0, len(item))
-	for _, ptr := range item {
-		result = append(result, ptr)
-	}
-
 	return result, nil
-}
-
-// parseLFSPointerFromBlob parses an LFS pointer from a git blob
-// Returns nil if the blob is not an LFS pointer
-func parseLFSPointerFromBlob(blob *object.Blob) (*LFSPointer, error) {
-	if blob.Size > lfs.MaxLFSPointerSize {
-		return nil, nil
-	}
-
-	reader, err := blob.Reader()
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = reader.Close()
-	}()
-
-	scanner := bufio.NewScanner(reader)
-	var isLFS bool
-	var oid string
-	var size int64
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Check for LFS version header
-		if strings.HasPrefix(line, "version https://git-lfs.github.com/spec/v") {
-			isLFS = true
-		}
-
-		// Extract OID from oid line
-		if after, ok := strings.CutPrefix(line, "oid sha256:"); ok {
-			oid = after
-		}
-
-		// Extract size
-		if after, ok := strings.CutPrefix(line, "size "); ok {
-			size, _ = strconv.ParseInt(after, 10, 64)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	if isLFS && oid != "" {
-		return &LFSPointer{
-			Oid:  oid,
-			Size: size,
-		}, nil
-	}
-
-	return nil, nil
 }
