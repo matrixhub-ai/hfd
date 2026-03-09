@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/wzshiming/hfd/pkg/repository"
@@ -115,6 +116,81 @@ func TestParseCommand(t *testing.T) {
 			}
 			if cmd.operation != tt.operation {
 				t.Errorf("operation = %q, want %q", cmd.operation, tt.operation)
+			}
+		})
+	}
+}
+
+// makeEnvPayload encodes an SSH "env" request payload: uint32(len(name)) + name + uint32(len(value)) + value.
+func makeEnvPayload(name, value string) []byte {
+	payload := make([]byte, 4+len(name)+4+len(value))
+	binary.BigEndian.PutUint32(payload[0:4], uint32(len(name)))
+	copy(payload[4:], name)
+	binary.BigEndian.PutUint32(payload[4+len(name):], uint32(len(value)))
+	copy(payload[4+len(name)+4:], value)
+	return payload
+}
+
+func TestParseEnvRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    []byte
+		wantName   string
+		wantValue  string
+		wantOK     bool
+	}{
+		{
+			name:      "GIT_PROTOCOL version=2",
+			payload:   makeEnvPayload("GIT_PROTOCOL", "version=2"),
+			wantName:  "GIT_PROTOCOL",
+			wantValue: "version=2",
+			wantOK:    true,
+		},
+		{
+			name:      "other variable",
+			payload:   makeEnvPayload("HOME", "/home/user"),
+			wantName:  "HOME",
+			wantValue: "/home/user",
+			wantOK:    true,
+		},
+		{
+			name:      "empty name and value",
+			payload:   makeEnvPayload("", ""),
+			wantName:  "",
+			wantValue: "",
+			wantOK:    true,
+		},
+		{
+			name:    "too short payload",
+			payload: []byte{0, 0},
+			wantOK:  false,
+		},
+		{
+			name:    "empty payload",
+			payload: []byte{},
+			wantOK:  false,
+		},
+		{
+			name:    "truncated name",
+			payload: []byte{0, 0, 0, 5, 'a', 'b'}, // claims 5 bytes but only 2 provided
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotValue, gotOK := parseEnvRequest(tt.payload)
+			if gotOK != tt.wantOK {
+				t.Fatalf("parseEnvRequest ok = %v, want %v", gotOK, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if gotName != tt.wantName {
+				t.Errorf("name = %q, want %q", gotName, tt.wantName)
+			}
+			if gotValue != tt.wantValue {
+				t.Errorf("value = %q, want %q", gotValue, tt.wantValue)
 			}
 		})
 	}

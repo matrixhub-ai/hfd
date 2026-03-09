@@ -866,3 +866,91 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 		}
 	})
 }
+
+func TestSSHGitProtocolV2(t *testing.T) {
+	// Create a temporary directory for repositories
+	repoDir, err := os.MkdirTemp("", "sshprotov2-test-repos")
+	if err != nil {
+		t.Fatalf("Failed to create temp repo dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(repoDir)
+	}()
+
+	clientDir, err := os.MkdirTemp("", "sshprotov2-test-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	repositoriesDir := filepath.Join(repoDir, "repositories")
+	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
+		t.Fatalf("Failed to create repositories dir: %v", err)
+	}
+
+	// Create a bare repository and add content for cloning.
+	repoName := "proto-v2-test-repo.git"
+	repoPath := filepath.Join(repositoriesDir, repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	server := backendssh.NewServer(repositoriesDir, hostKey)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	sshURL := "ssh://git@" + addr.String() + "/" + repoName
+	port := strings.Split(addr.String(), ":")[1]
+	sshCmd := "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p " + port
+
+	// Use GIT_PROTOCOL=version=2 to enable protocol v2.
+	envProtoV2 := []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=" + sshCmd,
+		"GIT_PROTOCOL=version=2",
+	}
+
+	t.Run("CloneEmptyWithProtocolV2", func(t *testing.T) {
+		cloneDir := filepath.Join(clientDir, "clone-proto-v2")
+		runGitCmd(t, "", envProtoV2, "clone", sshURL, cloneDir)
+
+		hfdir := filepath.Join(cloneDir, ".git")
+		if _, err := os.Stat(hfdir); os.IsNotExist(err) {
+			t.Errorf(".git directory not found in cloned repository")
+		}
+	})
+
+	t.Run("PushWithProtocolV2", func(t *testing.T) {
+		workDir := filepath.Join(clientDir, "clone-proto-v2")
+
+		runGitCmd(t, workDir, envProtoV2, "config", "user.email", "test@test.com")
+		runGitCmd(t, workDir, envProtoV2, "config", "user.name", "Test User")
+
+		testFile := filepath.Join(workDir, "README.md")
+		if err := os.WriteFile(testFile, []byte("# Proto V2 Test\n"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		runGitCmd(t, workDir, envProtoV2, "add", "README.md")
+		runGitCmd(t, workDir, envProtoV2, "commit", "-m", "Initial commit")
+		runGitCmd(t, workDir, envProtoV2, "push", "-u", "origin", "master")
+	})
+
+	t.Run("FetchWithProtocolV2", func(t *testing.T) {
+		workDir := filepath.Join(clientDir, "clone-proto-v2")
+		runGitCmd(t, workDir, envProtoV2, "fetch", "origin")
+	})
+}

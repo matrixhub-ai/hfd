@@ -78,7 +78,12 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, nil, service, true)
+	var extraEnv []string
+	if gitProtocol := r.Header.Get("Git-Protocol"); gitProtocol != "" {
+		extraEnv = append(extraEnv, "GIT_PROTOCOL="+gitProtocol)
+	}
+
+	err = repo.Stateless(r.Context(), w, nil, service, true, extraEnv...)
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
@@ -141,7 +146,12 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, r.Body, service, false)
+	var extraEnv []string
+	if gitProtocol := r.Header.Get("Git-Protocol"); gitProtocol != "" {
+		extraEnv = append(extraEnv, "GIT_PROTOCOL="+gitProtocol)
+	}
+
+	err = repo.Stateless(r.Context(), w, r.Body, service, false, extraEnv...)
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return

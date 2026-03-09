@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/wzshiming/hfd/internal/utils"
@@ -12,7 +13,8 @@ import (
 // Stateless performs a stateless Git operation (like upload-pack or receive-pack) for the repository.
 // It executes the specified Git service command with the appropriate arguments and streams data through the provided input and output.
 // If advertise is true, it sends the initial packet-line advertisement for the service.
-func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.Reader, service string, advertise bool) error {
+// extraEnv specifies additional environment variables to pass to the git command (e.g. "GIT_PROTOCOL=version=2").
+func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.Reader, service string, advertise bool, extraEnv ...string) error {
 	base, dir := filepath.Split(r.repoPath)
 
 	var args []string
@@ -38,6 +40,9 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 	cmd.Dir = base
 	cmd.Stdin = input
 	cmd.Stdout = output
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	err := cmd.Run()
 	if err != nil {
 		return err

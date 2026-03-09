@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -228,8 +229,20 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 
+	var extraEnv []string
+
 	for req := range requests {
 		switch req.Type {
+		case "env":
+			// Accept GIT_PROTOCOL env requests for Git protocol v2 support.
+			name, value, ok := parseEnvRequest(req.Payload)
+			if ok && name == "GIT_PROTOCOL" {
+				extraEnv = append(extraEnv, "GIT_PROTOCOL="+value)
+			}
+			if req.WantReply {
+				_ = req.Reply(ok, nil)
+			}
+
 		case "exec":
 			if len(req.Payload) < 4 {
 				_ = req.Reply(false, nil)
@@ -261,7 +274,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 				_, _ = fmt.Fprintf(channel.Stderr(), "git-lfs-transfer is not supported\n")
 				sendExitStatus(channel, 1)
 			default:
-				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath)
+				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath, extraEnv)
 			}
 			return
 
@@ -274,8 +287,32 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 	}
 }
 
+// parseEnvRequest parses the payload of an SSH "env" channel request.
+// The payload format is: uint32 name-length + name + uint32 value-length + value.
+// Returns the name, value, and whether the parse succeeded.
+func parseEnvRequest(payload []byte) (name, value string, ok bool) {
+	if len(payload) < 4 {
+		return "", "", false
+	}
+	nameLen := int(payload[0])<<24 | int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+	if 4+nameLen+4 > len(payload) {
+		return "", "", false
+	}
+	name = string(payload[4 : 4+nameLen])
+	rest := payload[4+nameLen:]
+	if len(rest) < 4 {
+		return "", "", false
+	}
+	valueLen := int(rest[0])<<24 | int(rest[1])<<16 | int(rest[2])<<8 | int(rest[3])
+	if 4+valueLen > len(rest) {
+		return "", "", false
+	}
+	value = string(rest[4 : 4+valueLen])
+	return name, value, true
+}
+
 // executeCommand runs a git service command and pipes I/O through the SSH channel.
-func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string) {
+func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string, extraEnv []string) {
 	defer channel.Close()
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
@@ -322,6 +359,9 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	cmd.Stdin = channel
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 
 	if err := cmd.Run(); err != nil {
 		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)

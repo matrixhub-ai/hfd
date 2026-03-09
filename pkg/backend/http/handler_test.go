@@ -369,3 +369,95 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		}
 	})
 }
+
+func TestHTTPGitProtocolV2(t *testing.T) {
+	upstreamDir, err := os.MkdirTemp("", "http-protov2-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(upstreamDir)
+	}()
+
+	clientDir, err := os.MkdirTemp("", "http-protov2-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
+
+	repoName := "proto-v2-repo"
+	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+		t.Fatalf("Failed to create repos dir: %v", err)
+	}
+	runGitCmd(t, "", "init", "--bare", repoPath)
+
+	handler := backendhttp.NewHandler(
+		backendhttp.WithStorage(upstreamStorage),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	serverURL := server.URL + "/" + repoName + ".git"
+
+	t.Run("CloneWithProtocolV2", func(t *testing.T) {
+		cloneDir := filepath.Join(clientDir, "clone-proto-v2")
+		cmd := utils.Command(t.Context(), "git", "clone", serverURL, cloneDir)
+		cmd.Env = append(os.Environ(),
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_PROTOCOL=version=2",
+		)
+		if output, err := cmd.Output(); err != nil {
+			t.Fatalf("Clone with GIT_PROTOCOL=version=2 failed: %v\nOutput: %s", err, output)
+		}
+
+		hfdir := filepath.Join(cloneDir, ".git")
+		if _, err := os.Stat(hfdir); os.IsNotExist(err) {
+			t.Errorf(".git directory not found in cloned repository")
+		}
+	})
+
+	t.Run("PushWithProtocolV2", func(t *testing.T) {
+		workDir := filepath.Join(clientDir, "clone-proto-v2")
+		env := []string{
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_PROTOCOL=version=2",
+		}
+
+		cmd := utils.Command(t.Context(), "git", "config", "user.email", "test@test.com")
+		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), env...)
+		if _, err := cmd.Output(); err != nil {
+			t.Fatalf("git config failed: %v", err)
+		}
+
+		cmd = utils.Command(t.Context(), "git", "config", "user.name", "Test User")
+		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), env...)
+		if _, err := cmd.Output(); err != nil {
+			t.Fatalf("git config failed: %v", err)
+		}
+
+		testFile := filepath.Join(workDir, "README.md")
+		if err := os.WriteFile(testFile, []byte("# Proto V2 HTTP Test\n"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		for _, args := range [][]string{
+			{"add", "README.md"},
+			{"commit", "-m", "Initial commit"},
+			{"push", "-u", "origin", "master"},
+		} {
+			cmd = utils.Command(t.Context(), "git", args...)
+			cmd.Dir = workDir
+			cmd.Env = append(os.Environ(), env...)
+			if output, err := cmd.Output(); err != nil {
+				t.Fatalf("git %s failed: %v\nOutput: %s", args[0], err, output)
+			}
+		}
+	})
+}
