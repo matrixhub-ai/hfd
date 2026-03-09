@@ -9,6 +9,7 @@ import (
 
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -24,6 +25,7 @@ type Handler struct {
 	proxyManager    *repository.ProxyManager
 	lfsProxyManager *lfs.ProxyManager
 	permissionHook  permission.PermissionHook
+	receiveHook     receive.Hook
 	lfsStore        lfs.Store
 }
 
@@ -60,6 +62,14 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(h *Handler) {
 		h.permissionHook = hook
+	}
+}
+
+// WithReceiveHookFunc sets the receive hook called when ref updates occur
+// via API operations (branch/tag create/delete, commits).
+func WithReceiveHookFunc(hook receive.Hook) Option {
+	return func(h *Handler) {
+		h.receiveHook = hook
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -371,6 +373,19 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fire receive hook for branch creation
+	if h.receiveHook != nil {
+		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+		updates := []receive.RefUpdate{{
+			OldRev:  receive.ZeroHash,
+			NewRev:  hash,
+			RefName: "refs/heads/" + rev,
+		}}
+		if err := h.receiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			slog.Warn("receive hook failed", "repo", ri.RepoPath, "error", err)
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -419,9 +434,24 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture hash before deletion for the receive hook
+	oldHash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+
 	if err := repo.DeleteBranch(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	// Fire receive hook for branch deletion
+	if h.receiveHook != nil {
+		updates := []receive.RefUpdate{{
+			OldRev:  oldHash,
+			NewRev:  receive.ZeroHash,
+			RefName: "refs/heads/" + rev,
+		}}
+		if err := h.receiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			slog.Warn("receive hook failed", "repo", ri.RepoPath, "error", err)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -485,6 +515,19 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fire receive hook for tag creation
+	if h.receiveHook != nil {
+		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
+		updates := []receive.RefUpdate{{
+			OldRev:  receive.ZeroHash,
+			NewRev:  hash,
+			RefName: "refs/tags/" + req.Tag,
+		}}
+		if err := h.receiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			slog.Warn("receive hook failed", "repo", ri.RepoPath, "error", err)
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -527,9 +570,24 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture hash before deletion for the receive hook
+	oldHash, _ := repo.RefHash(plumbing.NewTagReferenceName(rev))
+
 	if err := repo.DeleteTag(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete tag %q: %v", rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	// Fire receive hook for tag deletion
+	if h.receiveHook != nil {
+		updates := []receive.RefUpdate{{
+			OldRev:  oldHash,
+			NewRev:  receive.ZeroHash,
+			RefName: "refs/tags/" + rev,
+		}}
+		if err := h.receiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			slog.Warn("receive hook failed", "repo", ri.RepoPath, "error", err)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

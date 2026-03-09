@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -398,11 +400,29 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture old hash for the receive hook
+	oldHash, _ := repo.ResolveRevision(rev)
+
 	// TODO: Add support for specifying author/committer in the request body
 	commitHash, err := repo.CreateCommit(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
+	}
+
+	// Fire receive hook for the commit (branch push)
+	if h.receiveHook != nil {
+		if oldHash == "" {
+			oldHash = receive.ZeroHash
+		}
+		updates := []receive.RefUpdate{{
+			OldRev:  oldHash,
+			NewRev:  commitHash,
+			RefName: "refs/heads/" + rev,
+		}}
+		if err := h.receiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			slog.Warn("receive hook failed", "repo", ri.RepoPath, "error", err)
+		}
 	}
 
 	resp := HFCommitResponse{

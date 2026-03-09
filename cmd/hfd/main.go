@@ -19,6 +19,7 @@ import (
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/s3fs"
 	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
@@ -154,6 +155,14 @@ func main() {
 		return nil // or return an error to deny permission
 	}
 
+	receiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		for _, u := range updates {
+			slog.Info("Receive hook", "user", userInfo.User, "repo", repoName, "event", receive.FormatEvent(u))
+		}
+		return nil
+	}
+
 	var basicAuthValidator authenticate.BasicAuthValidator
 	var tokenValidator authenticate.TokenValidator
 	var publicKeyValidator authenticate.PublicKeyValidator
@@ -194,6 +203,7 @@ func main() {
 		backendhuggingface.WithProxyManager(proxyManager),
 		backendhuggingface.WithLFSProxyManager(lfsProxyManager),
 		backendhuggingface.WithPermissionHookFunc(permissionHook),
+		backendhuggingface.WithReceiveHookFunc(receiveHook),
 		backendhuggingface.WithLFSStore(lfsStore),
 	)
 
@@ -211,6 +221,7 @@ func main() {
 		backendhttp.WithNext(handler),
 		backendhttp.WithProxyManager(proxyManager),
 		backendhttp.WithPermissionHookFunc(permissionHook),
+		backendhttp.WithReceiveHookFunc(receiveHook),
 	)
 
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
@@ -245,6 +256,7 @@ func main() {
 		}
 		sshOpts := []backendssh.Option{
 			backendssh.WithPermissionHookFunc(permissionHook),
+			backendssh.WithReceiveHookFunc(receiveHook),
 			backendssh.WithProxyManager(proxyManager),
 			backendssh.WithLFSURL(lfsURL),
 			backendssh.WithBasicAuthValidator(basicAuthValidator),

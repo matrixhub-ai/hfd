@@ -15,6 +15,7 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -30,6 +31,7 @@ type Server struct {
 	config             *ssh.ServerConfig
 	proxyManager       *repository.ProxyManager
 	permissionHook     permission.PermissionHook
+	receiveHook        receive.Hook
 	tokenSignValidator authenticate.TokenSignValidator
 	lfsURL             string
 	logger             *slog.Logger
@@ -64,6 +66,13 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(s *Server) {
 		s.permissionHook = hook
+	}
+}
+
+// WithReceiveHookFunc sets the receive hook called when ref updates occur during git push.
+func WithReceiveHookFunc(hook receive.Hook) Option {
+	return func(s *Server) {
+		s.receiveHook = hook
 	}
 }
 
@@ -318,6 +327,12 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		}
 	}
 
+	// Snapshot refs before receive-pack for hook event detection
+	var refsBefore map[string]string
+	if service == repository.GitReceivePack && s.receiveHook != nil {
+		refsBefore, _ = repo.Refs()
+	}
+
 	cmd := utils.Command(ctx, service, fullPath)
 	cmd.Stdin = channel
 	cmd.Stdout = channel
@@ -327,6 +342,17 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)
 		sendExitStatus(channel, 1)
 		return
+	}
+
+	// Fire receive hook after successful receive-pack
+	if service == repository.GitReceivePack && s.receiveHook != nil {
+		refsAfter, _ := repo.Refs()
+		updates := receive.DiffRefs(refsBefore, refsAfter)
+		if len(updates) > 0 {
+			if err := s.receiveHook(ctx, repoPath, updates); err != nil {
+				s.logger.Warn("receive hook failed", "repo", repoPath, "error", err)
+			}
+		}
 	}
 
 	sendExitStatus(channel, 0)

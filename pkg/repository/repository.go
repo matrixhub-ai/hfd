@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+
+	"github.com/wzshiming/hfd/pkg/receive"
 )
 
 var (
@@ -65,6 +67,12 @@ func Init(repoPath string, defaultBranch string) (*Repository, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Install default pre-receive and post-receive hook scripts.
+	if err := receive.InstallHooks(repoPath); err != nil {
+		return nil, err
+	}
+
 	return &Repository{
 		repo:     repo,
 		repoPath: repoPath,
@@ -229,6 +237,32 @@ func (r *Repository) Tags() ([]string, error) {
 	}
 
 	return tags, nil
+}
+
+// Refs returns a map of all branch and tag refs to their commit hashes.
+// The keys are full ref names (e.g., "refs/heads/main", "refs/tags/v1.0").
+func (r *Repository) Refs() (map[string]string, error) {
+	refs := make(map[string]string)
+
+	branchIter, err := r.repo.Branches()
+	if err != nil {
+		return nil, err
+	}
+	_ = branchIter.ForEach(func(ref *plumbing.Reference) error {
+		refs[ref.Name().String()] = ref.Hash().String()
+		return nil
+	})
+
+	tagIter, err := r.repo.Tags()
+	if err != nil {
+		return nil, err
+	}
+	_ = tagIter.ForEach(func(ref *plumbing.Reference) error {
+		refs[ref.Name().String()] = ref.Hash().String()
+		return nil
+	})
+
+	return refs, nil
 }
 
 // ResolveRevision resolves a revision string (branch name, tag, or commit SHA) to a commit hash.

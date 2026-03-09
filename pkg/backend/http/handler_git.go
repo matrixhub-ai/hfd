@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -138,6 +140,12 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		}
 	}
 
+	// Snapshot refs before receive-pack for hook event detection
+	var refsBefore map[string]string
+	if service == repository.GitReceivePack && h.receiveHook != nil {
+		refsBefore, _ = repo.Refs()
+	}
+
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
@@ -145,6 +153,17 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
+	}
+
+	// Fire receive hook after successful receive-pack
+	if service == repository.GitReceivePack && h.receiveHook != nil {
+		refsAfter, _ := repo.Refs()
+		updates := receive.DiffRefs(refsBefore, refsAfter)
+		if len(updates) > 0 {
+			if err := h.receiveHook(r.Context(), repoName, updates); err != nil {
+				slog.Warn("receive hook failed", "repo", repoName, "error", err)
+			}
+		}
 	}
 }
 
