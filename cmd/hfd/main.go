@@ -19,6 +19,7 @@ import (
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/s3fs"
 	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
@@ -154,6 +155,24 @@ func main() {
 		return nil // or return an error to deny permission
 	}
 
+	preReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		for _, e := range updates {
+			slog.Info("Pre-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
+				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
+		}
+		return nil // or return an error to deny the push
+	}
+
+	postReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		for _, e := range updates {
+			slog.Info("Post-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
+				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
+		}
+		return nil
+	}
+
 	var basicAuthValidator authenticate.BasicAuthValidator
 	var tokenValidator authenticate.TokenValidator
 	var publicKeyValidator authenticate.PublicKeyValidator
@@ -194,6 +213,8 @@ func main() {
 		backendhuggingface.WithProxyManager(proxyManager),
 		backendhuggingface.WithLFSProxyManager(lfsProxyManager),
 		backendhuggingface.WithPermissionHookFunc(permissionHook),
+		backendhuggingface.WithPreReceiveHookFunc(preReceiveHook),
+		backendhuggingface.WithPostReceiveHookFunc(postReceiveHook),
 		backendhuggingface.WithLFSStore(lfsStore),
 	)
 
@@ -211,6 +232,8 @@ func main() {
 		backendhttp.WithNext(handler),
 		backendhttp.WithProxyManager(proxyManager),
 		backendhttp.WithPermissionHookFunc(permissionHook),
+		backendhttp.WithPreReceiveHookFunc(preReceiveHook),
+		backendhttp.WithPostReceiveHookFunc(postReceiveHook),
 	)
 
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
@@ -245,6 +268,8 @@ func main() {
 		}
 		sshOpts := []backendssh.Option{
 			backendssh.WithPermissionHookFunc(permissionHook),
+			backendssh.WithPreReceiveHookFunc(preReceiveHook),
+			backendssh.WithPostReceiveHookFunc(postReceiveHook),
 			backendssh.WithProxyManager(proxyManager),
 			backendssh.WithLFSURL(lfsURL),
 			backendssh.WithBasicAuthValidator(basicAuthValidator),

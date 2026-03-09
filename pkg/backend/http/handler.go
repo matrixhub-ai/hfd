@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -19,8 +20,10 @@ type Handler struct {
 
 	next http.Handler
 
-	proxyManager   *repository.ProxyManager
-	permissionHook permission.PermissionHook
+	proxyManager    *repository.ProxyManager
+	permissionHook  permission.PermissionHook
+	preReceiveHook  receive.PreReceiveHook
+	postReceiveHook receive.PostReceiveHook
 }
 
 type Option func(*Handler)
@@ -49,6 +52,22 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(h *Handler) {
 		h.permissionHook = hook
+	}
+}
+
+// WithPreReceiveHookFunc sets the pre-receive hook called before a git push is processed.
+// If the hook returns an error, the push is rejected.
+func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+	return func(h *Handler) {
+		h.preReceiveHook = hook
+	}
+}
+
+// WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
+// Errors from this hook are logged but do not affect the push result.
+func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+	return func(h *Handler) {
+		h.postReceiveHook = hook
 	}
 }
 
