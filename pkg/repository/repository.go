@@ -43,6 +43,25 @@ func IsRepository(repoPath string) bool {
 	return false
 }
 
+// IsValidGitProtocol reports whether value is a valid GIT_PROTOCOL string.
+// Valid values match "version=N" where N is one or more decimal digits.
+func IsValidGitProtocol(value string) bool {
+	const prefix = "version="
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	ver := value[len(prefix):]
+	if len(ver) == 0 {
+		return false
+	}
+	for _, c := range ver {
+		if c < '0' || c > '2' {
+			return false
+		}
+	}
+	return true
+}
+
 // Init initializes a new git repository at the given path with the specified default branch.
 func Init(repoPath string, defaultBranch string) (*Repository, error) {
 	repo, err := git.PlainInitWithOptions(repoPath, &git.PlainInitOptions{

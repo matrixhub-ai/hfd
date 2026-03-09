@@ -24,6 +24,16 @@ func (h *Handler) registryGit(r *mux.Router) {
 	r.HandleFunc("/{repo:.+}/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost)
 }
 
+// gitProtocolEnv returns a GIT_PROTOCOL environment variable derived from the
+// request's Git-Protocol header if the value is present and valid, or nil otherwise.
+func gitProtocolEnv(r *http.Request) []string {
+	value := r.Header.Get("Git-Protocol")
+	if value == "" || !repository.IsValidGitProtocol(value) {
+		return nil
+	}
+	return []string{"GIT_PROTOCOL=" + value}
+}
+
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.
 func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -81,7 +91,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, nil, service, true)
+	err = repo.Stateless(r.Context(), w, nil, service, true, gitProtocolEnv(r)...)
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
@@ -159,7 +169,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, input, service, false)
+	err = repo.Stateless(r.Context(), w, input, service, false, gitProtocolEnv(r)...)
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return

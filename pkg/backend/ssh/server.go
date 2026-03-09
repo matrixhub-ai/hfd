@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -248,8 +249,22 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 
+	var env []string
+
 	for req := range requests {
 		switch req.Type {
+		case "env":
+			name, value, ok := parseSSHEnvRequest(req.Payload)
+			if ok && name == "GIT_PROTOCOL" && repository.IsValidGitProtocol(value) {
+				env = []string{"GIT_PROTOCOL=" + value}
+			}
+			// Reply true regardless of whether the variable was applied.
+			// Replying false can cause some SSH clients to abort the session.
+			// We silently ignore variables other than GIT_PROTOCOL.
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+
 		case "exec":
 			if len(req.Payload) < 4 {
 				_ = req.Reply(false, nil)
@@ -281,7 +296,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 				_, _ = fmt.Fprintf(channel.Stderr(), "git-lfs-transfer is not supported\n")
 				sendExitStatus(channel, 1)
 			default:
-				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath)
+				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath, env...)
 			}
 			return
 
@@ -295,7 +310,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 }
 
 // executeCommand runs a git service command and pipes I/O through the SSH channel.
-func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string) {
+func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string, env ...string) {
 	defer channel.Close()
 
 	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
@@ -341,7 +356,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	// For receive-pack with permission/receive hooks: use pipe-based approach
 	// to intercept pkt-line commands for permission checking before the push completes.
 	if service == repository.GitReceivePack && (s.preReceiveHook != nil || s.postReceiveHook != nil) {
-		s.executeReceivePackWithHooks(ctx, channel, service, repoPath, fullPath)
+		s.executeReceivePackWithHooks(ctx, channel, service, repoPath, fullPath, env...)
 		return
 	}
 
@@ -349,6 +364,9 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	cmd.Stdin = channel
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 
 	if err := cmd.Run(); err != nil {
 		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)
@@ -371,7 +389,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 //  4. Permission hook runs — if denied, kill the git process.
 //  5. If allowed, forward the remaining data through the pipe to git-receive-pack.
 //  6. After completion, fire the receive hook.
-func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Channel, service string, repoPath, fullPath string) {
+func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Channel, service string, repoPath, fullPath string, env ...string) {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 
@@ -379,6 +397,9 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 	cmd.Stdin = pr
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 
 	if err := cmd.Start(); err != nil {
 		pw.Close()
@@ -620,6 +641,30 @@ func parseCommand(cmdLine string) (*parsedCommand, error) {
 	default:
 		return nil, fmt.Errorf("unsupported service: %s", service)
 	}
+}
+
+// parseSSHEnvRequest parses an SSH "env" request payload and returns the variable
+// name and value. The SSH wire format encodes each string as a uint32 length
+// followed by the string bytes.
+func parseSSHEnvRequest(payload []byte) (name, value string, ok bool) {
+	if len(payload) < 4 {
+		return "", "", false
+	}
+	nameLen := int(payload[0])<<24 | int(payload[1])<<16 | int(payload[2])<<8 | int(payload[3])
+	if nameLen+4 > len(payload) {
+		return "", "", false
+	}
+	name = string(payload[4 : 4+nameLen])
+	rest := payload[4+nameLen:]
+	if len(rest) < 4 {
+		return "", "", false
+	}
+	valueLen := int(rest[0])<<24 | int(rest[1])<<16 | int(rest[2])<<8 | int(rest[3])
+	if valueLen+4 > len(rest) {
+		return "", "", false
+	}
+	value = string(rest[4 : 4+valueLen])
+	return name, value, true
 }
 
 // sendExitStatus sends the exit status to the SSH client.
