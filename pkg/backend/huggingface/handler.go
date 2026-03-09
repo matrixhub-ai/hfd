@@ -3,8 +3,9 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/gorilla/mux"
 
@@ -23,12 +24,12 @@ type Handler struct {
 
 	next http.Handler
 
-	proxyManager    *repository.ProxyManager
-	lfsProxyManager *lfs.ProxyManager
-	permissionHook  permission.PermissionHook
-	preReceiveHook  receive.PreReceiveHook
-	postReceiveHook receive.PostReceiveHook
-	lfsStore        lfs.Store
+	mirrorSourceFunc repository.MirrorSourceFunc
+	lfsProxyManager  *lfs.ProxyManager
+	permissionHook   permission.PermissionHook
+	preReceiveHook   receive.PreReceiveHook
+	postReceiveHook  receive.PostReceiveHook
+	lfsStore         lfs.Store
 }
 
 type Option func(*Handler)
@@ -39,10 +40,10 @@ func WithStorage(storage *storage.Storage) Option {
 	}
 }
 
-// WithProxyManager sets the repository proxy manager for transparent upstream repository fetching.
-func WithProxyManager(pm *repository.ProxyManager) Option {
+// WithMirrorSourceFunc sets the repository proxy callback for transparent upstream repository fetching.
+func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(h *Handler) {
-		h.proxyManager = pm
+		h.mirrorSourceFunc = fn
 	}
 }
 
@@ -206,36 +207,46 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 	repo, err := repository.Open(repoPath)
 	if err == nil {
 		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
-			h.syncMirrorWithHook(ctx, repo, repoPath, repoName)
+			err = h.syncMirrorWithHook(ctx, repo, repoName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to sync mirror: %w", err)
+			}
 		}
 		return repo, nil
 	}
-	if err == repository.ErrRepositoryNotExists && h.proxyManager != nil {
+	if err == repository.ErrRepositoryNotExists && h.mirrorSourceFunc != nil {
 		if h.permissionHook != nil {
 			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
 			}
 		}
-		repo, err := h.proxyManager.Init(ctx, repoPath, repoName)
+		sourceURL, err := h.mirrorSourceFunc(ctx, repoPath, repoName)
 		if err != nil {
 			return nil, err
 		}
-		h.fireHookForNewMirror(ctx, repo, repoPath, repoName)
+		repo, err := repository.InitMirror(ctx, repoPath, sourceURL)
+		if err != nil {
+			_ = os.RemoveAll(repoPath)
+			return nil, repository.ErrRepositoryNotExists
+		}
+		err = h.syncMirrorWithHook(ctx, repo, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sync mirror: %w", err)
+		}
 		return repo, nil
 	}
 	return nil, err
 }
 
 // syncMirrorWithHook syncs a mirror and fires post-receive hooks for any ref changes.
-func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
+func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repository, repoName string) error {
 	var before map[string]string
 	if h.postReceiveHook != nil {
 		before, _ = repo.Refs()
 	}
 
 	if err := repo.SyncMirror(ctx); err != nil {
-		slog.Warn("failed to sync mirror", "repo", repoName, "error", err)
-		return
+		return fmt.Errorf("failed to sync mirror: %w", err)
 	}
 
 	if h.postReceiveHook != nil {
@@ -243,24 +254,11 @@ func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repos
 		updates := receive.DiffRefs(before, after)
 		if len(updates) > 0 {
 			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
-				slog.Warn("post-receive hook error", "repo", repoName, "error", err)
+				return fmt.Errorf("post-receive hook error: %w", err)
 			}
 		}
 	}
-}
-
-// fireHookForNewMirror fires post-receive hooks for all refs in a newly created mirror repo.
-func (h *Handler) fireHookForNewMirror(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
-	if h.postReceiveHook == nil {
-		return
-	}
-	after, _ := repo.Refs()
-	updates := receive.DiffRefs(nil, after)
-	if len(updates) > 0 {
-		if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
-			slog.Warn("post-receive hook error", "repo", repoName, "error", err)
-		}
-	}
+	return nil
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {

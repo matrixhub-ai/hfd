@@ -20,10 +20,10 @@ type Handler struct {
 
 	next http.Handler
 
-	proxyManager    *repository.ProxyManager
-	permissionHook  permission.PermissionHook
-	preReceiveHook  receive.PreReceiveHook
-	postReceiveHook receive.PostReceiveHook
+	mirrorSourceFunc repository.MirrorSourceFunc
+	permissionHook   permission.PermissionHook
+	preReceiveHook   receive.PreReceiveHook
+	postReceiveHook  receive.PostReceiveHook
 }
 
 type Option func(*Handler)
@@ -41,10 +41,10 @@ func WithNext(next http.Handler) Option {
 	}
 }
 
-// WithProxyManager sets the repository proxy manager for transparent upstream repository fetching.
-func WithProxyManager(pm *repository.ProxyManager) Option {
+// WithMirrorSourceFunc sets the repository proxy callback for transparent upstream repository fetching.
+func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(h *Handler) {
-		h.proxyManager = pm
+		h.mirrorSourceFunc = fn
 	}
 }
 

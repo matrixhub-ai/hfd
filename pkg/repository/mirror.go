@@ -10,6 +10,19 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 )
 
+// MirrorSourceFunc is a callback that returns the source URL for mirroring a repository
+// that does not exist locally. Returning an empty string or an error disables
+// mirror creation for that repository.
+type MirrorSourceFunc func(ctx context.Context, repoPath, repoName string) (string, error)
+
+// NewMirrorSourceFunc creates a MirrorFunc that derives the source URL by appending
+// repoName to baseURL.
+func NewMirrorSourceFunc(baseURL string) MirrorSourceFunc {
+	return func(ctx context.Context, repoPath, repoName string) (string, error) {
+		return strings.TrimSuffix(baseURL, "/") + "/" + repoName, nil
+	}
+}
+
 // InitMirror initializes a new bare git repository at repoPath and sets up a remote named "origin"
 // that points to sourceURL. It then performs an initial shallow fetch to populate the mirror.
 // The returned Repository is ready to be used as a mirror of the source repository.
