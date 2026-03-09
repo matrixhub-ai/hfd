@@ -401,7 +401,11 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Capture old hash for the receive hook
-	oldHash, _ := repo.ResolveRevision(rev)
+	oldHash, err := repo.ResolveRevision(rev)
+	if err != nil {
+		// This is expected for new branches that don't exist yet.
+		oldHash = ""
+	}
 
 	// TODO: Add support for specifying author/committer in the request body
 	commitHash, err := repo.CreateCommit(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)

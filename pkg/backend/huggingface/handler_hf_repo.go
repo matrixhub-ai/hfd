@@ -375,7 +375,10 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 	// Fire receive hook for branch creation
 	if h.receiveHook != nil {
-		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+		hash, err := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+		if err != nil {
+			slog.Warn("failed to get ref hash for receive hook", "ref", rev, "error", err)
+		}
 		updates := []receive.RefUpdate{{
 			OldRev:  receive.ZeroHash,
 			NewRev:  hash,
@@ -435,7 +438,10 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Capture hash before deletion for the receive hook
-	oldHash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+	oldHash, err := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+	if err != nil {
+		slog.Warn("failed to get ref hash for receive hook", "ref", rev, "error", err)
+	}
 
 	if err := repo.DeleteBranch(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete branch %q: %v", rev, err), http.StatusInternalServerError)
@@ -517,7 +523,10 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 
 	// Fire receive hook for tag creation
 	if h.receiveHook != nil {
-		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
+		hash, err := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
+		if err != nil {
+			slog.Warn("failed to get ref hash for receive hook", "ref", req.Tag, "error", err)
+		}
 		updates := []receive.RefUpdate{{
 			OldRev:  receive.ZeroHash,
 			NewRev:  hash,
@@ -571,7 +580,10 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Capture hash before deletion for the receive hook
-	oldHash, _ := repo.RefHash(plumbing.NewTagReferenceName(rev))
+	oldHash, err := repo.RefHash(plumbing.NewTagReferenceName(rev))
+	if err != nil {
+		slog.Warn("failed to get ref hash for receive hook", "ref", rev, "error", err)
+	}
 
 	if err := repo.DeleteTag(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete tag %q: %v", rev, err), http.StatusInternalServerError)

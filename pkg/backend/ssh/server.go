@@ -330,7 +330,11 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	// Snapshot refs before receive-pack for hook event detection
 	var refsBefore map[string]string
 	if service == repository.GitReceivePack && s.receiveHook != nil {
-		refsBefore, _ = repo.Refs()
+		var err error
+		refsBefore, err = repo.Refs()
+		if err != nil {
+			s.logger.Warn("ssh protocol: failed to snapshot refs before receive-pack", "repo", repoPath, "error", err)
+		}
 	}
 
 	cmd := utils.Command(ctx, service, fullPath)
@@ -346,11 +350,15 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 
 	// Fire receive hook after successful receive-pack
 	if service == repository.GitReceivePack && s.receiveHook != nil {
-		refsAfter, _ := repo.Refs()
-		updates := receive.DiffRefs(refsBefore, refsAfter)
-		if len(updates) > 0 {
-			if err := s.receiveHook(ctx, repoPath, updates); err != nil {
-				s.logger.Warn("receive hook failed", "repo", repoPath, "error", err)
+		refsAfter, err := repo.Refs()
+		if err != nil {
+			s.logger.Warn("ssh protocol: failed to snapshot refs after receive-pack", "repo", repoPath, "error", err)
+		} else {
+			updates := receive.DiffRefs(refsBefore, refsAfter)
+			if len(updates) > 0 {
+				if err := s.receiveHook(ctx, repoPath, updates); err != nil {
+					s.logger.Warn("receive hook failed", "repo", repoPath, "error", err)
+				}
 			}
 		}
 	}

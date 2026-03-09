@@ -248,19 +248,23 @@ func (r *Repository) Refs() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = branchIter.ForEach(func(ref *plumbing.Reference) error {
+	if err := branchIter.ForEach(func(ref *plumbing.Reference) error {
 		refs[ref.Name().String()] = ref.Hash().String()
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	tagIter, err := r.repo.Tags()
 	if err != nil {
 		return nil, err
 	}
-	_ = tagIter.ForEach(func(ref *plumbing.Reference) error {
+	if err := tagIter.ForEach(func(ref *plumbing.Reference) error {
 		refs[ref.Name().String()] = ref.Hash().String()
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return refs, nil
 }

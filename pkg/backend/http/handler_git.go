@@ -143,7 +143,11 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	// Snapshot refs before receive-pack for hook event detection
 	var refsBefore map[string]string
 	if service == repository.GitReceivePack && h.receiveHook != nil {
-		refsBefore, _ = repo.Refs()
+		var err error
+		refsBefore, err = repo.Refs()
+		if err != nil {
+			slog.Warn("failed to snapshot refs before receive-pack", "repo", repoName, "error", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
@@ -157,11 +161,15 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 
 	// Fire receive hook after successful receive-pack
 	if service == repository.GitReceivePack && h.receiveHook != nil {
-		refsAfter, _ := repo.Refs()
-		updates := receive.DiffRefs(refsBefore, refsAfter)
-		if len(updates) > 0 {
-			if err := h.receiveHook(r.Context(), repoName, updates); err != nil {
-				slog.Warn("receive hook failed", "repo", repoName, "error", err)
+		refsAfter, err := repo.Refs()
+		if err != nil {
+			slog.Warn("failed to snapshot refs after receive-pack", "repo", repoName, "error", err)
+		} else {
+			updates := receive.DiffRefs(refsBefore, refsAfter)
+			if len(updates) > 0 {
+				if err := h.receiveHook(r.Context(), repoName, updates); err != nil {
+					slog.Warn("receive hook failed", "repo", repoName, "error", err)
+				}
 			}
 		}
 	}
