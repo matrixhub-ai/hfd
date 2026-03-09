@@ -62,6 +62,12 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			if sourceURL := h.tryGitProxy(r.Context(), repoPath, repoName, service); sourceURL != "" {
+				if proxyErr := h.gitTeeCache.ProxyInfoRefs(w, r, sourceURL); proxyErr != nil {
+					responseText(w, fmt.Sprintf("Failed to proxy info refs for %q: %v", repoName, proxyErr), http.StatusBadGateway)
+				}
+				return
+			}
 			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
@@ -140,6 +146,12 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			if sourceURL := h.tryGitProxy(r.Context(), repoPath, repoName, service); sourceURL != "" {
+				if proxyErr := h.gitTeeCache.ProxyService(w, r, sourceURL, service); proxyErr != nil {
+					responseText(w, fmt.Sprintf("Failed to proxy %s for %q: %v", service, repoName, proxyErr), http.StatusBadGateway)
+				}
+				return
+			}
 			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
 			return
 		}
@@ -178,6 +190,11 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 // if the repository doesn't exist locally and proxy mode is enabled.
 // Proxy is only used for read operations (git-upload-pack).
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
+	// If a mirror init is in flight via tee cache, skip opening the partially-initialized repo.
+	if h.gitTeeCache != nil && h.gitTeeCache.IsInFlight(repoPath) {
+		return nil, repository.ErrRepositoryNotExists
+	}
+
 	repo, err := repository.Open(repoPath)
 	if err == nil {
 		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
@@ -193,6 +210,12 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 		return nil, err
 	}
 	if err == repository.ErrRepositoryNotExists && h.mirrorSourceFunc != nil {
+		// When git tee cache is available, skip blocking mirror init.
+		// The handler will proxy the request and start mirror init in the background.
+		if h.gitTeeCache != nil {
+			return nil, repository.ErrRepositoryNotExists
+		}
+
 		if h.permissionHook != nil {
 			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
@@ -214,6 +237,29 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 		return repo, nil
 	}
 	return nil, err
+}
+
+// tryGitProxy checks if a request should be proxied via the git tee cache.
+// Returns the source URL if proxying should proceed, or empty string if not.
+// Also starts the background mirror initialization if not already in progress.
+func (h *Handler) tryGitProxy(ctx context.Context, repoPath, repoName, service string) string {
+	if h.gitTeeCache == nil || h.mirrorSourceFunc == nil {
+		return ""
+	}
+	if service != repository.GitUploadPack {
+		return ""
+	}
+	if h.permissionHook != nil {
+		if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+			return ""
+		}
+	}
+	sourceURL, err := h.mirrorSourceFunc(ctx, repoPath, repoName)
+	if err != nil || sourceURL == "" {
+		return ""
+	}
+	h.gitTeeCache.StartInitMirror(repoPath, sourceURL)
+	return sourceURL
 }
 
 // syncMirrorWithHook syncs a mirror and fires post-receive hooks for any ref changes.

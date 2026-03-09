@@ -21,6 +21,7 @@ type Handler struct {
 	next http.Handler
 
 	mirrorSourceFunc repository.MirrorSourceFunc
+	gitTeeCache      *repository.GitTeeCache
 	permissionHook   permission.PermissionHook
 	preReceiveHook   receive.PreReceiveHook
 	postReceiveHook  receive.PostReceiveHook
@@ -45,6 +46,15 @@ func WithNext(next http.Handler) Option {
 func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(h *Handler) {
 		h.mirrorSourceFunc = fn
+	}
+}
+
+// WithGitTeeCache sets the git tee cache for transparent upstream repository proxying.
+// When configured, git clone/fetch requests for repositories that don't exist locally
+// are proxied to the upstream source while a local mirror is built in the background.
+func WithGitTeeCache(tc *repository.GitTeeCache) Option {
+	return func(h *Handler) {
+		h.gitTeeCache = tc
 	}
 }
 

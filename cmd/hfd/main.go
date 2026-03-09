@@ -140,12 +140,16 @@ func main() {
 
 	var mirrorSourceFunc repository.MirrorSourceFunc
 	var lfsTeeCache *lfs.TeeCache
+	var gitTeeCache *repository.GitTeeCache
 	if proxyURL != "" {
 		slog.Info("Proxy mode enabled", "source", proxyURL)
 		mirrorSourceFunc = repository.NewMirrorSourceFunc(proxyURL)
 		lfsTeeCache = lfs.NewTeeCache(
 			utils.HTTPClient,
 			lfsStore,
+		)
+		gitTeeCache = repository.NewGitTeeCache(
+			utils.HTTPClient,
 		)
 	}
 
@@ -231,6 +235,7 @@ func main() {
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirrorSourceFunc(mirrorSourceFunc),
+		backendhttp.WithGitTeeCache(gitTeeCache),
 		backendhttp.WithPermissionHookFunc(permissionHook),
 		backendhttp.WithPreReceiveHookFunc(preReceiveHook),
 		backendhttp.WithPostReceiveHookFunc(postReceiveHook),

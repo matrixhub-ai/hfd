@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wzshiming/hfd/internal/utils"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
@@ -292,6 +293,177 @@ func TestSSHProxyMirror(t *testing.T) {
 		}
 		if string(content) != "# SSH Proxy Test\n" {
 			t.Errorf("Unexpected content from cached SSH proxy clone: %q", content)
+		}
+	})
+}
+
+// setupProxyServerWithTeeCache creates a proxy HTTP server with git tee cache enabled.
+// The tee cache proxies git requests to the upstream while building a local mirror
+// in the background.
+func setupProxyServerWithTeeCache(t *testing.T, upstreamURL string) (*httptest.Server, string) {
+	t.Helper()
+
+	dataDir, err := os.MkdirTemp("", "proxy-tee-e2e-data")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dataDir) })
+
+	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStore := lfs.NewLocal(store.LFSDir())
+	gitTeeCache := repository.NewGitTeeCache(utils.HTTPClient)
+
+	var handler http.Handler
+
+	handler = backendhuggingface.NewHandler(
+		backendhuggingface.WithStorage(store),
+		backendhuggingface.WithLFSStore(lfsStore),
+		backendhuggingface.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+	)
+
+	handler = backendlfs.NewHandler(
+		backendlfs.WithStorage(store),
+		backendlfs.WithNext(handler),
+		backendlfs.WithLFSStore(lfsStore),
+	)
+
+	handler = backendhttp.NewHandler(
+		backendhttp.WithStorage(store),
+		backendhttp.WithNext(handler),
+		backendhttp.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		backendhttp.WithGitTeeCache(gitTeeCache),
+	)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(func() { server.Close() })
+
+	return server, dataDir
+}
+
+// TestHTTPProxyMirrorWithTeeCache verifies that cloning from a proxy server with
+// the git tee cache enabled proxies the first request to the upstream, builds a
+// local mirror in the background, and uses the cached mirror for subsequent requests.
+func TestHTTPProxyMirrorWithTeeCache(t *testing.T) {
+	// Set up upstream server and push content to it.
+	upstream, _ := setupTestServer(t)
+
+	const org = "proxy-tee-org"
+	const name = "proxy-tee-repo"
+
+	// Create the repository on the upstream via the HuggingFace API.
+	resp, err := http.Post(upstream.URL+"/api/repos/create", "application/json",
+		strings.NewReader(`{"type":"model","name":"`+name+`","organization":"`+org+`"}`))
+	if err != nil {
+		t.Fatalf("Failed to create upstream repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 creating upstream repo, got %d", resp.StatusCode)
+	}
+
+	clientDir, err := os.MkdirTemp("", "proxy-tee-e2e-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer os.RemoveAll(clientDir)
+
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+
+	// Clone empty repo from upstream and push a commit.
+	upstreamGitURL := upstream.URL + "/" + org + "/" + name + ".git"
+	upstreamCloneDir := filepath.Join(clientDir, "upstream-clone")
+	runGitCmdE2E(t, "", env, "clone", upstreamGitURL, upstreamCloneDir)
+	runGitCmdE2E(t, upstreamCloneDir, env, "config", "user.email", "test@test.com")
+	runGitCmdE2E(t, upstreamCloneDir, env, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(upstreamCloneDir, "README.md"), []byte("# Tee Cache Test\n"), 0644); err != nil {
+		t.Fatalf("Failed to write README.md: %v", err)
+	}
+	runGitCmdE2E(t, upstreamCloneDir, env, "add", "README.md")
+	runGitCmdE2E(t, upstreamCloneDir, env, "commit", "-m", "Initial commit")
+	runGitCmdE2E(t, upstreamCloneDir, env, "push", "origin", "main")
+
+	// Set up proxy server with tee cache pointing at the upstream.
+	proxy, proxyDataDir := setupProxyServerWithTeeCache(t, upstream.URL)
+	proxyGitURL := proxy.URL + "/" + org + "/" + name + ".git"
+
+	t.Run("CloneFromProxyWithTeeCache", func(t *testing.T) {
+		// The repo does not exist on the proxy; it should be proxied from upstream
+		// while a local mirror is built in the background.
+		cloneDir := filepath.Join(clientDir, "proxy-tee-clone")
+		runGitCmdE2E(t, "", env, "clone", proxyGitURL, cloneDir)
+
+		content, err := os.ReadFile(filepath.Join(cloneDir, "README.md"))
+		if err != nil {
+			t.Fatalf("Failed to read README.md from proxy tee cache clone: %v", err)
+		}
+		if string(content) != "# Tee Cache Test\n" {
+			t.Errorf("Unexpected content from proxy tee cache clone: %q", content)
+		}
+	})
+
+	t.Run("CloneFromCachedMirror", func(t *testing.T) {
+		// Wait for the background mirror to be created.
+		mirrorPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
+		for i := 0; i < 100; i++ {
+			if _, err := os.Stat(filepath.Join(mirrorPath, "HEAD")); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// Wait for mirror init to complete (refs must be populated).
+		for i := 0; i < 100; i++ {
+			repo, err := repository.Open(mirrorPath)
+			if err == nil {
+				if isMirror, _, err := repo.IsMirror(); err == nil && isMirror {
+					break
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		// The mirrored repo should now exist; second clone uses local mirror.
+		cloneDir := filepath.Join(clientDir, "proxy-tee-clone-cached")
+		runGitCmdE2E(t, "", env, "clone", proxyGitURL, cloneDir)
+
+		content, err := os.ReadFile(filepath.Join(cloneDir, "README.md"))
+		if err != nil {
+			t.Fatalf("Failed to read README.md from cached proxy tee cache clone: %v", err)
+		}
+		if string(content) != "# Tee Cache Test\n" {
+			t.Errorf("Unexpected content from cached proxy tee cache clone: %q", content)
+		}
+	})
+
+	t.Run("NonExistentRepoReturns404", func(t *testing.T) {
+		r, err := http.Get(proxy.URL + "/nobody/doesnotexist.git/info/refs?service=git-upload-pack")
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Errorf("Expected 404, got %d", r.StatusCode)
+		}
+	})
+
+	t.Run("PushToMirrorForbidden", func(t *testing.T) {
+		// Wait for mirror to exist first.
+		mirrorPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
+		for i := 0; i < 100; i++ {
+			if _, err := os.Stat(filepath.Join(mirrorPath, "HEAD")); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		r, err := http.Get(proxy.URL + "/" + org + "/" + name + ".git/info/refs?service=git-receive-pack")
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		r.Body.Close()
+		if r.StatusCode == http.StatusOK {
+			t.Errorf("Expected push to mirror to be forbidden, got 200")
 		}
 	})
 }
