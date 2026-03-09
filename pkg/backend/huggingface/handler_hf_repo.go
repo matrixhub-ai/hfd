@@ -17,79 +17,11 @@ import (
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
-// HFRepoInfo represents the info response for HuggingFace API
-type HFRepoInfo struct {
-	ID           string      `json:"id"`
-	ModelID      string      `json:"modelId,omitempty"`
-	SHA          string      `json:"sha"`
-	Private      bool        `json:"private"`
-	Disabled     bool        `json:"disabled"`
-	Gated        bool        `json:"gated"`
-	Downloads    int         `json:"downloads"`
-	Likes        int         `json:"likes"`
-	Tags         []string    `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
-	CardData     any         `json:"cardData,omitempty"`
-	Siblings     []HFSibling `json:"siblings"`
-	CreatedAt    string      `json:"createdAt,omitempty"`
-	LastModified string      `json:"lastModified,omitempty"`
-	UsedStorage  int64       `json:"usedStorage"`
-}
-
-// HFSibling represents a file in the model repository
-type HFSibling struct {
-	RFilename string `json:"rfilename"`
-}
-
-// HFDeleteRepoRequest represents the delete repo request body.
-type HFDeleteRepoRequest struct {
-	Type         string `json:"type"`
-	Name         string `json:"name"`
-	Organization string `json:"organization,omitempty"`
-}
-
-// HFMoveRepoRequest represents the move repo request body.
-type HFMoveRepoRequest struct {
-	FromRepo string `json:"fromRepo"`
-	ToRepo   string `json:"toRepo"`
-	Type     string `json:"type"`
-}
-
-// HFRepoSettingsRequest represents the repo settings update request body.
-type HFRepoSettingsRequest struct {
-	Private *bool `json:"private,omitempty"`
-	Gated   any   `json:"gated,omitempty"`
-}
-
-// HFCreateBranchRequest represents the create branch request body.
-type HFCreateBranchRequest struct {
-	StartingPoint string `json:"startingPoint,omitempty"`
-}
-
-// HFCreateTagRequest represents the create tag request body.
-type HFCreateTagRequest struct {
-	Tag     string `json:"tag"`
-	Message string `json:"message,omitempty"`
-}
-
-// HFGitRefInfo represents a single git ref (branch or tag).
-type HFGitRefInfo struct {
-	Name         string `json:"name"`
-	Ref          string `json:"ref"`
-	TargetCommit string `json:"targetCommit"`
-}
-
-// HFGitRefs represents the response for listing repo refs.
-type HFGitRefs struct {
-	Branches []HFGitRefInfo `json:"branches"`
-	Converts []HFGitRefInfo `json:"converts"`
-	Tags     []HFGitRefInfo `json:"tags"`
-}
-
 // handleInfoRevision handles the /api/{repoType}/{repo_id}/revision/{rev} and /api/{repoType}/{repo_id} endpoint
 func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -127,10 +59,10 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var siblings []HFSibling
+	var siblings []sibling
 	for _, entry := range hfEntries {
 		if entry.Type() == repository.EntryTypeFile {
-			siblings = append(siblings, HFSibling{
+			siblings = append(siblings, sibling{
 				RFilename: entry.Path(),
 			})
 		}
@@ -153,7 +85,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		tags = []string{}
 	}
 
-	hfInfo := HFRepoInfo{
+	hfInfo := repoInfo{
 		ID:          ri.FullName,
 		SHA:         commitHash,
 		Private:     false,
@@ -177,7 +109,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteRepo handles DELETE /api/repos/delete
 func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
-	var req HFDeleteRepoRequest
+	var req deleteRepoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -227,7 +159,7 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 
 // handleMoveRepo handles POST /api/repos/move
 func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
-	var req HFMoveRepoRequest
+	var req moveRepoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -289,7 +221,7 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 
 // handleRepoSettings handles PUT /api/{repoType}/{repo}/settings
 func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 
 	if h.permissionHook != nil {
 		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{}); err != nil {
@@ -310,7 +242,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Accept the settings payload but don't enforce private/gated in this server
-	var req HFRepoSettingsRequest
+	var req repoSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -322,7 +254,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 // handleCreateBranch handles POST /api/{repoType}/{repo}/branch/{rev}
 func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -361,7 +293,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req HFCreateBranchRequest
+	var req createBranchRequest
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
@@ -404,7 +336,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 // handleDeleteBranch handles DELETE /api/{repoType}/{repo}/branch/{rev}
 func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -479,7 +411,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 // handleCreateTag handles POST /api/{repoType}/{repo}/tag/{rev}
 func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -507,7 +439,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req HFCreateTagRequest
+	var req createTagRequest
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
@@ -562,7 +494,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 // handleDeleteTag handles DELETE /api/{repoType}/{repo}/tag/{rev}
 func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -630,7 +562,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 
 // handleListRefs handles GET /api/{repoType}/{repo}/refs
 func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 
 	if h.permissionHook != nil {
 		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
@@ -662,14 +594,14 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var branches []HFGitRefInfo
+	var branches []gitRefInfo
 	for _, name := range branchNames {
 		refName := plumbing.NewBranchReferenceName(name)
 		hash, err := repo.RefHash(refName)
 		if err != nil {
 			continue
 		}
-		branches = append(branches, HFGitRefInfo{
+		branches = append(branches, gitRefInfo{
 			Name:         name,
 			Ref:          refName.String(),
 			TargetCommit: hash,
@@ -682,14 +614,14 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		tagNames = nil
 	}
 
-	var tags []HFGitRefInfo
+	var tags []gitRefInfo
 	for _, name := range tagNames {
 		refName := plumbing.NewTagReferenceName(name)
 		hash, err := repo.RefHash(refName)
 		if err != nil {
 			continue
 		}
-		tags = append(tags, HFGitRefInfo{
+		tags = append(tags, gitRefInfo{
 			Name:         name,
 			Ref:          refName.String(),
 			TargetCommit: hash,
@@ -697,39 +629,25 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if branches == nil {
-		branches = []HFGitRefInfo{}
+		branches = []gitRefInfo{}
 	}
 	if tags == nil {
-		tags = []HFGitRefInfo{}
+		tags = []gitRefInfo{}
 	}
 
-	refs := HFGitRefs{
+	refs := gitRefs{
 		Branches: branches,
-		Converts: []HFGitRefInfo{},
+		Converts: []gitRefInfo{},
 		Tags:     tags,
 	}
 	responseJSON(w, refs, http.StatusOK)
-}
-
-// HFCommitAuthor represents the author entry in a commit's authors list.
-type HFCommitAuthor struct {
-	User string `json:"user"`
-}
-
-// HFCommitInfo represents a single commit in the list commits response.
-type HFCommitInfo struct {
-	ID      string           `json:"id"`
-	Title   string           `json:"title"`
-	Message string           `json:"message"`
-	Authors []HFCommitAuthor `json:"authors"`
-	Date    string           `json:"date"`
 }
 
 // handleListCommits handles GET /api/{repoType}/{repo}/commits/{rev}
 // It returns a paginated list of commits for the given revision.
 func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -785,13 +703,13 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Link", fmt.Sprintf("<%s>; rel=\"next\"", nextURL))
 	}
 
-	commitInfos := make([]HFCommitInfo, 0, len(rawCommits))
+	commitInfos := make([]commitInfo, 0, len(rawCommits))
 	for _, c := range rawCommits {
-		commitInfos = append(commitInfos, HFCommitInfo{
+		commitInfos = append(commitInfos, commitInfo{
 			ID:      c.Hash().String(),
 			Title:   c.Title(),
 			Message: c.Message(),
-			Authors: []HFCommitAuthor{{User: c.Author().Name()}},
+			Authors: []commitAuthor{{User: c.Author().Name()}},
 			Date:    c.Author().When().UTC().Format(repository.TimeFormat),
 		})
 	}
@@ -812,7 +730,7 @@ func buildNextCommitPageURL(r *http.Request, nextPage, limit int) string {
 // handleCompare handles GET /api/{repoType}/{repo}/compare/{compare}
 func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	compare := vars["compare"]
 
 	if h.permissionHook != nil {
@@ -866,17 +784,12 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	_ = patch.Encode(w)
 }
 
-// HFSuperSquashRequest represents the super-squash request body.
-type HFSuperSquashRequest struct {
-	Message string `json:"message,omitempty"`
-}
-
 // handleSuperSquash handles POST /api/{repoType}/{repo}/super-squash/{rev}
 // It squashes all commits in the current rev into a single commit with the given message.
 // The action is irreversible.
 func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -902,7 +815,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req HFSuperSquashRequest
+	var req superSquashRequest
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)

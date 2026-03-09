@@ -1,4 +1,4 @@
-package huggingface_test
+package huggingface
 
 import (
 	"encoding/json"
@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -29,8 +28,8 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = NewHandler(
+		WithStorage(store),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -65,7 +64,7 @@ func TestHuggingFaceCreateRepo(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFCreateRepoResponse
+	var result createRepoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestHuggingFacePreupload(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFPreuploadResponse
+	var result preuploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestHuggingFaceCommitAndResolve(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var commitResult backendhuggingface.HFCommitResponse
+	var commitResult commitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&commitResult); err != nil {
 		t.Fatalf("Failed to decode commit response: %v", err)
 	}
@@ -195,7 +194,7 @@ func TestHuggingFaceCommitAndResolve(t *testing.T) {
 		t.Fatalf("Expected 200 for model info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var repoInfo backendhuggingface.HFRepoInfo
+	var repoInfo repoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode model info: %v", err)
 	}
@@ -299,7 +298,7 @@ func TestHuggingFaceCommitLFSFile(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var commitResult backendhuggingface.HFCommitResponse
+	var commitResult commitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&commitResult); err != nil {
 		t.Fatalf("Failed to decode commit response: %v", err)
 	}
@@ -326,7 +325,7 @@ func TestHuggingFaceDatasetCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFCreateRepoResponse
+	var result createRepoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -378,7 +377,7 @@ func TestHuggingFaceDatasetCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200 for dataset info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var repoInfo backendhuggingface.HFRepoInfo
+	var repoInfo repoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode dataset info: %v", err)
 	}
@@ -420,7 +419,7 @@ func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFCreateRepoResponse
+	var result createRepoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -472,7 +471,7 @@ func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
 		t.Fatalf("Expected 200 for space info, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var repoInfo backendhuggingface.HFRepoInfo
+	var repoInfo repoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
 		t.Fatalf("Failed to decode space info: %v", err)
 	}
@@ -522,7 +521,7 @@ func TestHuggingFaceDatasetPreupload(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFPreuploadResponse
+	var result preuploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -694,7 +693,7 @@ func TestHuggingFacePreuploadWithGitAttributes(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFPreuploadResponse
+	var result preuploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -750,7 +749,7 @@ func TestHuggingFaceTreeSize(t *testing.T) {
 		t.Fatalf("Expected 200 for treesize, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var result backendhuggingface.HFTreeSize
+	var result treeSize
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode treesize response: %v", err)
 	}
@@ -790,7 +789,7 @@ func TestHuggingFaceTreeSize(t *testing.T) {
 		t.Fatalf("Expected 200 for treesize sub, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var subResult backendhuggingface.HFTreeSize
+	var subResult treeSize
 	if err := json.NewDecoder(resp.Body).Decode(&subResult); err != nil {
 		t.Fatalf("Failed to decode treesize sub response: %v", err)
 	}

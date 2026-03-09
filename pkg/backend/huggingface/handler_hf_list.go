@@ -17,19 +17,6 @@ import (
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
-// HFRepoListItem represents a repository item in the list response for models, datasets, and spaces.
-type HFRepoListItem struct {
-	RepoID        string   `json:"id"`
-	Likes         int      `json:"likes"`
-	TrendingScore int      `json:"trendingScore"`
-	Private       bool     `json:"private"`
-	Downloads     int      `json:"downloads"`
-	Tags          []string `json:"tags,omitempty"`
-	PipelineTag   string   `json:"pipeline_tag,omitempty"`
-	LibraryName   string   `json:"library_name,omitempty"`
-	ModelID       string   `json:"modelId,omitempty"`
-}
-
 // handleList is the unified handler for listing repositories of different types (models, datasets, spaces).
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -100,7 +87,7 @@ func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoTy
 	}
 
 	if items == nil {
-		items = []HFRepoListItem{}
+		items = []repoListItem{}
 	}
 
 	responseJSON(w, items, http.StatusOK)
@@ -166,14 +153,14 @@ func discoverReposInNamespace(nsPath, nsName string) []repoEntry {
 
 // buildRepoListItems converts discovered repo entries into list items,
 // applying search and tag filters and reading metadata from each repository.
-func buildRepoListItems(entries []repoEntry, isModel bool, search string, filterTags []string) []HFRepoListItem {
-	var items []HFRepoListItem
+func buildRepoListItems(entries []repoEntry, isModel bool, search string, filterTags []string) []repoListItem {
+	var items []repoListItem
 	for _, e := range entries {
 		if search != "" && !strings.Contains(strings.ToLower(e.fullName), strings.ToLower(search)) {
 			continue
 		}
 
-		item := HFRepoListItem{
+		item := repoListItem{
 			RepoID: e.fullName,
 		}
 		if isModel {
@@ -270,7 +257,7 @@ func matchesAllTags(repoTags, filterTags []string) bool {
 }
 
 // sortRepoItems sorts the list by the given field.
-func sortRepoItems(items []HFRepoListItem, sortField string) {
+func sortRepoItems(items []repoListItem, sortField string) {
 	switch sortField {
 	case "downloads":
 		sort.Slice(items, func(i, j int) bool {

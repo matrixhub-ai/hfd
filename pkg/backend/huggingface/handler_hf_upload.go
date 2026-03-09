@@ -27,83 +27,6 @@ const (
 	lfsThreshold = 10 * 1024 * 1024 // 10MB
 )
 
-// HFPreuploadRequest represents the preupload request body.
-type HFPreuploadRequest struct {
-	Files []HFPreuploadFile `json:"files"`
-}
-
-// HFPreuploadFile represents a file in the preupload request.
-type HFPreuploadFile struct {
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
-	Sample string `json:"sample"`
-}
-
-// HFPreuploadResponse represents the preupload response body.
-type HFPreuploadResponse struct {
-	Files []HFPreuploadResponseFile `json:"files"`
-}
-
-// HFPreuploadResponseFile represents a file in the preupload response.
-type HFPreuploadResponseFile struct {
-	Path         string `json:"path"`
-	UploadMode   string `json:"uploadMode"`
-	ShouldIgnore bool   `json:"shouldIgnore"`
-}
-
-// HFCreateRepoRequest represents the create repo request body.
-type HFCreateRepoRequest struct {
-	Type         string `json:"type"`
-	Name         string `json:"name"`
-	Organization string `json:"organization,omitempty"`
-	Private      bool   `json:"private"`
-}
-
-// HFCreateRepoResponse represents the create repo response body.
-type HFCreateRepoResponse struct {
-	URL string `json:"url"`
-}
-
-// HFCommitResponse represents the commit response body.
-type HFCommitResponse struct {
-	CommitURL     string `json:"commitUrl"`
-	CommitOid     string `json:"commitOid"`
-	CommitMessage string `json:"commitMessage"`
-}
-
-// HFCommitOperation represents a single operation in the NDJSON commit request.
-type HFCommitOperation struct {
-	Key   string          `json:"key"`
-	Value json.RawMessage `json:"value"`
-}
-
-// HFCommitHeader represents the header operation in the commit request.
-type HFCommitHeader struct {
-	Summary      string `json:"summary"`
-	Description  string `json:"description"`
-	ParentCommit string `json:"parentCommit"`
-}
-
-// HFCommitFile represents a regular file operation in the commit request.
-type HFCommitFile struct {
-	Content  string `json:"content"`
-	Path     string `json:"path"`
-	Encoding string `json:"encoding"`
-}
-
-// HFCommitLFSFile represents an LFS file operation in the commit request.
-type HFCommitLFSFile struct {
-	Path string `json:"path"`
-	Algo string `json:"algo"`
-	OID  string `json:"oid"`
-	Size int64  `json:"size"`
-}
-
-// HFCommitDeletedFile represents a delete file operation in the commit request.
-type HFCommitDeletedFile struct {
-	Path string `json:"path"`
-}
-
 func requestOrigin(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
@@ -142,7 +65,7 @@ func repoTypePrefix(repoType string) string {
 
 // handleCreateRepo handles POST /api/repos/create
 func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
-	var req HFCreateRepoRequest
+	var req createRepoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -176,7 +99,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 
 	// Check if repository already exists
 	if repository.IsRepository(repoPath) {
-		resp := HFCreateRepoResponse{
+		resp := createRepoResponse{
 			URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
 		}
 		responseJSON(w, resp, http.StatusOK)
@@ -214,7 +137,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := HFCreateRepoResponse{
+	resp := createRepoResponse{
 		URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
 	}
 	responseJSON(w, resp, http.StatusOK)
@@ -223,7 +146,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 // handlePreupload handles POST /api/{repoType}/{repo}/preupload/{rev}
 func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -233,7 +156,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var req HFPreuploadRequest
+	var req preuploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -261,20 +184,20 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var respFiles []HFPreuploadResponseFile
+	var respFiles []preuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
 		if file.Size > lfsThreshold || gitAttrs.IsLFS(file.Path) {
 			uploadMode = "lfs"
 		}
 
-		respFiles = append(respFiles, HFPreuploadResponseFile{
+		respFiles = append(respFiles, preuploadResponseFile{
 			Path:       file.Path,
 			UploadMode: uploadMode,
 		})
 	}
 
-	resp := HFPreuploadResponse{
+	resp := preuploadResponse{
 		Files: respFiles,
 	}
 	responseJSON(w, resp, http.StatusOK)
@@ -283,7 +206,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 // handleCommit handles POST /api/{repoType}/{repo}/commit/{rev}
 func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
@@ -305,7 +228,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	scanner := bufio.NewScanner(r.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 100*1024*1024) // Allow up to 100MB lines
 
-	var header HFCommitHeader
+	var header commitHeader
 	var ops []repository.CommitOperation
 
 	for scanner.Scan() {
@@ -314,7 +237,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var op HFCommitOperation
+		var op commitOperation
 		if err := json.Unmarshal([]byte(line), &op); err != nil {
 			responseJSON(w, fmt.Errorf("invalid NDJSON line: %v", err), http.StatusBadRequest)
 			return
@@ -328,7 +251,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case "file":
-			var file HFCommitFile
+			var file commitFile
 			if err := json.Unmarshal(op.Value, &file); err != nil {
 				responseJSON(w, fmt.Errorf("invalid file operation: %v", err), http.StatusBadRequest)
 				return
@@ -351,7 +274,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			})
 
 		case "lfsFile":
-			var lfsFile HFCommitLFSFile
+			var lfsFile commitLFSFile
 			if err := json.Unmarshal(op.Value, &lfsFile); err != nil {
 				responseJSON(w, fmt.Errorf("invalid LFS file operation: %v", err), http.StatusBadRequest)
 				return
@@ -366,7 +289,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			})
 
 		case "deletedFile":
-			var deleted HFCommitDeletedFile
+			var deleted commitDeletedFile
 			if err := json.Unmarshal(op.Value, &deleted); err != nil {
 				responseJSON(w, fmt.Errorf("invalid delete operation: %v", err), http.StatusBadRequest)
 				return
@@ -439,7 +362,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := HFCommitResponse{
+	resp := commitResponse{
 		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), ri.RepoPath, commitHash),
 		CommitOid:     commitHash,
 		CommitMessage: message,

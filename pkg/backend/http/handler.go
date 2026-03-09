@@ -97,6 +97,15 @@ func (h *Handler) register() {
 	h.root.NotFoundHandler = h.next
 }
 
+func (h *Handler) registryGit(r *mux.Router) {
+	r.HandleFunc("/{repo:.+}.git/info/refs", h.handleInfoRefs).Methods(http.MethodGet)
+	r.HandleFunc("/{repo:.+}/info/refs", h.handleInfoRefs).Methods(http.MethodGet)
+	r.HandleFunc("/{repo:.+}.git/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}.git/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost)
+}
+
 func responseText(w http.ResponseWriter, text string, sc int) {
 	header := w.Header()
 	if header.Get("Content-Type") == "" {

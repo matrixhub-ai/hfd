@@ -1,4 +1,4 @@
-package huggingface_test
+package huggingface
 
 import (
 	"encoding/json"
@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 )
 
 func TestHandleListModelsEmpty(t *testing.T) {
@@ -25,7 +23,7 @@ func TestHandleListModelsEmpty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -70,7 +68,7 @@ func TestHandleListModels(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -108,7 +106,7 @@ func TestHandleListModelsFilterByAuthor(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -141,7 +139,7 @@ func TestHandleListModelsSearch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -175,7 +173,7 @@ func TestHandleListModelsLimit(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -212,7 +210,7 @@ func TestHandleListModelsResponseFormat(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -250,7 +248,7 @@ func TestHandleListDatasetsEmpty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -290,7 +288,7 @@ func TestHandleListDatasets(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -327,7 +325,7 @@ func TestHandleListDatasetsFilterByAuthor(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -354,7 +352,7 @@ func TestHandleListSpacesEmpty(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -394,7 +392,7 @@ func TestHandleListSpaces(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -431,7 +429,7 @@ func TestHandleListSpacesSearch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -463,7 +461,7 @@ func TestHandleListModelsPagination(t *testing.T) {
 		t.Fatalf("Failed to list models: %v", err)
 	}
 
-	var page1 []backendhuggingface.HFRepoListItem
+	var page1 []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&page1); err != nil {
 		t.Fatalf("Failed to decode page 1: %v", err)
 	}
@@ -494,7 +492,7 @@ func TestHandleListModelsPagination(t *testing.T) {
 		t.Fatalf("Failed to fetch page 2: %v", err)
 	}
 
-	var page2 []backendhuggingface.HFRepoListItem
+	var page2 []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&page2); err != nil {
 		t.Fatalf("Failed to decode page 2: %v", err)
 	}
@@ -517,7 +515,7 @@ func TestHandleListModelsPagination(t *testing.T) {
 		t.Fatalf("Failed to fetch page 3: %v", err)
 	}
 
-	var page3 []backendhuggingface.HFRepoListItem
+	var page3 []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&page3); err != nil {
 		t.Fatalf("Failed to decode page 3: %v", err)
 	}
@@ -576,7 +574,7 @@ func TestHandleListModelsNoLinkHeaderWhenAllResultsFit(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -667,7 +665,7 @@ func TestHandleListModelsFilterByTag(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -709,7 +707,7 @@ func TestHandleListModelsSortByCreatedAt(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -751,7 +749,7 @@ func TestHandleListModelsExpand(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -792,7 +790,7 @@ func TestHandleListModelsSortByLikes(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -822,7 +820,7 @@ func TestHandleListModelsSortByTrendingScore(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var items []backendhuggingface.HFRepoListItem
+	var items []repoListItem
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}

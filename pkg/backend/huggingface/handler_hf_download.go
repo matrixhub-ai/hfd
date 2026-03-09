@@ -20,7 +20,7 @@ import (
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
 	query := r.URL.Query()
@@ -67,41 +67,17 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, toHFTreeEntries(entries, expand), http.StatusOK)
 }
 
-// hfTreeEntry is the API response type for a tree entry, with JSON annotations.
-type hfTreeEntry struct {
-	OID        string               `json:"oid"`
-	Path       string               `json:"path"`
-	Type       repository.EntryType `json:"type"`
-	Size       int64                `json:"size"`
-	LFS        *hfLFSPointer        `json:"lfs,omitempty"`
-	LastCommit *hfTreeLastCommit    `json:"lastCommit,omitempty"`
-}
-
-// hfLFSPointer is the API response type for an LFS pointer, with JSON annotations.
-type hfLFSPointer struct {
-	OID         string `json:"oid"`
-	Size        int64  `json:"size"`
-	PointerSize int64  `json:"pointerSize"`
-}
-
-// hfTreeLastCommit is the API response type for the last commit of a tree entry, with JSON annotations.
-type hfTreeLastCommit struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Date  string `json:"date"`
-}
-
-func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []hfTreeEntry {
-	result := make([]hfTreeEntry, len(entries))
+func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []treeEntry {
+	result := make([]treeEntry, len(entries))
 	for i, e := range entries {
-		result[i] = hfTreeEntry{
+		result[i] = treeEntry{
 			OID:  e.OID(),
 			Path: e.Path(),
 			Type: e.Type(),
 			Size: e.Size(),
 		}
 		if ptr := e.LFSPointer(); ptr != nil {
-			result[i].LFS = &hfLFSPointer{
+			result[i].LFS = &lfsPointer{
 				OID:         ptr.OID(),
 				Size:        ptr.Size(),
 				PointerSize: e.Size(),
@@ -109,7 +85,7 @@ func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []hfTreeEntry
 			result[i].Size = ptr.Size()
 		}
 		if lastCommit := e.LastCommit(); expand && lastCommit != nil {
-			result[i].LastCommit = &hfTreeLastCommit{
+			result[i].LastCommit = &treeLastCommit{
 				ID:    lastCommit.Hash().String(),
 				Title: lastCommit.Title(),
 				Date:  lastCommit.Author().When().UTC().Format(repository.TimeFormat),
@@ -119,17 +95,11 @@ func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []hfTreeEntry
 	return result
 }
 
-// HFTreeSize represents the response for the Get folder size API.
-type HFTreeSize struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
-}
-
 // handleTreeSize handles GET /api/{repoType}/{namespace}/{repo}/treesize/{revpath}
 func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
 	if h.permissionHook != nil {
@@ -167,7 +137,7 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseJSON(w, HFTreeSize{
+	responseJSON(w, treeSize{
 		Path: "/" + path,
 		Size: size,
 	}, http.StatusOK)
@@ -178,7 +148,7 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 
-	ri := repoInfo(r)
+	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
 	if h.permissionHook != nil {

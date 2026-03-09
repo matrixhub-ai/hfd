@@ -22,14 +22,6 @@ const (
 	metaMediaType    = contentMediaType + "+json"
 )
 
-func (h *Handler) registryLFS(r *mux.Router) {
-	r.HandleFunc("/{repo:.+}.git/info/lfs/objects/batch", h.handleBatch).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}/info/lfs/objects/batch", h.handleBatch).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/objects/{oid}", h.handleGetContent).Methods(http.MethodGet, http.MethodHead)
-	r.HandleFunc("/objects/{oid}", h.handlePutContent).Methods(http.MethodPut)
-	r.HandleFunc("/objects/{oid}/verify", h.handleVerifyObject).Methods(http.MethodPost)
-}
-
 // handleBatch provides the batch api
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	bv := unpackBatch(r)

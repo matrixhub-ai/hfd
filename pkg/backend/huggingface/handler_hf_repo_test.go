@@ -1,4 +1,4 @@
-package huggingface_test
+package huggingface
 
 import (
 	"encoding/json"
@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 )
 
 // createRepoAndCommit creates a repo and commits a file, returning the commit SHA.
@@ -39,7 +37,7 @@ func createRepoAndCommit(t *testing.T, endpoint, repoType, org, name string) str
 	}
 	defer resp.Body.Close()
 
-	var commitResult backendhuggingface.HFCommitResponse
+	var commitResult commitResponse
 	if err := json.NewDecoder(resp.Body).Decode(&commitResult); err != nil {
 		t.Fatalf("Failed to decode commit response: %v", err)
 	}
@@ -258,7 +256,7 @@ func TestHuggingFaceCreateAndDeleteBranch(t *testing.T) {
 		t.Fatalf("Expected 200 for refs, got %d", resp.StatusCode)
 	}
 
-	var refs backendhuggingface.HFGitRefs
+	var refs gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -304,7 +302,7 @@ func TestHuggingFaceCreateAndDeleteBranch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var refs2 backendhuggingface.HFGitRefs
+	var refs2 gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs2); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -343,7 +341,7 @@ func TestHuggingFaceCreateBranchFromRevision(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var refs backendhuggingface.HFGitRefs
+	var refs gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -404,7 +402,7 @@ func TestHuggingFaceCreateAndDeleteTag(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var refs backendhuggingface.HFGitRefs
+	var refs gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -448,7 +446,7 @@ func TestHuggingFaceCreateAndDeleteTag(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var refs2 backendhuggingface.HFGitRefs
+	var refs2 gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs2); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -477,7 +475,7 @@ func TestHuggingFaceListRefs(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
 
-	var refs backendhuggingface.HFGitRefs
+	var refs gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -531,7 +529,7 @@ func TestHuggingFaceRepoInfoUsedStorage(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
 
-	var info backendhuggingface.HFRepoInfo
+	var info repoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		t.Fatalf("Failed to decode repo info: %v", err)
 	}
@@ -578,7 +576,7 @@ func TestHuggingFaceDatasetBranchAndTag(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var refs backendhuggingface.HFGitRefs
+	var refs gitRefs
 	if err := json.NewDecoder(resp.Body).Decode(&refs); err != nil {
 		t.Fatalf("Failed to decode refs: %v", err)
 	}
@@ -644,7 +642,7 @@ func TestHuggingFaceSuperSquash(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
 
-	var info backendhuggingface.HFRepoInfo
+	var info repoInfo
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		t.Fatalf("Failed to decode repo info: %v", err)
 	}
@@ -913,7 +911,7 @@ func TestHuggingFaceListCommits(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var commits []backendhuggingface.HFCommitInfo
+	var commits []commitInfo
 	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
@@ -963,7 +961,7 @@ func TestHuggingFaceListCommitsPagination(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var page1 []backendhuggingface.HFCommitInfo
+	var page1 []commitInfo
 	if err := json.NewDecoder(resp.Body).Decode(&page1); err != nil {
 		t.Fatalf("Failed to decode page 1 response: %v", err)
 	}
@@ -990,7 +988,7 @@ func TestHuggingFaceListCommitsPagination(t *testing.T) {
 		t.Fatalf("Expected 200 on page 2, got %d: %s", resp2.StatusCode, respBody)
 	}
 
-	var page2 []backendhuggingface.HFCommitInfo
+	var page2 []commitInfo
 	if err := json.NewDecoder(resp2.Body).Decode(&page2); err != nil {
 		t.Fatalf("Failed to decode page 2 response: %v", err)
 	}
@@ -1045,7 +1043,7 @@ func TestHuggingFaceListCommitsDatasets(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	var commits []backendhuggingface.HFCommitInfo
+	var commits []commitInfo
 	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}

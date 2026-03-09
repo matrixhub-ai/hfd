@@ -121,43 +121,6 @@ func (h *Handler) register() {
 	h.root.NotFoundHandler = h.next
 }
 
-type repoInformation struct {
-	RepoType string
-	RepoPath string
-
-	FullName  string
-	Namespace string
-	Name      string
-}
-
-// repoInfo returns the repository information extracted from the request, including repo type, storage path, namespace, and name.
-func repoInfo(r *http.Request) repoInformation {
-	vars := mux.Vars(r)
-	repoType := vars["repoType"]
-	if repoType == "" {
-		repoType = "models"
-	}
-	namespace := vars["namespace"]
-	name := vars["repo"]
-	fullName := namespace + "/" + name
-
-	var repoPath string
-	switch repoType {
-	case "datasets", "spaces":
-		repoPath = repoType + "/" + fullName
-	default:
-		repoPath = fullName
-	}
-
-	return repoInformation{
-		RepoType:  repoType,
-		RepoPath:  repoPath,
-		Namespace: namespace,
-		Name:      name,
-		FullName:  fullName,
-	}
-}
-
 // registryHuggingFace registers the HuggingFace-compatible API endpoints.
 // These endpoints allow using huggingface-cli and huggingface_hub library
 // with HF_ENDPOINT pointing to this server.
@@ -198,6 +161,43 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+}
+
+type repoInformation struct {
+	RepoType string
+	RepoPath string
+
+	FullName  string
+	Namespace string
+	Name      string
+}
+
+// getRepoInformation returns the repository information extracted from the request, including repo type, storage path, namespace, and name.
+func getRepoInformation(r *http.Request) repoInformation {
+	vars := mux.Vars(r)
+	repoType := vars["repoType"]
+	if repoType == "" {
+		repoType = "models"
+	}
+	namespace := vars["namespace"]
+	name := vars["repo"]
+	fullName := namespace + "/" + name
+
+	var repoPath string
+	switch repoType {
+	case "datasets", "spaces":
+		repoPath = repoType + "/" + fullName
+	default:
+		repoPath = fullName
+	}
+
+	return repoInformation{
+		RepoType:  repoType,
+		RepoPath:  repoPath,
+		Namespace: namespace,
+		Name:      name,
+		FullName:  fullName,
+	}
 }
 
 // openRepo opens a repository, optionally creating a mirror from the proxy source
