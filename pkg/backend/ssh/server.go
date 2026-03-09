@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -30,6 +33,7 @@ type Server struct {
 	config             *ssh.ServerConfig
 	proxyManager       *repository.ProxyManager
 	permissionHook     permission.PermissionHook
+	receiveHook        receive.Hook
 	tokenSignValidator authenticate.TokenSignValidator
 	lfsURL             string
 	logger             *slog.Logger
@@ -64,6 +68,13 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(s *Server) {
 		s.permissionHook = hook
+	}
+}
+
+// WithReceiveHookFunc sets the receive hook called after a push completes.
+func WithReceiveHookFunc(hook receive.Hook) Option {
+	return func(s *Server) {
+		s.receiveHook = hook
 	}
 }
 
@@ -323,10 +334,36 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
 
+	var hookOutput string
+	if service == repository.GitReceivePack && s.receiveHook != nil {
+		if err := receive.InstallHooks(fullPath); err != nil {
+			s.logger.Error("ssh protocol: failed to install hooks", "error", err)
+			sendExitStatus(channel, 1)
+			return
+		}
+		hookOutput = filepath.Join(fullPath, "hooks", "post-receive-output")
+		defer os.Remove(hookOutput)
+		cmd.Env = append(os.Environ(),
+			receive.EnvRepoName+"="+repoPath,
+			receive.EnvHookOutput+"="+hookOutput,
+		)
+	}
+
 	if err := cmd.Run(); err != nil {
 		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)
 		sendExitStatus(channel, 1)
 		return
+	}
+
+	if hookOutput != "" {
+		updates, err := receive.ParseHookOutput(hookOutput)
+		if err != nil {
+			s.logger.Error("ssh protocol: failed to parse hook output", "repo", repoPath, "error", err)
+		} else if len(updates) > 0 {
+			if err := s.receiveHook(ctx, repoPath, updates); err != nil {
+				s.logger.Error("ssh protocol: receive hook failed", "repo", repoPath, "error", err)
+			}
+		}
 	}
 
 	sendExitStatus(channel, 0)

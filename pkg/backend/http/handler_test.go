@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -368,4 +370,85 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 			t.Errorf("Expected operation %v, got %v", permission.OperationReadRepo, capturedOp)
 		}
 	})
+}
+
+func TestHTTPHandlerReceiveHook(t *testing.T) {
+	upstreamDir, err := os.MkdirTemp("", "http-test-receivehook")
+	if err != nil {
+		t.Fatalf("Failed to create temp upstream dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(upstreamDir)
+	}()
+
+	clientDir, err := os.MkdirTemp("", "http-test-receivehook-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(clientDir)
+	}()
+
+	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
+
+	repoName := "hook-test-repo"
+	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+		t.Fatalf("Failed to create repos dir: %v", err)
+	}
+	runGitCmd(t, "", "init", "--bare", repoPath)
+
+	var mu sync.Mutex
+	var capturedRepo string
+	var capturedUpdates []receive.RefUpdate
+
+	handler := backendhttp.NewHandler(
+		backendhttp.WithStorage(upstreamStorage),
+		backendhttp.WithReceiveHookFunc(func(ctx context.Context, repo string, updates []receive.RefUpdate) error {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedRepo = repo
+			capturedUpdates = updates
+			return nil
+		}),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	upstreamURL := server.URL + "/" + repoName + ".git"
+
+	// Clone, commit, and push
+	workDir := filepath.Join(clientDir, "work")
+	runGitCmd(t, "", "clone", upstreamURL, workDir)
+	runGitCmd(t, workDir, "config", "user.email", "test@test.com")
+	runGitCmd(t, workDir, "config", "user.name", "Test User")
+
+	testFile := filepath.Join(workDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Hook Test\n"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	runGitCmd(t, workDir, "add", "README.md")
+	runGitCmd(t, workDir, "commit", "-m", "Initial commit")
+	runGitCmd(t, workDir, "push", "-u", "origin", "master")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if capturedRepo != repoName {
+		t.Errorf("Expected repo %q, got %q", repoName, capturedRepo)
+	}
+	if len(capturedUpdates) != 1 {
+		t.Fatalf("Expected 1 update, got %d", len(capturedUpdates))
+	}
+	u := capturedUpdates[0]
+	if !u.IsBranch() {
+		t.Error("Expected branch update")
+	}
+	if u.Name() != "master" {
+		t.Errorf("Expected branch name 'master', got %q", u.Name())
+	}
+	if !u.IsCreate() {
+		t.Error("Expected create (new branch)")
+	}
 }

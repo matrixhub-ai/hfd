@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -141,10 +145,50 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
+	if service == repository.GitReceivePack && h.receiveHook != nil {
+		h.handleReceivePackWithHook(r.Context(), w, r, repo, repoPath, repoName)
+		return
+	}
+
 	err = repo.Stateless(r.Context(), w, r.Body, service, false)
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
+	}
+}
+
+// handleReceivePackWithHook runs git-receive-pack with hooks installed and
+// calls the receive hook callback with the ref updates captured by the
+// post-receive hook script.
+func (h *Handler) handleReceivePackWithHook(ctx context.Context, w http.ResponseWriter, r *http.Request, repo *repository.Repository, repoPath, repoName string) {
+	if err := receive.InstallHooks(repoPath); err != nil {
+		responseText(w, fmt.Sprintf("Failed to install hooks for %q: %v", repoName, err), http.StatusInternalServerError)
+		return
+	}
+
+	hookOutput := filepath.Join(repoPath, "hooks", "post-receive-output")
+	defer os.Remove(hookOutput)
+
+	extraEnv := []string{
+		receive.EnvRepoName + "=" + repoName,
+		receive.EnvHookOutput + "=" + hookOutput,
+	}
+
+	err := repo.Stateless(ctx, w, r.Body, repository.GitReceivePack, false, extraEnv...)
+	if err != nil {
+		responseText(w, fmt.Sprintf("Failed to handle receive-pack for %q: %v", repoName, err), http.StatusInternalServerError)
+		return
+	}
+
+	updates, err := receive.ParseHookOutput(hookOutput)
+	if err != nil {
+		slog.Error("Failed to parse hook output", "repo", repoName, "error", err)
+		return
+	}
+	if len(updates) > 0 {
+		if err := h.receiveHook(ctx, repoName, updates); err != nil {
+			slog.Error("Receive hook failed", "repo", repoName, "error", err)
+		}
 	}
 }
 
