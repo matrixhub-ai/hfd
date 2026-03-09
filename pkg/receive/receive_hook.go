@@ -50,11 +50,11 @@ func (r RefUpdate) IsDelete() bool {
 
 // Name returns the short name of the reference (e.g. "main", "v1.0").
 func (r RefUpdate) Name() string {
-	if strings.HasPrefix(r.RefName, "refs/heads/") {
-		return strings.TrimPrefix(r.RefName, "refs/heads/")
+	if after, ok := strings.CutPrefix(r.RefName, "refs/heads/"); ok {
+		return after
 	}
-	if strings.HasPrefix(r.RefName, "refs/tags/") {
-		return strings.TrimPrefix(r.RefName, "refs/tags/")
+	if after, ok := strings.CutPrefix(r.RefName, "refs/tags/"); ok {
+		return after
 	}
 	return r.RefName
 }
