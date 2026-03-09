@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -284,7 +287,9 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+			Ref: rev,
+		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -398,11 +403,40 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mock pre-receive hook with current branch head as OldRev
+	if h.preReceiveHook != nil {
+		oldRev := header.ParentCommit
+		if oldRev == "" {
+			oldRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(rev))
+			if oldRev == "" {
+				oldRev = receive.ZeroHash
+			}
+		}
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: oldRev, RefName: "refs/heads/" + rev},
+		}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	// TODO: Add support for specifying author/committer in the request body
 	commitHash, err := repo.CreateCommit(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		oldRev := header.ParentCommit
+		if oldRev == "" {
+			oldRev = receive.ZeroHash
+		}
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: oldRev, NewRev: commitHash, RefName: "refs/heads/" + rev},
+		}); hookErr != nil {
+			slog.Warn("post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	resp := HFCommitResponse{

@@ -315,6 +315,33 @@ func (r *Repository) TagExists(name string) (bool, error) {
 	return false, err
 }
 
+// Refs returns a map of all reference names (e.g. "refs/heads/main", "refs/tags/v1.0")
+// to their commit hashes. This is useful for snapshotting the ref state before/after operations.
+func (r *Repository) Refs() (map[string]string, error) {
+	refs := make(map[string]string)
+
+	iter, err := r.repo.References()
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	err = iter.ForEach(func(ref *plumbing.Reference) error {
+		name := ref.Name().String()
+		// Skip HEAD as it's a symbolic reference, not a concrete ref
+		if name == "HEAD" {
+			return nil
+		}
+		refs[name] = ref.Hash().String()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return refs, nil
+}
+
 // RefHash returns the commit hash a rev (branch or tag) points to.
 func (r *Repository) RefHash(refName plumbing.ReferenceName) (string, error) {
 	rev, err := r.repo.Storer.Reference(refName)

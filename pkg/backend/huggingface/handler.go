@@ -3,12 +3,14 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -24,6 +26,8 @@ type Handler struct {
 	proxyManager    *repository.ProxyManager
 	lfsProxyManager *lfs.ProxyManager
 	permissionHook  permission.PermissionHook
+	preReceiveHook  receive.PreReceiveHook
+	postReceiveHook receive.PostReceiveHook
 	lfsStore        lfs.Store
 }
 
@@ -60,6 +64,22 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(h *Handler) {
 		h.permissionHook = hook
+	}
+}
+
+// WithPreReceiveHookFunc sets the pre-receive hook called before ref changes are applied.
+// If the hook returns an error, the operation is rejected.
+func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+	return func(h *Handler) {
+		h.preReceiveHook = hook
+	}
+}
+
+// WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
+// Errors from this hook are logged but do not affect the push result.
+func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+	return func(h *Handler) {
+		h.postReceiveHook = hook
 	}
 }
 
@@ -186,9 +206,7 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 	repo, err := repository.Open(repoPath)
 	if err == nil {
 		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
-			if err := repo.SyncMirror(ctx); err != nil {
-				return nil, err
-			}
+			h.syncMirrorWithHook(ctx, repo, repoPath, repoName)
 		}
 		return repo, nil
 	}
@@ -198,9 +216,51 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 				return nil, err
 			}
 		}
-		return h.proxyManager.Init(ctx, repoPath, repoName)
+		repo, err := h.proxyManager.Init(ctx, repoPath, repoName)
+		if err != nil {
+			return nil, err
+		}
+		h.fireHookForNewMirror(ctx, repo, repoPath, repoName)
+		return repo, nil
 	}
 	return nil, err
+}
+
+// syncMirrorWithHook syncs a mirror and fires post-receive hooks for any ref changes.
+func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
+	var before map[string]string
+	if h.postReceiveHook != nil {
+		before, _ = repo.Refs()
+	}
+
+	if err := repo.SyncMirror(ctx); err != nil {
+		slog.Warn("failed to sync mirror", "repo", repoName, "error", err)
+		return
+	}
+
+	if h.postReceiveHook != nil {
+		after, _ := repo.Refs()
+		updates := receive.DiffRefs(before, after)
+		if len(updates) > 0 {
+			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
+				slog.Warn("post-receive hook error", "repo", repoName, "error", err)
+			}
+		}
+	}
+}
+
+// fireHookForNewMirror fires post-receive hooks for all refs in a newly created mirror repo.
+func (h *Handler) fireHookForNewMirror(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
+	if h.postReceiveHook == nil {
+		return
+	}
+	after, _ := repo.Refs()
+	updates := receive.DiffRefs(nil, after)
+	if len(updates) > 0 {
+		if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
+			slog.Warn("post-receive hook error", "repo", repoName, "error", err)
+		}
+	}
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {

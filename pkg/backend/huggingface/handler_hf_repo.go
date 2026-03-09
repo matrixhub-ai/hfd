@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -324,7 +326,9 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+			Ref: rev,
+		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -365,10 +369,33 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.preReceiveHook != nil {
+		// Resolve the starting point to a hash so the hook has the target commit
+		newRev, _ := repo.ResolveRevision(req.StartingPoint)
+		if newRev == "" {
+			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
+		}
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: receive.ZeroHash, NewRev: newRev, RefName: "refs/heads/" + rev},
+		}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	revision := req.StartingPoint
 	if err := repo.CreateBranch(rev, revision); err != nil {
 		responseJSON(w, fmt.Errorf("failed to create branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: receive.ZeroHash, NewRev: hash, RefName: "refs/heads/" + rev},
+		}); hookErr != nil {
+			slog.Warn("post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -381,7 +408,9 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+			Ref: rev,
+		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -419,9 +448,29 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture hash before deletion for pre/post hooks
+	oldHash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
+
+	updates := []receive.RefUpdate{
+		{OldRev: oldHash, NewRev: receive.ZeroHash, RefName: "refs/heads/" + rev},
+	}
+
+	if h.preReceiveHook != nil {
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	if err := repo.DeleteBranch(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete branch %q: %v", rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, updates); hookErr != nil {
+			slog.Warn("post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -434,7 +483,9 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+			Ref: rev,
+		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -480,9 +531,29 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.preReceiveHook != nil {
+		// Resolve the revision to a hash so the hook has the target commit
+		newRev, _ := repo.ResolveRevision(rev)
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: receive.ZeroHash, NewRev: newRev, RefName: "refs/tags/" + req.Tag},
+		}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	if err := repo.CreateTag(req.Tag, rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to create tag %q: %v", req.Tag, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			{OldRev: receive.ZeroHash, NewRev: hash, RefName: "refs/tags/" + req.Tag},
+		}); hookErr != nil {
+			slog.Warn("post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -495,7 +566,9 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+			Ref: rev,
+		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -527,9 +600,29 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture hash before deletion for pre/post hooks
+	oldHash, _ := repo.RefHash(plumbing.NewTagReferenceName(rev))
+
+	updates := []receive.RefUpdate{
+		{OldRev: oldHash, NewRev: receive.ZeroHash, RefName: "refs/tags/" + rev},
+	}
+
+	if h.preReceiveHook != nil {
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	if err := repo.DeleteTag(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to delete tag %q: %v", rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, updates); hookErr != nil {
+			slog.Warn("post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

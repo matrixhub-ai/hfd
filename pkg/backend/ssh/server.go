@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 )
 
@@ -30,6 +32,8 @@ type Server struct {
 	config             *ssh.ServerConfig
 	proxyManager       *repository.ProxyManager
 	permissionHook     permission.PermissionHook
+	preReceiveHook     receive.PreReceiveHook
+	postReceiveHook    receive.PostReceiveHook
 	tokenSignValidator authenticate.TokenSignValidator
 	lfsURL             string
 	logger             *slog.Logger
@@ -64,6 +68,22 @@ func WithProxyManager(pm *repository.ProxyManager) Option {
 func WithPermissionHookFunc(hook permission.PermissionHook) Option {
 	return func(s *Server) {
 		s.permissionHook = hook
+	}
+}
+
+// WithPreReceiveHookFunc sets the pre-receive hook called before a git push is processed.
+// If the hook returns an error, the push is rejected.
+func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+	return func(s *Server) {
+		s.preReceiveHook = hook
+	}
+}
+
+// WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
+// Errors from this hook are logged but do not affect the push result.
+func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+	return func(s *Server) {
+		s.postReceiveHook = hook
 	}
 }
 
@@ -318,6 +338,13 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		}
 	}
 
+	// For receive-pack with permission/receive hooks: use pipe-based approach
+	// to intercept pkt-line commands for permission checking before the push completes.
+	if service == repository.GitReceivePack && (s.preReceiveHook != nil || s.postReceiveHook != nil) {
+		s.executeReceivePackWithHooks(ctx, channel, service, repoPath, fullPath)
+		return
+	}
+
 	cmd := utils.Command(ctx, service, fullPath)
 	cmd.Stdin = channel
 	cmd.Stdout = channel
@@ -332,14 +359,82 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	sendExitStatus(channel, 0)
 }
 
+// executeReceivePackWithHooks handles git-receive-pack using a pipe to intercept
+// pkt-line ref update commands. This allows the permission hook to inspect and
+// reject pushes before git-receive-pack processes the pack data.
+//
+// Flow:
+//  1. Start git-receive-pack with io.Pipe as stdin; it sends ref advertisement
+//     through stdout to the SSH channel.
+//  2. Client receives the advertisement and sends pkt-line commands through the channel.
+//  3. ParseRefUpdates reads the commands from the channel.
+//  4. Permission hook runs — if denied, kill the git process.
+//  5. If allowed, forward the remaining data through the pipe to git-receive-pack.
+//  6. After completion, fire the receive hook.
+func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Channel, service string, repoPath, fullPath string) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+
+	cmd := utils.Command(ctx, service, fullPath)
+	cmd.Stdin = pr
+	cmd.Stdout = channel
+	cmd.Stderr = channel.Stderr()
+
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		s.logger.Error("ssh protocol: command start failed", "service", service, "error", err)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	// After git-receive-pack sends the ref advertisement through stdout→channel,
+	// the client sends pkt-line commands back through the channel. ParseRefUpdates
+	// reads these commands and returns a replay reader for forwarding.
+	updates, replay := receive.ParseRefUpdates(channel)
+
+	// Pre-receive hook — can reject the push before pack data is processed.
+	if s.preReceiveHook != nil && len(updates) > 0 {
+		if err := s.preReceiveHook(ctx, repoPath, updates); err != nil {
+			s.logger.Warn("ssh protocol: pre-receive hook denied push", "repo", repoPath, "error", err)
+			cmd.Process.Kill()
+			pw.Close()
+			_ = cmd.Wait() // expected error: process was killed
+			sendExitStatus(channel, 1)
+			return
+		}
+	}
+
+	// Permission granted — forward the buffered pkt-line data and remaining
+	// channel input to git-receive-pack through the pipe.
+	go func() {
+		defer pw.Close()
+		if _, err := io.Copy(pw, replay); err != nil {
+			s.logger.Warn("ssh protocol: error forwarding data to receive-pack", "repo", repoPath, "error", err)
+		}
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		s.logger.Error("ssh protocol: command failed", "service", service, "error", err)
+		sendExitStatus(channel, 1)
+		return
+	}
+
+	// Fire post-receive hook with the ref updates.
+	if s.postReceiveHook != nil && len(updates) > 0 {
+		if hookErr := s.postReceiveHook(ctx, repoPath, updates); hookErr != nil {
+			s.logger.Warn("ssh protocol: post-receive hook error", "repo", repoPath, "error", hookErr)
+		}
+	}
+
+	sendExitStatus(channel, 0)
+}
+
 // openRepo opens a repository, optionally creating a mirror from the proxy source.
 func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
 	repo, err := repository.Open(repoPath)
 	if err == nil {
 		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
-			if err := repo.SyncMirror(ctx); err != nil {
-				return nil, err
-			}
+			s.syncMirrorWithHook(ctx, repo, repoPath, repoName)
 		}
 		return repo, nil
 	}
@@ -353,9 +448,51 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 				return nil, err
 			}
 		}
-		return s.proxyManager.Init(ctx, repoPath, repoName)
+		repo, err := s.proxyManager.Init(ctx, repoPath, repoName)
+		if err != nil {
+			return nil, err
+		}
+		s.fireHookForNewMirror(ctx, repo, repoPath, repoName)
+		return repo, nil
 	}
 	return nil, err
+}
+
+// syncMirrorWithHook syncs a mirror and fires post-receive hooks for any ref changes.
+func (s *Server) syncMirrorWithHook(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
+	var before map[string]string
+	if s.postReceiveHook != nil {
+		before, _ = repo.Refs()
+	}
+
+	if err := repo.SyncMirror(ctx); err != nil {
+		s.logger.Warn("failed to sync mirror", "repo", repoName, "error", err)
+		return
+	}
+
+	if s.postReceiveHook != nil {
+		after, _ := repo.Refs()
+		updates := receive.DiffRefs(before, after)
+		if len(updates) > 0 {
+			if err := s.postReceiveHook(ctx, repoName, updates); err != nil {
+				s.logger.Warn("post-receive hook error", "repo", repoName, "error", err)
+			}
+		}
+	}
+}
+
+// fireHookForNewMirror fires post-receive hooks for all refs in a newly created mirror repo.
+func (s *Server) fireHookForNewMirror(ctx context.Context, repo *repository.Repository, repoPath, repoName string) {
+	if s.postReceiveHook == nil {
+		return
+	}
+	after, _ := repo.Refs()
+	updates := receive.DiffRefs(nil, after)
+	if len(updates) > 0 {
+		if err := s.postReceiveHook(ctx, repoName, updates); err != nil {
+			s.logger.Warn("post-receive hook error", "repo", repoName, "error", err)
+		}
+	}
 }
 
 // lfsAuthResponse is the JSON response returned by git-lfs-authenticate.
