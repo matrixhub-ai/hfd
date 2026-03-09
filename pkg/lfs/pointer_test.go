@@ -44,12 +44,12 @@ size 1024
 				t.Fatalf("ParsePointer() unexpected error: %v", err)
 			}
 
-			if ptr.Oid != tt.expectOid {
-				t.Errorf("ParsePointer() Oid = %q, want %q", ptr.Oid, tt.expectOid)
+			if ptr.OID() != tt.expectOid {
+				t.Errorf("ParsePointer() Oid = %q, want %q", ptr.OID(), tt.expectOid)
 			}
 
-			if ptr.Size != tt.expectSize {
-				t.Errorf("ParsePointer() Size = %d, want %d", ptr.Size, tt.expectSize)
+			if ptr.Size() != tt.expectSize {
+				t.Errorf("ParsePointer() Size = %d, want %d", ptr.Size(), tt.expectSize)
 			}
 		})
 	}

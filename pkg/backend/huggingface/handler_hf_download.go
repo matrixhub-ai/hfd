@@ -58,14 +58,65 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := repo.Tree(rev, path, &repository.TreeOptions{
 		Recursive: recursive,
-		Expand:    expand,
 	})
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoPath, rev, path, err), http.StatusInternalServerError)
 		return
 	}
 
-	responseJSON(w, entries, http.StatusOK)
+	responseJSON(w, toHFTreeEntries(entries, expand), http.StatusOK)
+}
+
+// hfTreeEntry is the API response type for a tree entry, with JSON annotations.
+type hfTreeEntry struct {
+	OID        string               `json:"oid"`
+	Path       string               `json:"path"`
+	Type       repository.EntryType `json:"type"`
+	Size       int64                `json:"size"`
+	LFS        *hfLFSPointer        `json:"lfs,omitempty"`
+	LastCommit *hfTreeLastCommit    `json:"lastCommit,omitempty"`
+}
+
+// hfLFSPointer is the API response type for an LFS pointer, with JSON annotations.
+type hfLFSPointer struct {
+	OID         string `json:"oid"`
+	Size        int64  `json:"size"`
+	PointerSize int64  `json:"pointerSize"`
+}
+
+// hfTreeLastCommit is the API response type for the last commit of a tree entry, with JSON annotations.
+type hfTreeLastCommit struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Date  string `json:"date"`
+}
+
+func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []hfTreeEntry {
+	result := make([]hfTreeEntry, len(entries))
+	for i, e := range entries {
+		result[i] = hfTreeEntry{
+			OID:  e.OID(),
+			Path: e.Path(),
+			Type: e.Type(),
+			Size: e.Size(),
+		}
+		if ptr := e.LFSPointer(); ptr != nil {
+			result[i].LFS = &hfLFSPointer{
+				OID:         ptr.OID(),
+				Size:        ptr.Size(),
+				PointerSize: e.Size(),
+			}
+			result[i].Size = ptr.Size()
+		}
+		if lastCommit := e.LastCommit(); expand && lastCommit != nil {
+			result[i].LastCommit = &hfTreeLastCommit{
+				ID:    lastCommit.Hash().String(),
+				Title: lastCommit.Title(),
+				Date:  lastCommit.Author().When().UTC().Format(repository.TimeFormat),
+			}
+		}
+	}
+	return result
 }
 
 // HFTreeSize represents the response for the Get folder size API.
@@ -163,7 +214,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	commits, err := repo.Commits(rev, 1, nil)
 	commitHash := ""
 	if err == nil && len(commits) > 0 {
-		commitHash = commits[0].SHA
+		commitHash = commits[0].Hash().String()
 	}
 
 	blob, err := repo.Blob(rev, path)
@@ -184,9 +235,9 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				// This is an LFS file, redirect to the LFS object
 				// Set HuggingFace-required headers before redirect
 				w.Header().Set("X-Repo-Commit", commitHash)
-				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.Oid))
+				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
-				if !h.lfsStore.Exists(ptr.Oid) {
+				if !h.lfsStore.Exists(ptr.OID()) {
 					// Try proxy fetch if proxy manager is configured
 					if h.lfsProxyManager != nil {
 						proxyAllowed := true
@@ -198,15 +249,15 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 						sourceURL := h.getLFSProxySourceURL(repoPath)
 						if sourceURL != "" && proxyAllowed {
 							h.lfsProxyManager.FetchFromProxy(context.Background(), sourceURL, []lfs.LFSObject{
-								{Oid: ptr.Oid, Size: ptr.Size},
+								{Oid: ptr.OID(), Size: ptr.Size()},
 							})
 
-							pf := h.lfsProxyManager.GetFlight(ptr.Oid)
+							pf := h.lfsProxyManager.GetFlight(ptr.OID())
 							// TODO(@wzshiming) We should ideally have a better way to wait for the proxy fetch to complete instead of polling like this,
 							// but this is good enough for now since the client will retry if the file is not ready yet.
 							for i := 0; i != 5; i++ {
 								time.Sleep(500 * time.Millisecond)
-								pf = h.lfsProxyManager.GetFlight(ptr.Oid)
+								pf = h.lfsProxyManager.GetFlight(ptr.OID())
 								if pf != nil {
 									break
 								}
@@ -215,41 +266,41 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							if pf != nil {
 								rs := pf.NewReadSeeker()
 								defer rs.Close()
-								http.ServeContent(w, r, ptr.Oid, time.Now(), rs)
+								http.ServeContent(w, r, ptr.OID(), time.Now(), rs)
 								return
 							}
 						}
 					}
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, rev), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoPath, rev), http.StatusNotFound)
 					return
 				}
 				if signer, ok := h.lfsStore.(lfs.SignGetter); ok {
-					url, err := signer.SignGet(ptr.Oid)
+					url, err := signer.SignGet(ptr.OID())
 					if err != nil {
-						responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+						responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 						return
 					}
 					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 					return
 				}
 				if getter, ok := h.lfsStore.(lfs.Getter); ok {
-					content, stat, err := getter.Get(ptr.Oid)
+					content, stat, err := getter.Get(ptr.OID())
 					if err != nil {
 						if os.IsNotExist(err) {
-							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.Oid, path, ri.RepoPath, rev), http.StatusNotFound)
+							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoPath, rev), http.StatusNotFound)
 							return
 						}
-						responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.Oid, err), http.StatusInternalServerError)
+						responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 						return
 					}
 					defer func() {
 						_ = content.Close()
 					}()
 
-					http.ServeContent(w, r, ptr.Oid, stat.ModTime(), content)
+					http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
 					return
 				}
-				responseJSON(w, fmt.Errorf("LFS store does not support direct content retrieval for object %q", ptr.Oid), http.StatusNotImplemented)
+				responseJSON(w, fmt.Errorf("LFS store does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
 				return
 			}
 		}

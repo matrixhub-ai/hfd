@@ -403,7 +403,7 @@ func (r *Repository) DiskUsage() (int64, error) {
 		return 0, err
 	}
 	for _, ptr := range lfsPointers {
-		total += ptr.Size
+		total += ptr.Size()
 	}
 
 	return total, nil

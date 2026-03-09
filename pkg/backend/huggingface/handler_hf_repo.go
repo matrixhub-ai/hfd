@@ -129,9 +129,9 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	var siblings []HFSibling
 	for _, entry := range hfEntries {
-		if entry.Type == repository.EntryTypeFile {
+		if entry.Type() == repository.EntryTypeFile {
 			siblings = append(siblings, HFSibling{
-				RFilename: entry.Path,
+				RFilename: entry.Path(),
 			})
 		}
 	}
@@ -142,7 +142,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	commitHash := ""
 	commits, err := repo.Commits(rev, 1, nil)
 	if err == nil && len(commits) > 0 {
-		commitHash = commits[0].SHA
+		commitHash = commits[0].Hash().String()
 	}
 
 	// Collect metadata (tags, cardData, pipeline_tag, etc.) from README.md and config.json.
@@ -787,16 +787,12 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 
 	commitInfos := make([]HFCommitInfo, 0, len(rawCommits))
 	for _, c := range rawCommits {
-		title := c.Message
-		if idx := strings.IndexByte(title, '\n'); idx >= 0 {
-			title = title[:idx]
-		}
 		commitInfos = append(commitInfos, HFCommitInfo{
-			ID:      c.SHA,
-			Title:   title,
-			Message: c.Message,
-			Authors: []HFCommitAuthor{{User: c.Author}},
-			Date:    c.Date,
+			ID:      c.Hash().String(),
+			Title:   c.Title(),
+			Message: c.Message(),
+			Authors: []HFCommitAuthor{{User: c.Author().Name()}},
+			Date:    c.Author().When().UTC().Format(repository.TimeFormat),
 		})
 	}
 
