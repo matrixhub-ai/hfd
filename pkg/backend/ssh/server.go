@@ -469,9 +469,14 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 				return nil, err
 			}
 		}
-		repo, err := s.proxyFunc(ctx, repoPath, repoName)
+		sourceURL, err := s.proxyFunc(ctx, repoPath, repoName)
 		if err != nil {
 			return nil, err
+		}
+		repo, err := repository.InitMirror(ctx, repoPath, sourceURL)
+		if err != nil {
+			_ = os.RemoveAll(repoPath)
+			return nil, repository.ErrRepositoryNotExists
 		}
 		s.fireHookForNewMirror(ctx, repo, repoPath, repoName)
 		return repo, nil
