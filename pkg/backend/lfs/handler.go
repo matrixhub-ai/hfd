@@ -9,6 +9,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
 
@@ -20,6 +21,7 @@ type Handler struct {
 
 	next http.Handler
 
+	mirrorSourceFunc   repository.MirrorSourceFunc
 	lfsTeeCache        *lfs.TeeCache
 	permissionHook     permission.PermissionHook
 	tokenSignValidator authenticate.TokenSignValidator
@@ -39,6 +41,13 @@ func WithStorage(storage *storage.Storage) Option {
 func WithLFSTeeCache(tc *lfs.TeeCache) Option {
 	return func(h *Handler) {
 		h.lfsTeeCache = tc
+	}
+}
+
+// WithMirrorSourceFunc sets the repository proxy callback for transparent upstream repository fetching.
+func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
+	return func(h *Handler) {
+		h.mirrorSourceFunc = fn
 	}
 }
 

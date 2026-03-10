@@ -216,7 +216,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 								proxyAllowed = false
 							}
 						}
-						sourceURL := h.getLFSProxySourceURL(repoPath)
+						sourceURL := h.getLFSProxySourceURL(r.Context(), repoPath, ri.RepoPath)
 						if sourceURL != "" && proxyAllowed {
 							err = h.lfsTeeCache.StartFetch(context.Background(), sourceURL, []lfs.LFSObject{
 								{Oid: ptr.OID(), Size: ptr.Size()},
@@ -312,9 +312,9 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 // getLFSProxySourceURL returns the upstream LFS source URL for a proxied mirror repository.
-// Returns empty string if tee cache is not configured or the repo is not a mirror.
-func (h *Handler) getLFSProxySourceURL(repoPath string) string {
-	if h.lfsTeeCache == nil {
+// Returns empty string if tee cache or mirror source callback are not configured or the repo is not a mirror.
+func (h *Handler) getLFSProxySourceURL(ctx context.Context, repoPath, repoName string) string {
+	if h.lfsTeeCache == nil || h.mirrorSourceFunc == nil {
 		return ""
 	}
 
@@ -323,8 +323,13 @@ func (h *Handler) getLFSProxySourceURL(repoPath string) string {
 		return ""
 	}
 
-	isMirror, sourceURL, err := repo.IsMirror()
-	if err != nil || !isMirror || sourceURL == "" {
+	isMirror, err := repo.IsMirror()
+	if err != nil || !isMirror {
+		return ""
+	}
+
+	sourceURL, err := h.mirrorSourceFunc(ctx, repoPath, repoName)
+	if err != nil || sourceURL == "" {
 		return ""
 	}
 

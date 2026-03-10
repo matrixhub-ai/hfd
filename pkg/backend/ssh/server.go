@@ -341,7 +341,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	}
 
 	if service == repository.GitReceivePack {
-		isMirror, _, err := repo.IsMirror()
+		isMirror, err := repo.IsMirror()
 		if err != nil {
 			slog.ErrorContext(ctx, "ssh protocol: failed to check repository type", "error", err)
 			sendExitStatus(channel, 1)
@@ -455,7 +455,7 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
 	repo, err := repository.Open(repoPath)
 	if err == nil {
-		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+		if mirror, err := repo.IsMirror(); err == nil && mirror {
 			err = s.syncMirror(ctx, repo, repoName, false)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sync mirror: %w", err)

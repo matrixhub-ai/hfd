@@ -69,7 +69,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if service == repository.GitReceivePack {
-		isMirror, _, err := repo.IsMirror()
+		isMirror, err := repo.IsMirror()
 		if err != nil {
 			responseText(w, fmt.Sprintf("Failed to check repository type for %q: %v", repoName, err), http.StatusInternalServerError)
 			return
@@ -147,7 +147,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 	if service == repository.GitReceivePack {
-		isMirror, _, err := repo.IsMirror()
+		isMirror, err := repo.IsMirror()
 		if err != nil {
 			responseText(w, fmt.Sprintf("Failed to check repository type for %q: %v", repoName, err), http.StatusInternalServerError)
 			return
@@ -180,7 +180,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
 	repo, err := repository.Open(repoPath)
 	if err == nil {
-		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+		if mirror, err := repo.IsMirror(); err == nil && mirror {
 			err = h.syncMirror(ctx, repo, repoName, false)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sync mirror: %w", err)

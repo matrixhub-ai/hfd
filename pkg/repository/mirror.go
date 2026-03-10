@@ -81,21 +81,20 @@ func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 }
 
 // IsMirror checks if the repository is a mirror by looking for the "origin" remote and checking its configuration.
-func (r *Repository) IsMirror() (bool, string, error) {
+func (r *Repository) IsMirror() (bool, error) {
 	config, err := r.repo.Config()
 	if err != nil {
-		return false, "", err
+		return false, err
 	}
 
-	sourceURL := ""
 	if config != nil {
 		if remote, ok := config.Remotes["origin"]; ok {
 			if len(remote.URLs) > 0 {
-				sourceURL = remote.URLs[0]
+				return true, nil
 			}
 		}
 	}
-	return sourceURL != "", sourceURL, nil
+	return false, nil
 }
 
 // SyncMirror syncs all refs from the origin remote, optionally unshallowing if needed.

@@ -214,7 +214,7 @@ func getRepoInformation(r *http.Request) repoInformation {
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*repository.Repository, error) {
 	repo, err := repository.Open(repoPath)
 	if err == nil {
-		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
+		if mirror, err := repo.IsMirror(); err == nil && mirror {
 			err = h.syncMirror(ctx, repo, repoName, false)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sync mirror: %w", err)

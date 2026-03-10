@@ -104,9 +104,11 @@ func TestLFSProxyMode(t *testing.T) {
 		utils.HTTPClient,
 		proxyLFSStore,
 	)
+	mirrorSourceFunc := repository.NewMirrorSourceFunc(upstreamServer.URL)
 	proxyHandler := backendlfs.NewHandler(
 		backendlfs.WithStorage(proxyStorage),
 		backendlfs.WithLFSTeeCache(lfsTeeCache),
+		backendlfs.WithMirrorSourceFunc(mirrorSourceFunc),
 		backendlfs.WithLFSStore(proxyLFSStore),
 	)
 	proxyServer := httptest.NewServer(proxyHandler)

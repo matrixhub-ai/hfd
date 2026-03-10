@@ -60,7 +60,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Try to fetch missing objects from proxy source
 	if len(missingObjects) > 0 {
-		proxyURL := h.getProxySourceURL(bv)
+		proxyURL := h.getProxySourceURL(r.Context(), bv)
 		proxyAllowed := true
 		if proxyURL != "" && h.lfsTeeCache != nil && h.permissionHook != nil {
 			repoName := bv.repoName()
@@ -107,9 +107,9 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // getProxySourceURL returns the upstream LFS source URL for a proxied mirror repository.
-// Returns empty string if tee cache is not configured or the repo is not a mirror.
-func (h *Handler) getProxySourceURL(bv *lfsBatchVars) string {
-	if h.lfsTeeCache == nil {
+// Returns empty string if tee cache or mirror source callback are not configured or the repo is not a mirror.
+func (h *Handler) getProxySourceURL(ctx context.Context, bv *lfsBatchVars) string {
+	if h.lfsTeeCache == nil || h.mirrorSourceFunc == nil {
 		return ""
 	}
 
@@ -128,8 +128,13 @@ func (h *Handler) getProxySourceURL(bv *lfsBatchVars) string {
 		return ""
 	}
 
-	isMirror, sourceURL, err := repo.IsMirror()
-	if err != nil || !isMirror || sourceURL == "" {
+	isMirror, err := repo.IsMirror()
+	if err != nil || !isMirror {
+		return ""
+	}
+
+	sourceURL, err := h.mirrorSourceFunc(ctx, repoPath, repoName)
+	if err != nil || sourceURL == "" {
 		return ""
 	}
 

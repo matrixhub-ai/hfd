@@ -222,6 +222,7 @@ func main() {
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
+		backendlfs.WithMirrorSourceFunc(mirrorSourceFunc),
 		backendlfs.WithLFSTeeCache(lfsTeeCache),
 		backendlfs.WithPermissionHookFunc(permissionHook),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
