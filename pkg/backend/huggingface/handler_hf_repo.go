@@ -24,8 +24,8 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -126,8 +126,8 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationDeleteRepo, storageName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationDeleteRepo, storageName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -176,8 +176,8 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		toName = prefix + "/" + toName
 	}
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -223,8 +223,8 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -257,8 +257,8 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -301,13 +301,13 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.preReceiveHook != nil {
+	if h.preReceiveHookFunc != nil {
 		// Resolve the starting point to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(req.StartingPoint)
 		if newRev == "" {
 			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
 		}
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -321,9 +321,9 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
+	if h.postReceiveHookFunc != nil {
 		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
@@ -339,8 +339,8 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -387,8 +387,8 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/heads/"+rev, repo.RepoPath()),
 	}
 
-	if h.preReceiveHook != nil {
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, updates); err != nil {
+	if h.preReceiveHookFunc != nil {
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -399,8 +399,8 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, updates); hookErr != nil {
+	if h.postReceiveHookFunc != nil {
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, updates); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
@@ -414,8 +414,8 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -463,10 +463,10 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.preReceiveHook != nil {
+	if h.preReceiveHookFunc != nil {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -479,9 +479,9 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
+	if h.postReceiveHookFunc != nil {
 		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
@@ -497,8 +497,8 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -539,8 +539,8 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/tags/"+rev, repo.RepoPath()),
 	}
 
-	if h.preReceiveHook != nil {
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, updates); err != nil {
+	if h.preReceiveHookFunc != nil {
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -551,8 +551,8 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, updates); hookErr != nil {
+	if h.postReceiveHookFunc != nil {
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, updates); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
@@ -564,8 +564,8 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -650,8 +650,8 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -733,8 +733,8 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	compare := vars["compare"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -792,8 +792,8 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -823,8 +823,8 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if h.preReceiveHook != nil {
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+	if h.preReceiveHookFunc != nil {
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -842,8 +842,8 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+	if h.postReceiveHookFunc != nil {
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)

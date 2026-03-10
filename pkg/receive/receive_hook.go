@@ -18,13 +18,13 @@ const ZeroHash = "0000000000000000000000000000000000000000"
 // BreakHash is marked as a special hash that indicates the ref update squash should be performed by the receive hook.
 const BreakHash = ""
 
-// PreReceiveHook is called before a git push is processed with the list of ref updates.
+// PreReceiveHookFunc is called before a git push is processed with the list of ref updates.
 // Returning a non-nil error will reject the push before any refs are updated.
-type PreReceiveHook func(ctx context.Context, repoName string, updates []RefUpdate) error
+type PreReceiveHookFunc func(ctx context.Context, repoName string, updates []RefUpdate) error
 
-// PostReceiveHook is called after a successful git push with the list of ref updates.
+// PostReceiveHookFunc is called after a successful git push with the list of ref updates.
 // It is used for notifications and logging; errors are logged but do not affect the push result.
-type PostReceiveHook func(ctx context.Context, repoName string, updates []RefUpdate) error
+type PostReceiveHookFunc func(ctx context.Context, repoName string, updates []RefUpdate) error
 
 // RefUpdate represents a single ref update in a git push, including the old and new revisions, the ref name, and helper methods to identify the type of update.
 type RefUpdate interface {

@@ -82,5 +82,5 @@ type Context struct {
 	DestRepo string
 }
 
-// PermissionHook is a function that checks whether an operation on a repository is allowed.
-type PermissionHook func(ctx context.Context, op Operation, repoName string, opCtx Context) error
+// PermissionHookFunc is a function that checks whether an operation on a repository is allowed.
+type PermissionHookFunc func(ctx context.Context, op Operation, repoName string, opCtx Context) error

@@ -30,7 +30,7 @@ import (
 func TestReceiveHooksMatrix(t *testing.T) {
 	type hookProtocol struct {
 		name      string
-		setupFunc func(t *testing.T, preHook receive.PreReceiveHook, postHook receive.PostReceiveHook) (repoURL string, env []string, createRepo func(), cleanup func())
+		setupFunc func(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
 	}
 
 	protocols := []hookProtocol{
@@ -75,7 +75,7 @@ func TestReceiveHooksMatrix(t *testing.T) {
 func TestPreReceiveHookDenyMatrix(t *testing.T) {
 	type hookProtocol struct {
 		name      string
-		setupFunc func(t *testing.T, preHook receive.PreReceiveHook, postHook receive.PostReceiveHook) (repoURL string, env []string, createRepo func(), cleanup func())
+		setupFunc func(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
 	}
 
 	protocols := []hookProtocol{
@@ -138,7 +138,7 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 	}
 }
 
-func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHook, postHook receive.PostReceiveHook) (repoURL string, env []string, createRepo func(), cleanup func()) {
+func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "hook-http-data")
@@ -186,7 +186,7 @@ func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHook, postHook r
 		}
 }
 
-func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHook, postHook receive.PostReceiveHook) (repoURL string, env []string, createRepo func(), cleanup func()) {
+func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "hook-ssh-data")
@@ -498,7 +498,7 @@ func (r *matrixHookRecorder) reset() {
 func TestPermissionHookMatrix(t *testing.T) {
 	type hookProtocol struct {
 		name      string
-		setupFunc func(t *testing.T, permHook permission.PermissionHook) (repoURL string, env []string, createRepo func(), cleanup func())
+		setupFunc func(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
 	}
 
 	protocols := []hookProtocol{
@@ -558,7 +558,7 @@ func TestPermissionHookMatrix(t *testing.T) {
 	}
 }
 
-func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHook) (repoURL string, env []string, createRepo func(), cleanup func()) {
+func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "perm-http-data")
@@ -603,7 +603,7 @@ func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHook) (
 		}
 }
 
-func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHook) (repoURL string, env []string, createRepo func(), cleanup func()) {
+func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "perm-ssh-data")

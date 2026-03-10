@@ -24,9 +24,9 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
 			return
 		}
@@ -66,9 +66,9 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
 			return
 		}
@@ -119,9 +119,9 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationUpdateRepo
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
 			return
 		}
@@ -169,9 +169,9 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	lockId := vars["id"]
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationUpdateRepo
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
 			return
 		}

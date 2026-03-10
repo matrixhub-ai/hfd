@@ -22,10 +22,10 @@ type Handler struct {
 	next http.Handler
 
 	lfsTeeCache        *lfs.TeeCache
-	permissionHook     permission.PermissionHook
-	tokenSignValidator authenticate.TokenSignValidator
 	lfsStore           lfs.Store
 	locksStore         *lfs.LockDB
+	permissionHookFunc permission.PermissionHookFunc
+	tokenSignValidator authenticate.TokenSignValidator
 	mirrorSourceFunc   repository.MirrorSourceFunc
 }
 
@@ -52,9 +52,9 @@ func WithNext(next http.Handler) Option {
 }
 
 // WithPermissionHookFunc sets the authentication hook for verifying operations.
-func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(h *Handler) {
-		h.permissionHook = hook
+		h.permissionHookFunc = fn
 	}
 }
 

@@ -27,8 +27,8 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -102,8 +102,8 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -151,8 +151,8 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -211,8 +211,8 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					// Try tee cache fetch if configured
 					if h.lfsTeeCache != nil {
 						proxyAllowed := true
-						if h.permissionHook != nil {
-							if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, ri.RepoName, permission.Context{}); err != nil {
+						if h.permissionHookFunc != nil {
+							if err := h.permissionHookFunc(r.Context(), permission.OperationCreateProxyRepo, ri.RepoName, permission.Context{}); err != nil {
 								proxyAllowed = false
 							}
 						}

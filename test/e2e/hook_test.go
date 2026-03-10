@@ -60,7 +60,7 @@ func (r *hookRecorder) reset() {
 }
 
 // setupHTTPServerWithHooks creates an HTTP test server with pre/post receive and/or permission hooks.
-func setupHTTPServerWithHooks(t *testing.T, preReceiveHook receive.PreReceiveHook, postReceiveHook receive.PostReceiveHook, permissionHook permission.PermissionHook) (*httptest.Server, string) {
+func setupHTTPServerWithHooks(t *testing.T, preReceiveHook receive.PreReceiveHookFunc, postReceiveHook receive.PostReceiveHookFunc, permissionHook permission.PermissionHookFunc) (*httptest.Server, string) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "hook-e2e-data")
@@ -101,7 +101,7 @@ func setupHTTPServerWithHooks(t *testing.T, preReceiveHook receive.PreReceiveHoo
 }
 
 // setupSSHServerWithHooks creates both HTTP and SSH servers with hooks.
-func setupSSHServerWithHooks(t *testing.T, preReceiveHook receive.PreReceiveHook, postReceiveHook receive.PostReceiveHook, permissionHook permission.PermissionHook) (*httptest.Server, net.Listener, string) {
+func setupSSHServerWithHooks(t *testing.T, preReceiveHook receive.PreReceiveHookFunc, postReceiveHook receive.PostReceiveHookFunc, permissionHook permission.PermissionHookFunc) (*httptest.Server, net.Listener, string) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "ssh-hook-e2e-data")

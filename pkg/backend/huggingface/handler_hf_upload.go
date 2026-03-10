@@ -82,8 +82,8 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationCreateRepo, storageName, permission.Context{}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationCreateRepo, storageName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -149,8 +149,8 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -209,8 +209,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+	if h.permissionHookFunc != nil {
+		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -327,7 +327,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mock pre-receive hook with current branch head as OldRev
-	if h.preReceiveHook != nil {
+	if h.preReceiveHookFunc != nil {
 		oldRev := header.ParentCommit
 		if oldRev == "" {
 			oldRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(rev))
@@ -335,7 +335,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 				oldRev = receive.ZeroHash
 			}
 		}
-		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoName),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -350,12 +350,12 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHook != nil {
+	if h.postReceiveHookFunc != nil {
 		oldRev := header.ParentCommit
 		if oldRev == "" {
 			oldRev = receive.ZeroHash
 		}
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoName),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)

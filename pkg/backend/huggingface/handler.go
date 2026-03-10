@@ -21,13 +21,13 @@ type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
 	next                http.Handler
+	lfsTeeCache         *lfs.TeeCache
+	lfsStore            lfs.Store
 	mirrorSourceFunc    repository.MirrorSourceFunc
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
-	lfsTeeCache         *lfs.TeeCache
-	permissionHook      permission.PermissionHook
-	preReceiveHook      receive.PreReceiveHook
-	postReceiveHook     receive.PostReceiveHook
-	lfsStore            lfs.Store
+	permissionHookFunc  permission.PermissionHookFunc
+	preReceiveHookFunc  receive.PreReceiveHookFunc
+	postReceiveHookFunc receive.PostReceiveHookFunc
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -70,25 +70,25 @@ func WithNext(next http.Handler) Option {
 }
 
 // WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(h *Handler) {
-		h.permissionHook = hook
+		h.permissionHookFunc = fn
 	}
 }
 
 // WithPreReceiveHookFunc sets the pre-receive hook called before ref changes are applied.
 // If the hook returns an error, the operation is rejected.
-func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 	return func(h *Handler) {
-		h.preReceiveHook = hook
+		h.preReceiveHookFunc = fn
 	}
 }
 
 // WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
 // Errors from this hook are logged but do not affect the push result.
-func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(h *Handler) {
-		h.postReceiveHook = hook
+		h.postReceiveHookFunc = fn
 	}
 }
 
@@ -220,8 +220,8 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 		if err != repository.ErrRepositoryNotExists {
 			return nil, err
 		}
-		if h.permissionHook != nil {
-			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+		if h.permissionHookFunc != nil {
+			if err := h.permissionHookFunc(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
 			}
 		}
@@ -286,13 +286,13 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 	}
 
 	var before map[string]string
-	if h.postReceiveHook != nil || h.preReceiveHook != nil {
+	if h.postReceiveHookFunc != nil || h.preReceiveHookFunc != nil {
 		before, _ = repo.Refs()
 	}
 
 	before = removeKeyFromMap(before, remoteRefs)
 
-	if h.preReceiveHook != nil {
+	if h.preReceiveHookFunc != nil {
 		var updates []receive.RefUpdate
 		for _, target := range remoteRefs {
 			oldRev, ok := before[target]
@@ -301,7 +301,7 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 			}
 			updates = append(updates, receive.NewRefUpdate(oldRev, receive.BreakHash, target, repo.RepoPath()))
 		}
-		if err := h.preReceiveHook(ctx, repoName, updates); err != nil {
+		if err := h.preReceiveHookFunc(ctx, repoName, updates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
 		}
 	}
@@ -310,12 +310,12 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
-	if h.postReceiveHook != nil {
+	if h.postReceiveHookFunc != nil {
 		after, _ := repo.Refs()
 		after = removeKeyFromMap(after, remoteRefs)
 		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
-			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
+			if err := h.postReceiveHookFunc(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)
 			}
 		}

@@ -25,13 +25,13 @@ const (
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	bv := unpackBatch(r)
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
 		if bv.Operation == "upload" {
 			op = permission.OperationUpdateRepo
 		}
 		repoName := bv.repoName()
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -62,8 +62,8 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 		repoName := bv.repoName()
 		proxyURL := h.getProxySourceURL(r.Context(), repoName)
 		proxyAllowed := true
-		if proxyURL != "" && h.lfsTeeCache != nil && h.permissionHook != nil {
-			if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+		if proxyURL != "" && h.lfsTeeCache != nil && h.permissionHookFunc != nil {
+			if err := h.permissionHookFunc(r.Context(), permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				proxyAllowed = false
 			}
 		}

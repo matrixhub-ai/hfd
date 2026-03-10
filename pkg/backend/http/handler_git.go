@@ -41,12 +41,12 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseText(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -112,20 +112,20 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		updates, input = receive.ParseRefUpdates(r.Body, repoPath)
 	}
 
-	if h.permissionHook != nil {
+	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := h.permissionHook(r.Context(), op, repoName, permission.Context{}); err != nil {
+		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
 			responseText(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
 	// Pre-receive hook — can reject the push before git-receive-pack processes it.
-	if service == repository.GitReceivePack && h.preReceiveHook != nil && len(updates) > 0 {
-		if err := h.preReceiveHook(r.Context(), repoName, updates); err != nil {
+	if service == repository.GitReceivePack && h.preReceiveHookFunc != nil && len(updates) > 0 {
+		if err := h.preReceiveHookFunc(r.Context(), repoName, updates); err != nil {
 			responseText(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -156,8 +156,8 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
-	if service == repository.GitReceivePack && h.postReceiveHook != nil && len(updates) > 0 {
-		if hookErr := h.postReceiveHook(r.Context(), repoName, updates); hookErr != nil {
+	if service == repository.GitReceivePack && h.postReceiveHookFunc != nil && len(updates) > 0 {
+		if hookErr := h.postReceiveHookFunc(r.Context(), repoName, updates); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", repoName, "error", hookErr)
 		}
 	}
@@ -175,8 +175,8 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 		if err != repository.ErrRepositoryNotExists {
 			return nil, err
 		}
-		if h.permissionHook != nil {
-			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+		if h.permissionHookFunc != nil {
+			if err := h.permissionHookFunc(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
 			}
 		}
@@ -241,13 +241,13 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 	}
 
 	var before map[string]string
-	if h.postReceiveHook != nil || h.preReceiveHook != nil {
+	if h.postReceiveHookFunc != nil || h.preReceiveHookFunc != nil {
 		before, _ = repo.Refs()
 	}
 
 	before = removeKeyFromMap(before, remoteRefs)
 
-	if h.preReceiveHook != nil {
+	if h.preReceiveHookFunc != nil {
 		var updates []receive.RefUpdate
 		for _, target := range remoteRefs {
 			oldRev, ok := before[target]
@@ -256,7 +256,7 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 			}
 			updates = append(updates, receive.NewRefUpdate(oldRev, receive.BreakHash, target, repo.RepoPath()))
 		}
-		if err := h.preReceiveHook(ctx, repoName, updates); err != nil {
+		if err := h.preReceiveHookFunc(ctx, repoName, updates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
 		}
 	}
@@ -265,12 +265,12 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
-	if h.postReceiveHook != nil {
+	if h.postReceiveHookFunc != nil {
 		after, _ := repo.Refs()
 		after = removeKeyFromMap(after, remoteRefs)
 		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
-			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
+			if err := h.postReceiveHookFunc(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)
 			}
 		}

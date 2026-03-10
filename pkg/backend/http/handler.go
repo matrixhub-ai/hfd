@@ -19,9 +19,9 @@ type Handler struct {
 	next                http.Handler
 	mirrorSourceFunc    repository.MirrorSourceFunc
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
-	permissionHook      permission.PermissionHook
-	preReceiveHook      receive.PreReceiveHook
-	postReceiveHook     receive.PostReceiveHook
+	permissionHookFunc  permission.PermissionHookFunc
+	preReceiveHookFunc  receive.PreReceiveHookFunc
+	postReceiveHookFunc receive.PostReceiveHookFunc
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -57,25 +57,25 @@ func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
 }
 
 // WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(h *Handler) {
-		h.permissionHook = hook
+		h.permissionHookFunc = fn
 	}
 }
 
 // WithPreReceiveHookFunc sets the pre-receive hook called before a git push is processed.
 // If the hook returns an error, the push is rejected.
-func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 	return func(h *Handler) {
-		h.preReceiveHook = hook
+		h.preReceiveHookFunc = fn
 	}
 }
 
 // WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
 // Errors from this hook are logged but do not affect the push result.
-func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(h *Handler) {
-		h.postReceiveHook = hook
+		h.postReceiveHookFunc = fn
 	}
 }
 

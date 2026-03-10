@@ -33,9 +33,9 @@ type Server struct {
 	config              *ssh.ServerConfig
 	mirrorSourceFunc    repository.MirrorSourceFunc
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
-	permissionHook      permission.PermissionHook
-	preReceiveHook      receive.PreReceiveHook
-	postReceiveHook     receive.PostReceiveHook
+	permissionHookFunc  permission.PermissionHookFunc
+	preReceiveHookFunc  receive.PreReceiveHookFunc
+	postReceiveHookFunc receive.PostReceiveHookFunc
 	tokenSignValidator  authenticate.TokenSignValidator
 	lfsURL              string
 }
@@ -44,10 +44,10 @@ type Server struct {
 type Option func(*Server)
 
 // WithPublicKeyCallback sets the public key authentication callback for the SSH server.
-func WithPublicKeyCallback(callback func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)) Option {
+func WithPublicKeyCallback(fn func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
-		s.config.PublicKeyCallback = callback
+		s.config.PublicKeyCallback = fn
 	}
 }
 
@@ -67,25 +67,25 @@ func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
 }
 
 // WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(hook permission.PermissionHook) Option {
+func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(s *Server) {
-		s.permissionHook = hook
+		s.permissionHookFunc = fn
 	}
 }
 
 // WithPreReceiveHookFunc sets the pre-receive hook called before a git push is processed.
 // If the hook returns an error, the push is rejected.
-func WithPreReceiveHookFunc(hook receive.PreReceiveHook) Option {
+func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 	return func(s *Server) {
-		s.preReceiveHook = hook
+		s.preReceiveHookFunc = fn
 	}
 }
 
 // WithPostReceiveHookFunc sets the post-receive hook called after a git push is processed.
 // Errors from this hook are logged but do not affect the push result.
-func WithPostReceiveHookFunc(hook receive.PostReceiveHook) Option {
+func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(s *Server) {
-		s.postReceiveHook = hook
+		s.postReceiveHookFunc = fn
 	}
 }
 
@@ -321,12 +321,12 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		return
 	}
 
-	if s.permissionHook != nil {
+	if s.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
+		if err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
 			slog.WarnContext(ctx, "ssh protocol: auth hook denied", "service", service, "repo", repoPath, "error", err)
 			sendExitStatus(channel, 1)
 			return
@@ -350,7 +350,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 
 	// For receive-pack with permission/receive hooks: use pipe-based approach
 	// to intercept pkt-line commands for permission checking before the push completes.
-	if service == repository.GitReceivePack && (s.preReceiveHook != nil || s.postReceiveHook != nil) {
+	if service == repository.GitReceivePack && (s.preReceiveHookFunc != nil || s.postReceiveHookFunc != nil) {
 		s.executeReceivePackWithHooks(ctx, channel, service, repoPath, fullPath, env...)
 		return
 	}
@@ -411,8 +411,8 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 	updates, replay := receive.ParseRefUpdates(channel, repoPath)
 
 	// Pre-receive hook — can reject the push before pack data is processed.
-	if s.preReceiveHook != nil && len(updates) > 0 {
-		if err := s.preReceiveHook(ctx, repoPath, updates); err != nil {
+	if s.preReceiveHookFunc != nil && len(updates) > 0 {
+		if err := s.preReceiveHookFunc(ctx, repoPath, updates); err != nil {
 			slog.WarnContext(ctx, "ssh protocol: pre-receive hook denied push", "repo", repoPath, "error", err)
 			cmd.Process.Kill()
 			pw.Close()
@@ -438,8 +438,8 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 	}
 
 	// Fire post-receive hook with the ref updates.
-	if s.postReceiveHook != nil && len(updates) > 0 {
-		if hookErr := s.postReceiveHook(ctx, repoPath, updates); hookErr != nil {
+	if s.postReceiveHookFunc != nil && len(updates) > 0 {
+		if hookErr := s.postReceiveHookFunc(ctx, repoPath, updates); hookErr != nil {
 			slog.WarnContext(ctx, "ssh protocol: post-receive hook error", "repo", repoPath, "error", hookErr)
 		}
 	}
@@ -457,8 +457,8 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 		if err != repository.ErrRepositoryNotExists {
 			return nil, err
 		}
-		if s.permissionHook != nil {
-			if err := s.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
+		if s.permissionHookFunc != nil {
+			if err := s.permissionHookFunc(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
 			}
 		}
@@ -523,13 +523,13 @@ func (s *Server) syncMirror(ctx context.Context, repo *repository.Repository, re
 	}
 
 	var before map[string]string
-	if s.postReceiveHook != nil || s.preReceiveHook != nil {
+	if s.postReceiveHookFunc != nil || s.preReceiveHookFunc != nil {
 		before, _ = repo.Refs()
 	}
 
 	before = removeKeyFromMap(before, remoteRefs)
 
-	if s.preReceiveHook != nil {
+	if s.preReceiveHookFunc != nil {
 		var updates []receive.RefUpdate
 		for _, target := range remoteRefs {
 			oldRev, ok := before[target]
@@ -538,7 +538,7 @@ func (s *Server) syncMirror(ctx context.Context, repo *repository.Repository, re
 			}
 			updates = append(updates, receive.NewRefUpdate(oldRev, receive.BreakHash, target, repo.RepoPath()))
 		}
-		if err := s.preReceiveHook(ctx, repoName, updates); err != nil {
+		if err := s.preReceiveHookFunc(ctx, repoName, updates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
 		}
 	}
@@ -547,12 +547,12 @@ func (s *Server) syncMirror(ctx context.Context, repo *repository.Repository, re
 		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
-	if s.postReceiveHook != nil {
+	if s.postReceiveHookFunc != nil {
 		after, _ := repo.Refs()
 		after = removeKeyFromMap(after, remoteRefs)
 		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
-			if err := s.postReceiveHook(ctx, repoName, updates); err != nil {
+			if err := s.postReceiveHookFunc(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)
 			}
 		}
@@ -601,12 +601,12 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		return
 	}
 
-	if s.permissionHook != nil {
+	if s.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
 		if operation == "upload" {
 			op = permission.OperationUpdateRepo
 		}
-		if err := s.permissionHook(ctx, op, repoPath, permission.Context{}); err != nil {
+		if err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
 			slog.WarnContext(ctx, "ssh protocol: auth hook denied lfs operation", "operation", operation, "repo", repoPath, "error", err)
 			sendExitStatus(channel, 1)
 			return
