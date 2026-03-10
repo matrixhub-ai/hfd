@@ -76,9 +76,9 @@ func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 	return "", fmt.Errorf("HEAD symref not found in git ls-remote output")
 }
 
-// ListRemoteRefs returns a list of all ref names from the sourceURL.
+// RemoteRefs returns a list of all ref names from the sourceURL.
 // The returned names are fully qualified (e.g. "refs/heads/main", "refs/tags/v1.0").
-func (r *Repository) ListRemoteRefs(ctx context.Context, sourceURL string) ([]string, error) {
+func (r *Repository) RemoteRefs(ctx context.Context, sourceURL string) (map[string]string, error) {
 	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", sourceURL)
 	cmd.Dir = r.repoPath
 	out, err := cmd.Output()
@@ -86,7 +86,7 @@ func (r *Repository) ListRemoteRefs(ctx context.Context, sourceURL string) ([]st
 		return nil, fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
-	var refs []string
+	refs := make(map[string]string)
 	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -97,7 +97,7 @@ func (r *Repository) ListRemoteRefs(ctx context.Context, sourceURL string) ([]st
 		if len(parts) != 2 {
 			continue
 		}
-		refs = append(refs, parts[1])
+		refs[parts[1]] = parts[0]
 	}
 	return refs, nil
 }

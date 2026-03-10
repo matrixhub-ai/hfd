@@ -113,7 +113,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 	return repo, nil
 }
 
-func removeKeyFromMap(m map[string]string, keys []string) map[string]string {
+func filterKeyFromMap(m map[string]string, keys []string) map[string]string {
 	if m == nil {
 		return nil
 	}
@@ -124,54 +124,62 @@ func removeKeyFromMap(m map[string]string, keys []string) map[string]string {
 	return result
 }
 
+func keys(m map[string]string) []string {
+	var result []string
+	for k := range m {
+		result = append(result, k)
+	}
+	return result
+}
+
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
 func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
-	remoteRefs, err := repo.ListRemoteRefs(ctx, sourceURL)
+	remoteRefsMap, err := repo.RemoteRefs(ctx, sourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
+	refsFilter := keys(remoteRefsMap)
 	if m.mirrorRefFilterFunc != nil {
-		remoteRefs, err = m.mirrorRefFilterFunc(ctx, repoName, remoteRefs)
+		refsFilter, err = m.mirrorRefFilterFunc(ctx, repoName, refsFilter)
 		if err != nil {
 			return fmt.Errorf("failed to filter mirror refs: %w", err)
 		}
 	}
-	if len(remoteRefs) == 0 {
+	if len(refsFilter) == 0 {
 		return nil
 	}
 
-	var before map[string]string
-	if m.postReceiveHookFunc != nil || m.preReceiveHookFunc != nil {
-		before, _ = repo.Refs()
+	before, err := repo.Refs()
+	if err != nil {
+		return fmt.Errorf("failed to get local refs: %w", err)
 	}
+	before = filterKeyFromMap(before, refsFilter)
 
-	before = removeKeyFromMap(before, remoteRefs)
-
+	remoteMap := filterKeyFromMap(remoteRefsMap, refsFilter)
+	preReceiveUpdates := receive.DiffRefs(before, remoteMap, repo.RepoPath())
+	if len(preReceiveUpdates) == 0 {
+		return nil
+	}
 	if m.preReceiveHookFunc != nil {
-		var updates []receive.RefUpdate
-		for _, target := range remoteRefs {
-			oldRev, ok := before[target]
-			if oldRev == "" || !ok {
-				oldRev = receive.ZeroHash
-			}
-			updates = append(updates, receive.NewRefUpdate(oldRev, receive.BreakHash, target, repo.RepoPath()))
-		}
-		if err := m.preReceiveHookFunc(ctx, repoName, updates); err != nil {
+		if err := m.preReceiveHookFunc(ctx, repoName, preReceiveUpdates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
 		}
 	}
 
-	if err := repo.SyncMirrorRefs(ctx, sourceURL, remoteRefs); err != nil {
+	if err := repo.SyncMirrorRefs(ctx, sourceURL, refsFilter); err != nil {
 		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
 	if m.postReceiveHookFunc != nil {
-		after, _ := repo.Refs()
-		after = removeKeyFromMap(after, remoteRefs)
-		updates := receive.DiffRefs(before, after, repo.RepoPath())
-		if len(updates) > 0 {
-			if err := m.postReceiveHookFunc(ctx, repoName, updates); err != nil {
+		after, err := repo.Refs()
+		if err != nil {
+			return fmt.Errorf("failed to get local refs after sync: %w", err)
+		}
+		after = filterKeyFromMap(after, refsFilter)
+		postReceiveUpdates := receive.DiffRefs(before, after, repo.RepoPath())
+		if len(postReceiveUpdates) > 0 {
+			if err := m.postReceiveHookFunc(ctx, repoName, postReceiveUpdates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)
 			}
 		}
