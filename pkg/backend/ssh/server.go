@@ -39,6 +39,7 @@ type Server struct {
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	tokenSignValidator  authenticate.TokenSignValidator
 	lfsURL              string
+	mirrorTTL           time.Duration
 	mirror              *mirror.Mirror
 }
 
@@ -96,6 +97,14 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 func WithLFSURL(lfsURL string) Option {
 	return func(s *Server) {
 		s.lfsURL = lfsURL
+	}
+}
+
+// WithMirrorTTL sets a minimum duration between successive mirror syncs for the same repository.
+// A zero value preserves the existing behavior of syncing on every read.
+func WithMirrorTTL(ttl time.Duration) Option {
+	return func(s *Server) {
+		s.mirrorTTL = ttl
 	}
 }
 
@@ -181,6 +190,7 @@ func NewServer(repositoriesDir string, hostKey ssh.Signer, opts ...Option) *Serv
 			mirror.WithPermissionHookFunc(s.permissionHookFunc),
 			mirror.WithPreReceiveHookFunc(s.preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(s.postReceiveHookFunc),
+			mirror.WithTTL(s.mirrorTTL),
 		)
 	}
 

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
+	"golang.org/x/sync/singleflight"
 )
 
 // Mirror handles repository mirror operations, including syncing from upstream and firing hooks for ref changes.
@@ -17,6 +19,9 @@ type Mirror struct {
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
+	ttl                 time.Duration
+	group               singleflight.Group
+	lastSync            map[string]time.Time
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -57,9 +62,19 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	}
 }
 
+// WithTTL sets a minimum duration between successive mirror syncs for the same repository.
+// A zero value preserves the existing behavior of syncing on every read.
+func WithTTL(ttl time.Duration) Option {
+	return func(m *Mirror) {
+		m.ttl = ttl
+	}
+}
+
 // NewMirror creates a new Mirror with the provided options.
 func NewMirror(opts ...Option) *Mirror {
-	m := &Mirror{}
+	m := &Mirror{
+		lastSync: make(map[string]time.Time),
+	}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -71,6 +86,20 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 	if m.mirrorSourceFunc == nil {
 		return repository.Open(repoPath)
 	}
+
+	v, err, shared := m.group.Do(repoName, func() (any, error) {
+		return m.openOrSync(ctx, repoPath, repoName)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if shared {
+		slog.InfoContext(ctx, "mirror sync shared result", "repo", repoName)
+	}
+	return v.(*repository.Repository), nil
+}
+
+func (m *Mirror) openOrSync(ctx context.Context, repoPath, repoName string) (*repository.Repository, error) {
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if err != repository.ErrRepositoryNotExists {
@@ -92,6 +121,11 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		if err != nil {
 			return nil, repository.ErrRepositoryNotExists
 		}
+		if !m.shouldSync(repoName) {
+			return repo, nil
+		}
+		defer m.markSynced(repoName)
+
 		err = m.syncMirror(ctx, repo, repoName, sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync mirror: %w", err)
@@ -105,6 +139,11 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		if !isMirror {
 			return repo, nil
 		}
+		if !m.shouldSync(repoName) {
+			return repo, nil
+		}
+		defer m.markSynced(repoName)
+
 		err = m.syncMirror(ctx, repo, repoName, sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync mirror: %w", err)
@@ -130,6 +169,26 @@ func keys(m map[string]string) []string {
 		result = append(result, k)
 	}
 	return result
+}
+
+func (m *Mirror) shouldSync(repoName string) bool {
+	if m.ttl <= 0 {
+		return true
+	}
+
+	last, ok := m.lastSync[repoName]
+	if !ok {
+		return true
+	}
+	return time.Since(last) >= m.ttl
+}
+
+func (m *Mirror) markSynced(repoName string) {
+	if m.ttl <= 0 {
+		return
+	}
+
+	m.lastSync[repoName] = time.Now()
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.

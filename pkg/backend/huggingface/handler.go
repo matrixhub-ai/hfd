@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -27,6 +28,7 @@ type Handler struct {
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
+	mirrorTTL           time.Duration
 	mirror              *mirror.Mirror
 }
 
@@ -99,6 +101,14 @@ func WithLFSStore(store lfs.Store) Option {
 	}
 }
 
+// WithMirrorTTL sets a minimum duration between successive mirror syncs for the same repository.
+// A zero value preserves the existing behavior of syncing on every read.
+func WithMirrorTTL(ttl time.Duration) Option {
+	return func(h *Handler) {
+		h.mirrorTTL = ttl
+	}
+}
+
 // NewHandler creates a new Handler with the given repository directory.
 func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
@@ -116,6 +126,7 @@ func NewHandler(opts ...Option) *Handler {
 			mirror.WithPermissionHookFunc(h.permissionHookFunc),
 			mirror.WithPreReceiveHookFunc(h.preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(h.postReceiveHookFunc),
+			mirror.WithTTL(h.mirrorTTL),
 		)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
@@ -49,6 +50,8 @@ var (
 
 	proxyURL = ""
 	lfsURL   = ""
+
+	mirrorTTL = time.Hour
 )
 
 func init() {
@@ -72,6 +75,7 @@ func init() {
 
 	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
 	flag.StringVar(&lfsURL, "lfs-url", lfsURL, "External LFS URL for the server, used by git-lfs-authenticate over SSH (e.g. http://localhost:8080)")
+	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
 
 	flag.Parse()
 
@@ -230,6 +234,7 @@ func main() {
 		backendhuggingface.WithPostReceiveHookFunc(postReceiveHook),
 		backendhuggingface.WithLFSStore(lfsStore),
 		backendhuggingface.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
+		backendhuggingface.WithMirrorTTL(mirrorTTL),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -250,6 +255,7 @@ func main() {
 		backendhttp.WithPreReceiveHookFunc(preReceiveHook),
 		backendhttp.WithPostReceiveHookFunc(postReceiveHook),
 		backendhttp.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
+		backendhttp.WithMirrorTTL(mirrorTTL),
 	)
 
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
@@ -292,6 +298,7 @@ func main() {
 			backendssh.WithPublicKeyValidator(publicKeyValidator),
 			backendssh.WithTokenSignValidator(tokenSignValidator),
 			backendssh.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
+			backendssh.WithMirrorTTL(mirrorTTL),
 		}
 
 		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
