@@ -199,6 +199,7 @@ func initWorkDir(t *testing.T, cloneURL, dir string) {
 
 // TestHTTPReceiveHook tests that the receive hook fires with correct ref updates on HTTP push.
 func TestHTTPReceiveHook(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	recorder := &hookRecorder{}
 	server, _ := setupHTTPServerWithHooks(t, nil, recorder.hook, nil)
 	endpoint := server.URL
@@ -356,6 +357,7 @@ func TestHTTPReceiveHook(t *testing.T) {
 
 // TestHTTPPreReceiveHookReceivesUpdates tests that the pre-receive hook receives ref updates.
 func TestHTTPPreReceiveHookReceivesUpdates(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	preRecorder := &hookRecorder{}
 	postRecorder := &hookRecorder{}
 
@@ -418,6 +420,7 @@ func TestHTTPPreReceiveHookReceivesUpdates(t *testing.T) {
 
 // TestHTTPPreReceiveHookDeniesPush tests that a pre-receive hook can block a push.
 func TestHTTPPreReceiveHookDeniesPush(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	preHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
 		for _, e := range updates {
 			if e.IsTag() {
@@ -465,6 +468,7 @@ func TestHTTPPreReceiveHookDeniesPush(t *testing.T) {
 
 // TestSSHReceiveHook tests that the receive hook fires with correct ref updates on SSH push.
 func TestSSHReceiveHook(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
 	recorder := &hookRecorder{}
 
 	clientDir, err := os.MkdirTemp("", "ssh-hook-client")
@@ -597,6 +601,7 @@ func TestSSHReceiveHook(t *testing.T) {
 
 // TestSSHPreReceiveHookDeniesReceivePack tests that the SSH pre-receive hook can deny a push.
 func TestSSHPreReceiveHookDeniesReceivePack(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
 	postRecorder := &hookRecorder{}
 
 	preHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
@@ -653,6 +658,7 @@ func TestSSHPreReceiveHookDeniesReceivePack(t *testing.T) {
 
 // TestHTTPReceiveHookString tests that String produces correct event descriptions.
 func TestHTTPReceiveHookString(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	var mu sync.Mutex
 	var capturedUpdates []receive.RefUpdate
 

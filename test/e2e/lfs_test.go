@@ -12,6 +12,7 @@ import (
 )
 
 func TestLFSTrackPushPull(t *testing.T) {
+	requireSuite(t, suiteGitLFS)
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		t.Skip("git-lfs not available, skipping LFS test")
 	}
@@ -142,6 +143,7 @@ func TestLFSTrackPushPull(t *testing.T) {
 }
 
 func TestLFSMultipleFiles(t *testing.T) {
+	requireSuite(t, suiteGitLFS)
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		t.Skip("git-lfs not available, skipping LFS test")
 	}

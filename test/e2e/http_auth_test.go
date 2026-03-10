@@ -61,6 +61,7 @@ func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Ser
 }
 
 func TestHTTPAuthCreateRepoWithBasicAuth(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	server, _ := setupAuthTestServer(t, "admin", "secret123")
 	endpoint := server.URL
 
@@ -115,6 +116,7 @@ func TestHTTPAuthCreateRepoWithBasicAuth(t *testing.T) {
 }
 
 func TestHTTPAuthBearerToken(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
 	server, _ := setupAuthTestServer(t, "admin", "my-secret-token")
 	endpoint := server.URL
 

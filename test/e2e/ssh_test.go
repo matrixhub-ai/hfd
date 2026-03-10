@@ -131,6 +131,7 @@ func runSSHGitCmd(t *testing.T, dir string, env []string, args ...string) string
 }
 
 func TestSSHCloneAndPushWithAuth(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
 	clientDir, err := os.MkdirTemp("", "ssh-e2e-client")
 	if err != nil {
 		t.Fatalf("Failed to create temp client dir: %v", err)
@@ -228,6 +229,7 @@ func TestSSHCloneAndPushWithAuth(t *testing.T) {
 }
 
 func TestSSHCloneWithUnauthorizedKeyFails(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
 	clientDir, err := os.MkdirTemp("", "ssh-e2e-unauth-client")
 	if err != nil {
 		t.Fatalf("Failed to create temp client dir: %v", err)
@@ -268,6 +270,7 @@ func TestSSHCloneWithUnauthorizedKeyFails(t *testing.T) {
 }
 
 func TestSSHCrossProtocolUploadHTTPCloneSSH(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
 	clientDir, err := os.MkdirTemp("", "ssh-e2e-cross-client")
 	if err != nil {
 		t.Fatalf("Failed to create temp client dir: %v", err)
