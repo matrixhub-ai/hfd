@@ -10,26 +10,25 @@ import (
 	"github.com/wzshiming/hfd/internal/utils"
 )
 
-// MirrorSourceFunc is a callback that returns the source URL for mirroring a repository
-// that does not exist locally. Returning an empty string or an error disables
-// mirror creation for that repository.
-type MirrorSourceFunc func(ctx context.Context, repoPath, repoName string) (string, error)
+// MirrorSourceFunc defines a function type for determining the source URL of a repository mirror.
+// It receives the repository name and returns the source URL, a boolean indicating whether
+// the mirror should be enabled for this repository, and an error if any occurs during the process.
+type MirrorSourceFunc func(ctx context.Context, repoName string) (string, bool, error)
 
 // MirrorRefFilterFunc filters which refs should be synced during mirror operations.
 // It receives the repository name and a list of remote ref names (e.g. "refs/heads/main",
 // "refs/tags/v1.0") and returns the filtered list of refs to sync.
 type MirrorRefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
 
-// NewMirrorSourceFunc creates a MirrorFunc that derives the source URL by appending
-// repoName to baseURL.
+// NewMirrorSourceFunc creates a MirrorSourceFunc that constructs the mirror source URL by appending the repository name to a given base URL.
 func NewMirrorSourceFunc(baseURL string) MirrorSourceFunc {
-	return func(ctx context.Context, repoPath, repoName string) (string, error) {
-		return strings.TrimSuffix(baseURL, "/") + "/" + repoName, nil
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	return func(ctx context.Context, repoName string) (string, bool, error) {
+		return baseURL + "/" + repoName, true, nil
 	}
 }
 
-// InitMirror initializes a new bare git repository at repoPath and sets up a remote named "origin"
-// that points to sourceURL. It then performs an initial shallow fetch to populate the mirror.
+// InitMirror initializes a new bare git repository at repoPath.
 // The returned Repository is ready to be used as a mirror of the source repository.
 func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
@@ -41,16 +40,13 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	}
 	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBrach)
 	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
-	}
-
-	cmd = utils.Command(ctx, "git", "-C", repoPath, "remote", "add", "--mirror=fetch", "origin", sourceURL)
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to add remote origin: %w", err)
 	}
 
 	repo, err := Open(repoPath)
 	if err != nil {
+		_ = os.RemoveAll(repoPath)
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
 
@@ -80,46 +76,10 @@ func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 	return "", fmt.Errorf("HEAD symref not found in git ls-remote output")
 }
 
-// IsMirror checks if the repository is a mirror by looking for the "origin" remote and checking its configuration.
-func (r *Repository) IsMirror() (bool, string, error) {
-	config, err := r.repo.Config()
-	if err != nil {
-		return false, "", err
-	}
-
-	sourceURL := ""
-	if config != nil {
-		if remote, ok := config.Remotes["origin"]; ok {
-			if len(remote.URLs) > 0 {
-				sourceURL = remote.URLs[0]
-			}
-		}
-	}
-	return sourceURL != "", sourceURL, nil
-}
-
-// SyncMirror syncs all refs from the origin remote, optionally unshallowing if needed.
-func (r *Repository) SyncMirror(ctx context.Context) error {
-	args := []string{
-		"fetch",
-		"--prune",
-		"origin",
-		"--progress",
-	}
-
-	if fi, err := os.Stat(filepath.Join(r.repoPath, "shallow")); err == nil && !fi.IsDir() {
-		args = append(args, "--unshallow")
-	}
-
-	cmd := utils.Command(ctx, "git", args...)
-	cmd.Dir = r.repoPath
-	return cmd.Run()
-}
-
-// ListRemoteRefs returns a list of all ref names from the "origin" remote.
+// ListRemoteRefs returns a list of all ref names from the sourceURL.
 // The returned names are fully qualified (e.g. "refs/heads/main", "refs/tags/v1.0").
-func (r *Repository) ListRemoteRefs(ctx context.Context) ([]string, error) {
-	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", "origin")
+func (r *Repository) ListRemoteRefs(ctx context.Context, sourceURL string) ([]string, error) {
+	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", sourceURL)
 	cmd.Dir = r.repoPath
 	out, err := cmd.Output()
 	if err != nil {
@@ -142,16 +102,16 @@ func (r *Repository) ListRemoteRefs(ctx context.Context) ([]string, error) {
 	return refs, nil
 }
 
-// SyncMirrorRefs syncs only the specified refs from the origin remote.
+// SyncMirrorRefs syncs only the specified refs from the sourceURL.
 // Local refs that are not in the specified list are pruned.
-func (r *Repository) SyncMirrorRefs(ctx context.Context, refs []string) error {
+func (r *Repository) SyncMirrorRefs(ctx context.Context, sourceURL string, refs []string) error {
 	if len(refs) == 0 {
 		return nil
 	}
 
 	args := []string{
 		"fetch",
-		"origin",
+		sourceURL,
 		"--no-tags",
 		"--progress",
 	}

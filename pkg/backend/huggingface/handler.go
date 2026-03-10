@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 
 	"github.com/gorilla/mux"
 
@@ -174,7 +174,7 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 
 type repoInformation struct {
 	RepoType string
-	RepoPath string
+	RepoName string
 
 	FullName  string
 	Namespace string
@@ -192,17 +192,17 @@ func getRepoInformation(r *http.Request) repoInformation {
 	name := vars["repo"]
 	fullName := namespace + "/" + name
 
-	var repoPath string
+	var repoName string
 	switch repoType {
 	case "datasets", "spaces":
-		repoPath = repoType + "/" + fullName
+		repoName = repoType + "/" + fullName
 	default:
-		repoPath = fullName
+		repoName = fullName
 	}
 
 	return repoInformation{
 		RepoType:  repoType,
-		RepoPath:  repoPath,
+		RepoName:  repoName,
 		Namespace: namespace,
 		Name:      name,
 		FullName:  fullName,
@@ -212,63 +212,82 @@ func getRepoInformation(r *http.Request) repoInformation {
 // openRepo opens a repository, optionally creating a mirror from the proxy source
 // if the repository doesn't exist locally and proxy mode is enabled.
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*repository.Repository, error) {
-	repo, err := repository.Open(repoPath)
-	if err == nil {
-		if mirror, _, err := repo.IsMirror(); err == nil && mirror {
-			err = h.syncMirror(ctx, repo, repoName, false)
-			if err != nil {
-				return nil, fmt.Errorf("failed to sync mirror: %w", err)
-			}
-		}
-		return repo, nil
+	if h.mirrorSourceFunc == nil {
+		return repository.Open(repoPath)
 	}
-	if err == repository.ErrRepositoryNotExists && h.mirrorSourceFunc != nil {
+	repo, err := repository.Open(repoPath)
+	if err != nil {
+		if err != repository.ErrRepositoryNotExists {
+			return nil, err
+		}
 		if h.permissionHook != nil {
 			if err := h.permissionHook(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				return nil, err
 			}
 		}
-		sourceURL, err := h.mirrorSourceFunc(ctx, repoPath, repoName)
+		sourceURL, isMirror, err := h.mirrorSourceFunc(ctx, repoName)
 		if err != nil {
 			return nil, err
 		}
-		repo, err := repository.InitMirror(ctx, repoPath, sourceURL)
-		if err != nil {
-			_ = os.RemoveAll(repoPath)
+		if !isMirror {
 			return nil, repository.ErrRepositoryNotExists
 		}
-		err = h.syncMirror(ctx, repo, repoName, true)
+		repo, err = repository.InitMirror(ctx, repoPath, sourceURL)
+		if err != nil {
+			return nil, repository.ErrRepositoryNotExists
+		}
+		err = h.syncMirror(ctx, repo, repoName, sourceURL, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync mirror: %w", err)
 		}
-		return repo, nil
+	} else {
+		sourceURL, isMirror, err := h.mirrorSourceFunc(ctx, repoName)
+		if err != nil {
+			slog.WarnContext(ctx, "mirrorSourceFunc error", "repo", repoName, "error", err)
+			return repo, nil
+		}
+		if !isMirror {
+			return repo, nil
+		}
+		err = h.syncMirror(ctx, repo, repoName, sourceURL, false)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sync mirror: %w", err)
+		}
 	}
-	return nil, err
+	return repo, nil
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
-func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, first bool) error {
+func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, first bool) error {
 	var before map[string]string
 	if h.postReceiveHook != nil && !first {
 		before, _ = repo.Refs()
 	}
 
+	remoteRefs, err := repo.ListRemoteRefs(ctx, sourceURL)
+	if err != nil {
+		return fmt.Errorf("failed to list remote refs: %w", err)
+	}
+
 	if h.mirrorRefFilterFunc != nil {
-		remoteRefs, err := repo.ListRemoteRefs(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to list remote refs: %w", err)
-		}
 		remoteRefs, err = h.mirrorRefFilterFunc(ctx, repoName, remoteRefs)
 		if err != nil {
 			return fmt.Errorf("failed to filter mirror refs: %w", err)
 		}
-		if err := repo.SyncMirrorRefs(ctx, remoteRefs); err != nil {
-			return fmt.Errorf("failed to sync mirror refs: %w", err)
+	}
+
+	if h.preReceiveHook != nil && first {
+		var updates []receive.RefUpdate
+		for _, target := range remoteRefs {
+			updates = append(updates, receive.NewRefUpdate(receive.ZeroHash, receive.BreakHash, target, repo.RepoPath()))
 		}
-	} else {
-		if err := repo.SyncMirror(ctx); err != nil {
-			return fmt.Errorf("failed to sync mirror: %w", err)
+		if err := h.preReceiveHook(ctx, repoName, updates); err != nil {
+			return fmt.Errorf("pre-receive hook error: %w", err)
 		}
+	}
+
+	if err := repo.SyncMirrorRefs(ctx, sourceURL, remoteRefs); err != nil {
+		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
 	if h.postReceiveHook != nil {

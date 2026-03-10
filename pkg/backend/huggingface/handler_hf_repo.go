@@ -25,25 +25,25 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	// An empty repository (no commits yet) is a valid state; treat it as having no files.
 	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
 	if err != nil && !errors.Is(err, repository.ErrRevisionNotFound) {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q: %v", ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -224,20 +224,20 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	if !repository.IsRepository(repoPath) {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
@@ -258,7 +258,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -266,19 +266,19 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -307,7 +307,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		if newRev == "" {
 			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
 		}
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -323,10 +323,10 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 	if h.postReceiveHook != nil {
 		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 
@@ -340,7 +340,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -348,19 +348,19 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -388,7 +388,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHook != nil {
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, updates); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -400,8 +400,8 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.postReceiveHook != nil {
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, updates); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, updates); hookErr != nil {
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 
@@ -415,7 +415,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -423,19 +423,19 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -466,7 +466,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	if h.preReceiveHook != nil {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -481,10 +481,10 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 
 	if h.postReceiveHook != nil {
 		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 
@@ -498,7 +498,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -506,19 +506,19 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -540,7 +540,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHook != nil {
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, updates); err != nil {
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, updates); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -552,8 +552,8 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.postReceiveHook != nil {
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, updates); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, updates); hookErr != nil {
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 
@@ -565,25 +565,25 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -651,25 +651,25 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -734,25 +734,25 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	compare := vars["compare"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -793,25 +793,25 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -826,7 +826,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	if h.preReceiveHook != nil {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(newRev, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -840,16 +840,16 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := repo.SuperSquash(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co"); err != nil {
-		responseJSON(w, fmt.Errorf("failed to squash repository %q rev %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to squash repository %q rev %q: %v", ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}
 
 	if h.postReceiveHook != nil {
 		newRev, _ := repo.ResolveRevision(rev)
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.BreakHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 

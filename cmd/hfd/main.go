@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
@@ -150,9 +151,9 @@ func main() {
 		)
 	}
 
-	permissionHook := func(ctx context.Context, op permission.Operation, repoPath string, opCtx permission.Context) error {
+	permissionHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) error {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
-		slog.InfoContext(ctx, "Permission check", "user", userInfo.User, "op", op, "repo", repoPath, "context", opCtx)
+		slog.InfoContext(ctx, "Permission check", "user", userInfo.User, "op", op, "repo", repoName, "context", opCtx)
 		return nil // or return an error to deny permission
 	}
 
@@ -172,6 +173,17 @@ func main() {
 				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
 		}
 		return nil
+	}
+
+	mirrorRefFilterFunc := func(ctx context.Context, repoName string, remoteRefs []string) ([]string, error) {
+		var filtered []string
+		for _, ref := range remoteRefs {
+			if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, "refs/tags/") {
+				filtered = append(filtered, ref)
+			}
+		}
+		slog.InfoContext(ctx, "Mirror ref filter", "repo", repoName, "remoteRefs", remoteRefs, "filteredRefs", filtered)
+		return filtered, nil
 	}
 
 	var basicAuthValidator authenticate.BasicAuthValidator
@@ -217,6 +229,7 @@ func main() {
 		backendhuggingface.WithPreReceiveHookFunc(preReceiveHook),
 		backendhuggingface.WithPostReceiveHookFunc(postReceiveHook),
 		backendhuggingface.WithLFSStore(lfsStore),
+		backendhuggingface.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -226,6 +239,7 @@ func main() {
 		backendlfs.WithPermissionHookFunc(permissionHook),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
 		backendlfs.WithLFSStore(lfsStore),
+		backendlfs.WithMirrorSourceFunc(mirrorSourceFunc),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -235,6 +249,7 @@ func main() {
 		backendhttp.WithPermissionHookFunc(permissionHook),
 		backendhttp.WithPreReceiveHookFunc(preReceiveHook),
 		backendhttp.WithPostReceiveHookFunc(postReceiveHook),
+		backendhttp.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
 	)
 
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
@@ -276,6 +291,7 @@ func main() {
 			backendssh.WithBasicAuthValidator(basicAuthValidator),
 			backendssh.WithPublicKeyValidator(publicKeyValidator),
 			backendssh.WithTokenSignValidator(tokenSignValidator),
+			backendssh.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
 		}
 
 		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
