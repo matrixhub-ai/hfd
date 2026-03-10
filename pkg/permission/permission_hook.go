@@ -83,4 +83,4 @@ type Context struct {
 }
 
 // PermissionHook is a function that checks whether an operation on a repository is allowed.
-type PermissionHook func(ctx context.Context, op Operation, repoPath string, opCtx Context) error
+type PermissionHook func(ctx context.Context, op Operation, repoName string, opCtx Context) error

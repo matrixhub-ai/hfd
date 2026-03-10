@@ -2,6 +2,7 @@ package lfs_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -84,22 +85,8 @@ func TestLFSProxyMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to init proxy repo: %v", err)
 	}
-	// Configure as mirror pointing to upstream
-	configPath := filepath.Join(proxyRepoPath, "config")
-	configContent := fmt.Sprintf(`[core]
-	repositoryformatversion = 0
-	filemode = true
-	bare = true
-[remote "origin"]
-	url = %s/%s.git
-	fetch = +refs/heads/*:refs/heads/*
-	mirror = true
-`, upstreamServer.URL, repoName)
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatalf("Failed to write config: %v", err)
-	}
 
-	// Set up proxy LFS handler
+	// Set up proxy LFS handler with mirrorSourceFunc
 	lfsTeeCache := lfs.NewTeeCache(
 		utils.HTTPClient,
 		proxyLFSStore,
@@ -108,6 +95,9 @@ func TestLFSProxyMode(t *testing.T) {
 		backendlfs.WithStorage(proxyStorage),
 		backendlfs.WithLFSTeeCache(lfsTeeCache),
 		backendlfs.WithLFSStore(proxyLFSStore),
+		backendlfs.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
+			return upstreamServer.URL + "/" + repoName + ".git", true, nil
+		}),
 	)
 	proxyServer := httptest.NewServer(proxyHandler)
 	defer proxyServer.Close()

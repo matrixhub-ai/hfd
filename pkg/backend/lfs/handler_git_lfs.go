@@ -14,7 +14,6 @@ import (
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
-	"github.com/wzshiming/hfd/pkg/repository"
 )
 
 const (
@@ -60,10 +59,10 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Try to fetch missing objects from proxy source
 	if len(missingObjects) > 0 {
-		proxyURL := h.getProxySourceURL(bv)
+		repoName := bv.repoName()
+		proxyURL := h.getProxySourceURL(r.Context(), repoName)
 		proxyAllowed := true
 		if proxyURL != "" && h.lfsTeeCache != nil && h.permissionHook != nil {
-			repoName := bv.repoName()
 			if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 				proxyAllowed = false
 			}
@@ -106,29 +105,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, respobj, http.StatusOK)
 }
 
-// getProxySourceURL returns the upstream LFS source URL for a proxied mirror repository.
-// Returns empty string if tee cache is not configured or the repo is not a mirror.
-func (h *Handler) getProxySourceURL(bv *lfsBatchVars) string {
-	if h.lfsTeeCache == nil {
+// getProxySourceURL returns the mirror source URL for the given repository if it is configured as a mirror and the URL is valid, otherwise returns an empty string.
+func (h *Handler) getProxySourceURL(ctx context.Context, repoName string) string {
+	if h.mirrorSourceFunc == nil {
 		return ""
 	}
 
-	repoName := bv.repoName()
-	if repoName == "" {
-		return ""
-	}
-
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), repoName)
-	if repoPath == "" {
-		return ""
-	}
-
-	repo, err := repository.Open(repoPath)
-	if err != nil {
-		return ""
-	}
-
-	isMirror, sourceURL, err := repo.IsMirror()
+	sourceURL, isMirror, err := h.mirrorSourceFunc(ctx, repoName)
 	if err != nil || !isMirror || sourceURL == "" {
 		return ""
 	}

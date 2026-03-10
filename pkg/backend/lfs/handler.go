@@ -9,6 +9,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	"github.com/wzshiming/hfd/pkg/lfs"
 	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
 
@@ -25,6 +26,7 @@ type Handler struct {
 	tokenSignValidator authenticate.TokenSignValidator
 	lfsStore           lfs.Store
 	locksStore         *lfs.LockDB
+	mirrorSourceFunc   repository.MirrorSourceFunc
 }
 
 type Option func(*Handler)
@@ -67,6 +69,13 @@ func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
 func WithLFSStore(store lfs.Store) Option {
 	return func(h *Handler) {
 		h.lfsStore = store
+	}
+}
+
+// WithMirrorSourceFunc sets the repository mirror source callback for deriving upstream URLs.
+func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
+	return func(h *Handler) {
+		h.mirrorSourceFunc = fn
 	}
 }
 

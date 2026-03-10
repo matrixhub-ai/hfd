@@ -28,31 +28,31 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		Recursive: recursive,
 	})
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoPath, rev, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -103,37 +103,37 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	revpath := vars["revpath"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	size, err := repo.TreeSize(rev, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at rev %q and path %q: %v", ri.RepoPath, rev, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -152,31 +152,31 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	revpath := vars["revpath"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoPath, permission.Context{}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	rev, path, err := repo.SplitRevisionAndPath(revpath)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to parse rev and path for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -189,7 +189,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	blob, err := repo.Blob(rev, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, ri.RepoPath, rev), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("file %q not found in repository %q at revision %q", path, ri.RepoName, rev), http.StatusNotFound)
 		return
 	}
 
@@ -212,11 +212,11 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					if h.lfsTeeCache != nil {
 						proxyAllowed := true
 						if h.permissionHook != nil {
-							if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, ri.RepoPath, permission.Context{}); err != nil {
+							if err := h.permissionHook(r.Context(), permission.OperationCreateProxyRepo, ri.RepoName, permission.Context{}); err != nil {
 								proxyAllowed = false
 							}
 						}
-						sourceURL := h.getLFSProxySourceURL(repoPath)
+						sourceURL := h.getProxySourceURL(r.Context(), ri.RepoName)
 						if sourceURL != "" && proxyAllowed {
 							err = h.lfsTeeCache.StartFetch(context.Background(), sourceURL, []lfs.LFSObject{
 								{Oid: ptr.OID(), Size: ptr.Size()},
@@ -245,7 +245,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							}
 						}
 					}
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoPath, rev), http.StatusNotFound)
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 					return
 				}
 				if signer, ok := h.lfsStore.(lfs.SignGetter); ok {
@@ -261,7 +261,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					content, stat, err := getter.Get(ptr.OID())
 					if err != nil {
 						if os.IsNotExist(err) {
-							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoPath, rev), http.StatusNotFound)
+							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 							return
 						}
 						responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
@@ -297,7 +297,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 	reader, err := blob.NewReader()
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoPath, rev, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {
@@ -311,19 +311,13 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getLFSProxySourceURL returns the upstream LFS source URL for a proxied mirror repository.
-// Returns empty string if tee cache is not configured or the repo is not a mirror.
-func (h *Handler) getLFSProxySourceURL(repoPath string) string {
-	if h.lfsTeeCache == nil {
+// getProxySourceURL returns the mirror source URL for the given repository if it is configured as a mirror and the URL is valid, otherwise returns an empty string.
+func (h *Handler) getProxySourceURL(ctx context.Context, repoName string) string {
+	if h.mirrorSourceFunc == nil {
 		return ""
 	}
 
-	repo, err := repository.Open(repoPath)
-	if err != nil {
-		return ""
-	}
-
-	isMirror, sourceURL, err := repo.IsMirror()
+	sourceURL, isMirror, err := h.mirrorSourceFunc(ctx, repoName)
 	if err != nil || !isMirror || sourceURL == "" {
 		return ""
 	}
