@@ -141,14 +141,25 @@ func main() {
 	}
 
 	var mirrorSourceFunc repository.MirrorSourceFunc
+	var mirrorRefFilterFunc repository.MirrorRefFilterFunc
 	var lfsTeeCache *lfs.TeeCache
 	if proxyURL != "" {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
-		mirrorSourceFunc = repository.NewMirrorSourceFunc(proxyURL)
 		lfsTeeCache = lfs.NewTeeCache(
 			utils.HTTPClient,
 			lfsStore,
 		)
+		mirrorSourceFunc = repository.NewMirrorSourceFunc(proxyURL)
+		mirrorRefFilterFunc = func(ctx context.Context, repoName string, remoteRefs []string) ([]string, error) {
+			var filtered []string
+			for _, ref := range remoteRefs {
+				if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, "refs/tags/") {
+					filtered = append(filtered, ref)
+				}
+			}
+			slog.InfoContext(ctx, "Mirror ref filter", "repo", repoName, "remoteRefs", remoteRefs, "filteredRefs", filtered)
+			return filtered, nil
+		}
 	}
 
 	permissionHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) error {
@@ -173,17 +184,6 @@ func main() {
 				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
 		}
 		return nil
-	}
-
-	mirrorRefFilterFunc := func(ctx context.Context, repoName string, remoteRefs []string) ([]string, error) {
-		var filtered []string
-		for _, ref := range remoteRefs {
-			if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, "refs/tags/") {
-				filtered = append(filtered, ref)
-			}
-		}
-		slog.InfoContext(ctx, "Mirror ref filter", "repo", repoName, "remoteRefs", remoteRefs, "filteredRefs", filtered)
-		return filtered, nil
 	}
 
 	var basicAuthValidator authenticate.BasicAuthValidator
