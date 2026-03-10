@@ -29,14 +29,15 @@ type PublicKey = ssh.PublicKey
 
 // Server implements the SSH protocol (ssh://) server for git operations.
 type Server struct {
-	repositoriesDir    string
-	config             *ssh.ServerConfig
-	mirrorSourceFunc   repository.MirrorSourceFunc
-	permissionHook     permission.PermissionHook
-	preReceiveHook     receive.PreReceiveHook
-	postReceiveHook    receive.PostReceiveHook
-	tokenSignValidator authenticate.TokenSignValidator
-	lfsURL             string
+	repositoriesDir     string
+	config              *ssh.ServerConfig
+	mirrorSourceFunc    repository.MirrorSourceFunc
+	mirrorRefFilterFunc repository.MirrorRefFilterFunc
+	permissionHook      permission.PermissionHook
+	preReceiveHook      receive.PreReceiveHook
+	postReceiveHook     receive.PostReceiveHook
+	tokenSignValidator  authenticate.TokenSignValidator
+	lfsURL              string
 }
 
 // Option configures the SSH server.
@@ -54,6 +55,14 @@ func WithPublicKeyCallback(callback func(conn ssh.ConnMetadata, key ssh.PublicKe
 func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(s *Server) {
 		s.mirrorSourceFunc = fn
+	}
+}
+
+// WithMirrorRefFilterFunc sets the ref filter callback for mirror operations.
+// When set, only refs accepted by the filter will be synced from the upstream.
+func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
+	return func(s *Server) {
+		s.mirrorRefFilterFunc = fn
 	}
 }
 
@@ -489,8 +498,22 @@ func (s *Server) syncMirror(ctx context.Context, repo *repository.Repository, re
 		before, _ = repo.Refs()
 	}
 
-	if err := repo.SyncMirror(ctx); err != nil {
-		return fmt.Errorf("failed to sync mirror: %w", err)
+	if s.mirrorRefFilterFunc != nil {
+		remoteRefs, err := repo.ListRemoteRefs(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list remote refs: %w", err)
+		}
+		remoteRefs, err = s.mirrorRefFilterFunc(ctx, repoName, remoteRefs)
+		if err != nil {
+			return fmt.Errorf("failed to filter mirror refs: %w", err)
+		}
+		if err := repo.SyncMirrorRefs(ctx, remoteRefs); err != nil {
+			return fmt.Errorf("failed to sync mirror refs: %w", err)
+		}
+	} else {
+		if err := repo.SyncMirror(ctx); err != nil {
+			return fmt.Errorf("failed to sync mirror: %w", err)
+		}
 	}
 
 	if s.postReceiveHook != nil {
