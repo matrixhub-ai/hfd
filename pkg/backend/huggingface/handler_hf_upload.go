@@ -150,7 +150,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{Ref: rev}); err != nil {
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
 		}
@@ -162,7 +162,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
 		return
@@ -171,16 +171,16 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
 	gitAttrs, err := repo.GitAttributes(rev)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to read .gitattributes for repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to read .gitattributes for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -210,7 +210,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHook != nil {
-		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoPath, permission.Context{
+		if err := h.permissionHook(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
@@ -218,9 +218,9 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoPath)
+	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
 	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}
 
@@ -319,10 +319,10 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	repo, err := repository.Open(repoPath)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoPath), http.StatusNotFound)
+			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 			return
 		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -335,8 +335,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 				oldRev = receive.ZeroHash
 			}
 		}
-		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoPath),
+		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoName),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
@@ -346,7 +346,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	// TODO: Add support for specifying author/committer in the request body
 	commitHash, err := repo.CreateCommit(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co", ops, header.ParentCommit)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoPath, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -355,15 +355,15 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		if oldRev == "" {
 			oldRev = receive.ZeroHash
 		}
-		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoPath),
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
+			receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoName),
 		}); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}
 	}
 
 	resp := commitResponse{
-		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), ri.RepoPath, commitHash),
+		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), ri.RepoName, commitHash),
 		CommitOid:     commitHash,
 		CommitMessage: message,
 	}
