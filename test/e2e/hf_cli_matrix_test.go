@@ -76,10 +76,8 @@ func TestHFCliOperationsMatrix(t *testing.T) {
 	}
 
 	for _, rt := range repoTypes {
-		rt := rt
 		t.Run(rt.name, func(t *testing.T) {
 			for _, op := range operations {
-				op := op
 				t.Run(op.name, func(t *testing.T) {
 					if !op.supported(rt) {
 						t.Skipf("%s not supported for %s", op.name, rt.name)

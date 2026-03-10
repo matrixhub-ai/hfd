@@ -6,6 +6,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/wzshiming/hfd/pkg/mirror"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
@@ -22,6 +23,7 @@ type Handler struct {
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
+	mirror              *mirror.Mirror
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -87,6 +89,16 @@ func NewHandler(opts ...Option) *Handler {
 
 	for _, opt := range opts {
 		opt(h)
+	}
+
+	if h.mirrorSourceFunc != nil {
+		h.mirror = mirror.NewMirror(
+			mirror.WithMirrorSourceFunc(h.mirrorSourceFunc),
+			mirror.WithMirrorRefFilterFunc(h.mirrorRefFilterFunc),
+			mirror.WithPermissionHookFunc(h.permissionHookFunc),
+			mirror.WithPreReceiveHookFunc(h.preReceiveHookFunc),
+			mirror.WithPostReceiveHookFunc(h.postReceiveHookFunc),
+		)
 	}
 
 	h.register()
