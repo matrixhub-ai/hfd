@@ -50,7 +50,13 @@ func runPythonScriptMayFail(t *testing.T, endpoint, script string) (string, erro
 	return string(out), err
 }
 
+func requireHFPythonSuite(t *testing.T) {
+	requireSuite(t, suiteHFPython)
+}
+
 func TestPythonHFUploadFile(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -87,6 +93,8 @@ api.upload_file(path_or_fileobj=%q, path_in_repo="hello.txt", repo_id="py-user/u
 }
 
 func TestPythonHFDownloadFile(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -126,6 +134,8 @@ assert content == "download me\n", f"unexpected content: {content!r}"
 }
 
 func TestPythonHFUploadFolder(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -171,6 +181,8 @@ api.upload_folder(folder_path=%q, repo_id="py-user/upload-folder-model", commit_
 }
 
 func TestPythonHFSnapshotDownload(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -211,6 +223,8 @@ assert open(os.path.join(local_dir, "sub", "file3.txt")).read() == "sub content\
 }
 
 func TestPythonHFCreateAndDeleteRepo(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -256,6 +270,8 @@ api.delete_repo(repo_id="py-user/create-delete-model")
 }
 
 func TestPythonHFListRepoFiles(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -287,6 +303,8 @@ assert "sub/c.txt" in files, f"sub/c.txt not in {files}"
 }
 
 func TestPythonHFDatasetUploadAndDownload(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -335,6 +353,8 @@ assert content == "col1,col2\na,b\n", f"unexpected: {content!r}"
 }
 
 func TestPythonHFSpaceUploadAndDownload(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -361,6 +381,8 @@ api.upload_file(path_or_fileobj=b"import gradio as gr\n", path_in_repo="app.py",
 }
 
 func TestPythonHFBranchOperations(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -416,6 +438,8 @@ api.delete_branch(repo_id="py-user/branch-model", branch="dev")
 }
 
 func TestPythonHFTagOperations(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -471,6 +495,8 @@ api.delete_tag(repo_id="py-user/tag-model", tag="v1.0")
 }
 
 func TestPythonHFUploadAndDownloadRoundTrip(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -510,6 +536,8 @@ assert open(os.path.join(local_dir, "second.txt")).read() == "second\n"
 }
 
 func TestPythonHFRepoTypeIsolation(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -557,6 +585,8 @@ api.upload_file(path_or_fileobj=b"space content\n", path_in_repo="data.txt", rep
 }
 
 func TestPythonHFMixedCLIAndLibrary(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping mixed CLI+Python test")
@@ -634,6 +664,8 @@ assert open(os.path.join(local_dir, "cli.txt")).read() == "from cli\n"
 }
 
 func TestPythonHFRepoInfo(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -672,6 +704,8 @@ assert "model.bin" in siblings, f"model.bin not in {siblings}"
 }
 
 func TestPythonHFUploadLargeFileBytes(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)
@@ -703,6 +737,8 @@ api.upload_file(path_or_fileobj=large_content, path_in_repo="large.bin", repo_id
 }
 
 func TestPythonHFDeleteFile(t *testing.T) {
+	requireHFPythonSuite(t)
+
 	checkPythonHFHub(t)
 
 	server, _ := setupTestServer(t)

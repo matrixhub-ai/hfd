@@ -121,6 +121,8 @@ func runGitCmdE2E(t *testing.T, dir string, env []string, args ...string) {
 // TestHTTPProxyMirror verifies that cloning from a proxy server transparently
 // mirrors from the upstream and serves the content to the client.
 func TestHTTPProxyMirror(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
+
 	// Set up upstream server and push content to it.
 	upstream, _ := setupTestServer(t)
 
@@ -219,6 +221,8 @@ func TestHTTPProxyMirror(t *testing.T) {
 // TestSSHProxyMirror verifies that cloning a repository via the SSH proxy server
 // transparently mirrors it from the upstream HTTP server.
 func TestSSHProxyMirror(t *testing.T) {
+	requireSuite(t, suiteGitSSH)
+
 	// Set up upstream server and push content to it.
 	upstream, _ := setupTestServer(t)
 
@@ -342,6 +346,8 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 // TestHTTPProxyMirrorRefFilter verifies that cloning from a proxy server with
 // ref filtering only mirrors the allowed refs from the upstream.
 func TestHTTPProxyMirrorRefFilter(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
+
 	upstream, _ := setupTestServer(t)
 
 	const org = "ref-filter-org"

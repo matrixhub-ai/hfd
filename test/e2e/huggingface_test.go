@@ -83,7 +83,13 @@ func runHFCmdMayFail(t *testing.T, endpoint string, args ...string) (string, err
 	return string(output), err
 }
 
+func requireHFCliSuite(t *testing.T) {
+	requireSuite(t, suiteHFCli)
+}
+
 func TestHuggingFaceUploadAndDownloadMatrix(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI matrix test")
 	}
@@ -206,6 +212,8 @@ func TestHuggingFaceUploadAndDownloadMatrix(t *testing.T) {
 }
 
 func TestHuggingFaceRepoTypeIsolationE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI repo type isolation test")
 	}
@@ -279,6 +287,8 @@ func TestHuggingFaceRepoTypeIsolationE2E(t *testing.T) {
 }
 
 func TestHuggingFaceUploadAndDownloadRoundTrip(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI round-trip test")
 	}
@@ -344,6 +354,8 @@ func TestHuggingFaceUploadAndDownloadRoundTrip(t *testing.T) {
 }
 
 func TestHuggingFaceRepoCreateAndDeleteE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI repo create/delete test")
 	}
@@ -392,6 +404,8 @@ func TestHuggingFaceRepoCreateAndDeleteE2E(t *testing.T) {
 }
 
 func TestHuggingFaceRepoMoveE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI repo move test")
 	}
@@ -442,6 +456,8 @@ func TestHuggingFaceRepoMoveE2E(t *testing.T) {
 }
 
 func TestHuggingFaceRepoSettingsE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI repo settings test")
 	}
@@ -458,6 +474,8 @@ func TestHuggingFaceRepoSettingsE2E(t *testing.T) {
 }
 
 func TestHuggingFaceRepoBranchE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI branch test")
 	}
@@ -486,6 +504,8 @@ func TestHuggingFaceRepoBranchE2E(t *testing.T) {
 }
 
 func TestHuggingFaceRepoTagE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI tag test")
 	}
@@ -526,6 +546,8 @@ func TestHuggingFaceRepoTagE2E(t *testing.T) {
 }
 
 func TestHuggingFaceRepoDatasetBranchTagE2E(t *testing.T) {
+	requireHFCliSuite(t)
+
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI dataset branch/tag test")
 	}
@@ -564,6 +586,8 @@ func TestHuggingFaceRepoDatasetBranchTagE2E(t *testing.T) {
 }
 
 func TestCreateRepoHasDefaultGitAttributes(t *testing.T) {
+	requireHFCliSuite(t)
+
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
 

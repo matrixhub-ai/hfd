@@ -12,6 +12,8 @@ import (
 )
 
 func TestHTTPGitCloneAndPush(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
+
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
 
@@ -184,6 +186,8 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 }
 
 func TestHTTPGitMultipleFiles(t *testing.T) {
+	requireSuite(t, suiteGitHTTP)
+
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
 

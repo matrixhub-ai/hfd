@@ -9,6 +9,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - git-http
+          - git-ssh
+          - git-lfs
+          - hf-cli
+          - hf-python
     permissions:
       contents: read
 
@@ -36,4 +45,6 @@ jobs:
       # E2e tests use httptest.NewServer with a local temp dir and require
       # no external credentials; they skip gracefully if tools are absent.
       - name: Test
-        run: go test ./...
+        run: go test ./... -count=1
+        env:
+          E2E_SUITE: ${{ matrix.suite }}
