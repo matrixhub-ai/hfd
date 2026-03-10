@@ -403,7 +403,7 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 	// After git-receive-pack sends the ref advertisement through stdout→channel,
 	// the client sends pkt-line commands back through the channel. ParseRefUpdates
 	// reads these commands and returns a replay reader for forwarding.
-	updates, replay := receive.ParseRefUpdates(channel)
+	updates, replay := receive.ParseRefUpdates(channel, repoPath)
 
 	// Pre-receive hook — can reject the push before pack data is processed.
 	if s.preReceiveHook != nil && len(updates) > 0 {
@@ -495,7 +495,7 @@ func (s *Server) syncMirrorWithHook(ctx context.Context, repo *repository.Reposi
 
 	if s.postReceiveHook != nil {
 		after, _ := repo.Refs()
-		updates := receive.DiffRefs(before, after)
+		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
 			if err := s.postReceiveHook(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)

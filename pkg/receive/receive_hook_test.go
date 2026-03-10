@@ -22,14 +22,14 @@ func TestParseRefUpdates(t *testing.T) {
 			name:  "single branch push",
 			input: pktLine("abc123 def456 refs/heads/main\n") + "0000" + "PACKDATA",
 			want: []RefUpdate{
-				{OldRev: "abc123", NewRev: "def456", RefName: "refs/heads/main"},
+				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
 			},
 		},
 		{
 			name:  "single branch push with capabilities",
 			input: pktLine("abc123 def456 refs/heads/main\x00report-status side-band-64k\n") + "0000" + "PACKDATA",
 			want: []RefUpdate{
-				{OldRev: "abc123", NewRev: "def456", RefName: "refs/heads/main"},
+				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
 			},
 		},
 		{
@@ -39,23 +39,23 @@ func TestParseRefUpdates(t *testing.T) {
 				pktLine(ZeroHash+" 333333 refs/tags/v1.0\n") +
 				"0000" + "PACKDATA",
 			want: []RefUpdate{
-				{OldRev: "abc123", NewRev: "def456", RefName: "refs/heads/main"},
-				{OldRev: "111111", NewRev: "222222", RefName: "refs/heads/feature"},
-				{OldRev: ZeroHash, NewRev: "333333", RefName: "refs/tags/v1.0"},
+				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
+				refUpdate{oldRev: "111111", newRev: "222222", refName: "refs/heads/feature"},
+				refUpdate{oldRev: ZeroHash, newRev: "333333", refName: "refs/tags/v1.0"},
 			},
 		},
 		{
 			name:  "branch create (old is zeros)",
 			input: pktLine(ZeroHash+" def456 refs/heads/new-branch\n") + "0000",
 			want: []RefUpdate{
-				{OldRev: ZeroHash, NewRev: "def456", RefName: "refs/heads/new-branch"},
+				refUpdate{oldRev: ZeroHash, newRev: "def456", refName: "refs/heads/new-branch"},
 			},
 		},
 		{
 			name:  "branch delete (new is zeros)",
 			input: pktLine("abc123 "+ZeroHash+" refs/heads/old-branch\n") + "0000",
 			want: []RefUpdate{
-				{OldRev: "abc123", NewRev: ZeroHash, RefName: "refs/heads/old-branch"},
+				refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/heads/old-branch"},
 			},
 		},
 		{
@@ -68,21 +68,21 @@ func TestParseRefUpdates(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := strings.NewReader(tt.input)
-			got, newReader := ParseRefUpdates(r)
+			got, newReader := ParseRefUpdates(r, "test-repo-path")
 
 			if len(got) != len(tt.want) {
 				t.Fatalf("ParseRefUpdates() got %d updates, want %d", len(got), len(tt.want))
 			}
 
 			for i, w := range tt.want {
-				if got[i].OldRev != w.OldRev {
-					t.Errorf("update[%d].OldRev = %q, want %q", i, got[i].OldRev, w.OldRev)
+				if got[i].OldRev() != w.OldRev() {
+					t.Errorf("update[%d].OldRev = %q, want %q", i, got[i].OldRev(), w.OldRev())
 				}
-				if got[i].NewRev != w.NewRev {
-					t.Errorf("update[%d].NewRev = %q, want %q", i, got[i].NewRev, w.NewRev)
+				if got[i].NewRev() != w.NewRev() {
+					t.Errorf("update[%d].NewRev = %q, want %q", i, got[i].NewRev(), w.NewRev())
 				}
-				if got[i].RefName != w.RefName {
-					t.Errorf("update[%d].RefName = %q, want %q", i, got[i].RefName, w.RefName)
+				if got[i].RefName() != w.RefName() {
+					t.Errorf("update[%d].RefName = %q, want %q", i, got[i].RefName(), w.RefName())
 				}
 			}
 
@@ -110,41 +110,41 @@ func TestRawRefUpdateMethods(t *testing.T) {
 	}{
 		{
 			name:     "branch push",
-			update:   RefUpdate{OldRev: "abc123", NewRev: "def456", RefName: "refs/heads/main"},
+			update:   refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
 			isBranch: true,
 			wantName: "main",
 		},
 		{
 			name:     "branch create",
-			update:   RefUpdate{OldRev: ZeroHash, NewRev: "def456", RefName: "refs/heads/new-branch"},
+			update:   refUpdate{oldRev: ZeroHash, newRev: "def456", refName: "refs/heads/new-branch"},
 			isBranch: true,
 			isCreate: true,
 			wantName: "new-branch",
 		},
 		{
 			name:     "branch delete",
-			update:   RefUpdate{OldRev: "abc123", NewRev: ZeroHash, RefName: "refs/heads/old-branch"},
+			update:   refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/heads/old-branch"},
 			isBranch: true,
 			isDelete: true,
 			wantName: "old-branch",
 		},
 		{
 			name:     "tag create",
-			update:   RefUpdate{OldRev: ZeroHash, NewRev: "abc123", RefName: "refs/tags/v1.0"},
+			update:   refUpdate{oldRev: ZeroHash, newRev: "abc123", refName: "refs/tags/v1.0"},
 			isTag:    true,
 			isCreate: true,
 			wantName: "v1.0",
 		},
 		{
 			name:     "tag delete",
-			update:   RefUpdate{OldRev: "abc123", NewRev: ZeroHash, RefName: "refs/tags/v1.0"},
+			update:   refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/tags/v1.0"},
 			isTag:    true,
 			isDelete: true,
 			wantName: "v1.0",
 		},
 		{
 			name:     "unknown ref",
-			update:   RefUpdate{OldRev: "abc123", NewRev: "def456", RefName: "refs/notes/commits"},
+			update:   refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/notes/commits"},
 			wantName: "refs/notes/commits",
 		},
 	}
@@ -298,69 +298,79 @@ func TestIsForcePush(t *testing.T) {
 	divergent := strings.TrimSpace(string(divergentOut))
 
 	t.Run("fast-forward push", func(t *testing.T) {
-		update := RefUpdate{OldRev: commit1, NewRev: commit2, RefName: "refs/heads/main"}
-		if IsForcePush(t.Context(), repoDir, update) {
+		update := refUpdate{oldRev: commit1, newRev: commit2, refName: "refs/heads/main"}
+		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} else if ok {
 			t.Error("expected IsForcePush=false for fast-forward push")
 		}
 	})
 
 	t.Run("force push", func(t *testing.T) {
 		// divergent is NOT a descendant of commit2, so commit2->divergent is a force push
-		update := RefUpdate{OldRev: commit2, NewRev: divergent, RefName: "refs/heads/main"}
-		if !IsForcePush(t.Context(), repoDir, update) {
+		update := refUpdate{oldRev: commit2, newRev: divergent, refName: "refs/heads/main"}
+		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} else if !ok {
 			t.Error("expected IsForcePush=true for non-fast-forward push")
 		}
 	})
 
 	t.Run("create is not force push", func(t *testing.T) {
-		update := RefUpdate{OldRev: ZeroHash, NewRev: commit1, RefName: "refs/heads/new-branch"}
-		if IsForcePush(t.Context(), repoDir, update) {
+		update := refUpdate{oldRev: ZeroHash, newRev: commit1, refName: "refs/heads/new-branch"}
+		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} else if ok {
 			t.Error("expected IsForcePush=false for create")
 		}
 	})
 
 	t.Run("delete is not force push", func(t *testing.T) {
-		update := RefUpdate{OldRev: commit1, NewRev: ZeroHash, RefName: "refs/heads/old-branch"}
-		if IsForcePush(t.Context(), repoDir, update) {
+		update := refUpdate{oldRev: commit1, newRev: ZeroHash, refName: "refs/heads/old-branch"}
+		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} else if ok {
 			t.Error("expected IsForcePush=false for delete")
 		}
 	})
 
 	t.Run("tag is not force push", func(t *testing.T) {
-		update := RefUpdate{OldRev: commit1, NewRev: commit2, RefName: "refs/tags/v1.0"}
-		if IsForcePush(t.Context(), repoDir, update) {
+		update := refUpdate{oldRev: commit1, newRev: commit2, refName: "refs/tags/v1.0"}
+		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		} else if ok {
 			t.Error("expected IsForcePush=false for tag")
 		}
 	})
 }
 
-func TestFormatEvent(t *testing.T) {
+func TestRefUpdate_String(t *testing.T) {
 	tests := []struct {
 		update RefUpdate
 		want   string
 	}{
 		{
-			update: RefUpdate{OldRev: "abc123", NewRev: "def456", RefName: "refs/heads/main"},
+			update: refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
 			want:   "branch_push:main",
 		},
 		{
-			update: RefUpdate{OldRev: ZeroHash, NewRev: "def456", RefName: "refs/heads/feature"},
+			update: refUpdate{oldRev: ZeroHash, newRev: "def456", refName: "refs/heads/feature"},
 			want:   "branch_create:feature",
 		},
 		{
-			update: RefUpdate{OldRev: "abc123", NewRev: ZeroHash, RefName: "refs/heads/old"},
+			update: refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/heads/old"},
 			want:   "branch_delete:old",
 		},
 		{
-			update: RefUpdate{OldRev: ZeroHash, NewRev: "abc123", RefName: "refs/tags/v1.0"},
+			update: refUpdate{oldRev: ZeroHash, newRev: "abc123", refName: "refs/tags/v1.0"},
 			want:   "tag_create:v1.0",
 		},
 		{
-			update: RefUpdate{OldRev: "abc123", NewRev: ZeroHash, RefName: "refs/tags/v1.0"},
+			update: refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/tags/v1.0"},
 			want:   "tag_delete:v1.0",
 		},
 		{
-			update: RefUpdate{OldRev: "abc123", NewRev: "def456", RefName: "refs/notes/commits"},
+			update: refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/notes/commits"},
 			want:   "ref_update:refs/notes/commits",
 		},
 	}
@@ -387,7 +397,7 @@ func TestParseRefUpdatesReaderReplay(t *testing.T) {
 		"0000" +
 		"PACKbinarydata\x00\x01\x02\x03"
 
-	updates, newReader := ParseRefUpdates(strings.NewReader(input))
+	updates, newReader := ParseRefUpdates(strings.NewReader(input), "test-repo-path")
 
 	if len(updates) != 2 {
 		t.Fatalf("expected 2 updates, got %d", len(updates))
@@ -504,12 +514,12 @@ func TestDiffRefs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			updates := DiffRefs(tt.before, tt.after)
+			updates := DiffRefs(tt.before, tt.after, "test-repo-path")
 
 			// Build a map of updates for easier comparison
 			got := make(map[string]string)
 			for _, u := range updates {
-				got[u.RefName] = u.String()
+				got[u.RefName()] = u.String()
 			}
 
 			if len(got) != len(tt.want) {

@@ -250,7 +250,7 @@ func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repos
 
 	if h.postReceiveHook != nil {
 		after, _ := repo.Refs()
-		updates := receive.DiffRefs(before, after)
+		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
 			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)

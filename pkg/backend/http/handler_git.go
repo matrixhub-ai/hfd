@@ -115,7 +115,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	var input io.Reader = r.Body
 	var updates []receive.RefUpdate
 	if service == repository.GitReceivePack {
-		updates, input = receive.ParseRefUpdates(r.Body)
+		updates, input = receive.ParseRefUpdates(r.Body, repoPath)
 	}
 
 	if h.permissionHook != nil {
@@ -229,7 +229,7 @@ func (h *Handler) syncMirrorWithHook(ctx context.Context, repo *repository.Repos
 
 	if h.postReceiveHook != nil {
 		after, _ := repo.Refs()
-		updates := receive.DiffRefs(before, after)
+		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
 			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
 				return fmt.Errorf("post-receive hook error: %w", err)

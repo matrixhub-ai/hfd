@@ -125,6 +125,11 @@ func Open(repoPath string) (*Repository, error) {
 	}, nil
 }
 
+// RepoPath returns the filesystem path of the repository.
+func (r *Repository) RepoPath() string {
+	return r.repoPath
+}
+
 // SplitRevisionAndPath splits a refpath into a revision (branch or tag) and a file path.
 func (r *Repository) SplitRevisionAndPath(refpath string) (rev string, path string, err error) {
 	if refpath == "" {

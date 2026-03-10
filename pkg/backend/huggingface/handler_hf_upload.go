@@ -336,7 +336,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: oldRev, RefName: "refs/heads/" + rev},
+			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoPath),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
@@ -356,7 +356,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			oldRev = receive.ZeroHash
 		}
 		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: oldRev, NewRev: commitHash, RefName: "refs/heads/" + rev},
+			receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoPath),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
 		}

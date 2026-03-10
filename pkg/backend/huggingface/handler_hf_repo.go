@@ -308,7 +308,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
 		}
 		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: receive.ZeroHash, NewRev: newRev, RefName: "refs/heads/" + rev},
+			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
@@ -324,7 +324,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	if h.postReceiveHook != nil {
 		hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
 		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: receive.ZeroHash, NewRev: hash, RefName: "refs/heads/" + rev},
+			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
 		}
@@ -384,7 +384,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	oldHash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
 
 	updates := []receive.RefUpdate{
-		{OldRev: oldHash, NewRev: receive.ZeroHash, RefName: "refs/heads/" + rev},
+		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/heads/"+rev, repo.RepoPath()),
 	}
 
 	if h.preReceiveHook != nil {
@@ -467,7 +467,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
 		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: receive.ZeroHash, NewRev: newRev, RefName: "refs/tags/" + req.Tag},
+			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
@@ -482,7 +482,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	if h.postReceiveHook != nil {
 		hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
 		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
-			{OldRev: receive.ZeroHash, NewRev: hash, RefName: "refs/tags/" + req.Tag},
+			receive.NewRefUpdate(receive.ZeroHash, hash, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
 		}
@@ -536,7 +536,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	oldHash, _ := repo.RefHash(plumbing.NewTagReferenceName(rev))
 
 	updates := []receive.RefUpdate{
-		{OldRev: oldHash, NewRev: receive.ZeroHash, RefName: "refs/tags/" + rev},
+		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/tags/"+rev, repo.RepoPath()),
 	}
 
 	if h.preReceiveHook != nil {
@@ -823,6 +823,17 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.preReceiveHook != nil {
+		// Resolve the revision to a hash so the hook has the target commit
+		newRev, _ := repo.ResolveRevision(rev)
+		if err := h.preReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			receive.NewRefUpdate(newRev, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
+		}); err != nil {
+			responseJSON(w, err.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	message := req.Message
 	if message == "" {
 		message = "Super-squash branch '" + rev + "' using huggingface_hub"
@@ -831,6 +842,15 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	if _, err := repo.SuperSquash(r.Context(), rev, message, "HuggingFace", "hf@users.noreply.huggingface.co"); err != nil {
 		responseJSON(w, fmt.Errorf("failed to squash repository %q rev %q: %v", ri.RepoPath, rev, err), http.StatusInternalServerError)
 		return
+	}
+
+	if h.postReceiveHook != nil {
+		newRev, _ := repo.ResolveRevision(rev)
+		if hookErr := h.postReceiveHook(r.Context(), ri.RepoPath, []receive.RefUpdate{
+			receive.NewRefUpdate(receive.BreakHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
+		}); hookErr != nil {
+			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoPath, "error", hookErr)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

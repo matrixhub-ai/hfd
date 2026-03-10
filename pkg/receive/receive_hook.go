@@ -8,10 +8,15 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/wzshiming/hfd/internal/utils"
 )
 
 // ZeroHash is the zero hash used for ref create/delete operations.
 const ZeroHash = "0000000000000000000000000000000000000000"
+
+// BreakHash is marked as a special hash that indicates the ref update squash should be performed by the receive hook.
+const BreakHash = ""
 
 // PreReceiveHook is called before a git push is processed with the list of ref updates.
 // Returning a non-nil error will reject the push before any refs are updated.
@@ -21,46 +26,93 @@ type PreReceiveHook func(ctx context.Context, repoName string, updates []RefUpda
 // It is used for notifications and logging; errors are logged but do not affect the push result.
 type PostReceiveHook func(ctx context.Context, repoName string, updates []RefUpdate) error
 
-// RefUpdate holds the raw ref update parsed from the receive-pack input.
-type RefUpdate struct {
-	OldRev  string
-	NewRev  string
-	RefName string
+// RefUpdate represents a single ref update in a git push, including the old and new revisions, the ref name, and helper methods to identify the type of update.
+type RefUpdate interface {
+	OldRev() string
+	NewRev() string
+	RefName() string
+	IsBranch() bool
+	IsTag() bool
+	IsCreate() bool
+	IsDelete() bool
+	IsForce(ctx context.Context) (bool, error)
+	Name() string
+	String() string
+}
+
+// NewRefUpdate creates a new RefUpdate instance with the given parameters.
+func NewRefUpdate(oldRev, newRev, refName, repoPath string) RefUpdate {
+	return refUpdate{
+		oldRev:   oldRev,
+		newRev:   newRev,
+		refName:  refName,
+		repoPath: repoPath,
+	}
+}
+
+type refUpdate struct {
+	oldRev   string
+	newRev   string
+	refName  string
+	repoPath string
+}
+
+func (r refUpdate) OldRev() string {
+	return r.oldRev
+}
+
+func (r refUpdate) NewRev() string {
+	return r.newRev
+}
+
+func (r refUpdate) RefName() string {
+	return r.refName
 }
 
 // IsBranch returns true if the reference is a branch (refs/heads/*).
-func (r RefUpdate) IsBranch() bool {
-	return strings.HasPrefix(r.RefName, "refs/heads/")
+func (r refUpdate) IsBranch() bool {
+	return strings.HasPrefix(r.refName, "refs/heads/")
 }
 
 // IsTag returns true if the reference is a tag (refs/tags/*).
-func (r RefUpdate) IsTag() bool {
-	return strings.HasPrefix(r.RefName, "refs/tags/")
+func (r refUpdate) IsTag() bool {
+	return strings.HasPrefix(r.refName, "refs/tags/")
 }
 
 // IsCreate returns true if this is a new reference (old rev is all zeros).
-func (r RefUpdate) IsCreate() bool {
-	return r.OldRev == ZeroHash
+func (r refUpdate) IsCreate() bool {
+	return r.oldRev == ZeroHash
 }
 
 // IsDelete returns true if the reference is being deleted (new rev is all zeros).
-func (r RefUpdate) IsDelete() bool {
-	return r.NewRev == ZeroHash
+func (r refUpdate) IsDelete() bool {
+	return r.newRev == ZeroHash
 }
 
 // Name returns the short name of the reference (e.g. "main", "v1.0").
-func (r RefUpdate) Name() string {
-	if after, ok := strings.CutPrefix(r.RefName, "refs/heads/"); ok {
+func (r refUpdate) Name() string {
+	if after, ok := strings.CutPrefix(r.refName, "refs/heads/"); ok {
 		return after
 	}
-	if after, ok := strings.CutPrefix(r.RefName, "refs/tags/"); ok {
+	if after, ok := strings.CutPrefix(r.refName, "refs/tags/"); ok {
 		return after
 	}
-	return r.RefName
+	return r.refName
+}
+
+// IsForce checks if this ref update is a non-fast-forward (force) push by invoking the git merge-base command.
+func (r refUpdate) IsForce(ctx context.Context) (bool, error) {
+	if r.oldRev == BreakHash || r.newRev == BreakHash {
+		return true, nil
+	}
+	if r.repoPath == "" {
+		return false, fmt.Errorf("repo path is empty")
+	}
+	return isForce(ctx, r.repoPath, r)
 }
 
 // String returns a human-readable description of the ref update, e.g. "branch_create:main".
-func (r RefUpdate) String() string {
+func (r refUpdate) String() string {
 	switch {
 	case r.IsBranch() && r.IsCreate():
 		return fmt.Sprintf("branch_create:%s", r.Name())
@@ -73,14 +125,14 @@ func (r RefUpdate) String() string {
 	case r.IsTag() && r.IsDelete():
 		return fmt.Sprintf("tag_delete:%s", r.Name())
 	default:
-		return fmt.Sprintf("ref_update:%s", r.RefName)
+		return fmt.Sprintf("ref_update:%s", r.refName)
 	}
 }
 
 // ParseRefUpdates reads the pkt-line formatted ref update commands from the
 // beginning of a git receive-pack input stream. It returns the parsed updates
 // and a new reader that replays the consumed bytes followed by the remaining input.
-func ParseRefUpdates(r io.Reader) ([]RefUpdate, io.Reader) {
+func ParseRefUpdates(r io.Reader, repoPath string) ([]RefUpdate, io.Reader) {
 	var buf bytes.Buffer
 	tee := io.TeeReader(r, &buf)
 
@@ -123,10 +175,11 @@ func ParseRefUpdates(r io.Reader) ([]RefUpdate, io.Reader) {
 
 		parts := strings.SplitN(line, " ", 3)
 		if len(parts) == 3 {
-			updates = append(updates, RefUpdate{
-				OldRev:  parts[0],
-				NewRev:  parts[1],
-				RefName: parts[2],
+			updates = append(updates, refUpdate{
+				oldRev:   parts[0],
+				newRev:   parts[1],
+				refName:  parts[2],
+				repoPath: repoPath,
 			})
 		}
 	}
@@ -134,37 +187,55 @@ func ParseRefUpdates(r io.Reader) ([]RefUpdate, io.Reader) {
 	return updates, io.MultiReader(&buf, r)
 }
 
-// IsForcePush checks if a branch update is a non-fast-forward (force) push.
+// isForce checks if a branch update is a non-fast-forward (force) push.
 // Returns false for creates, deletes, tags, and non-branch refs.
 // repoPath is the filesystem path to the bare git repository.
-func IsForcePush(ctx context.Context, repoPath string, r RefUpdate) bool {
+func isForce(ctx context.Context, repoPath string, r RefUpdate) (bool, error) {
 	if r.IsCreate() || r.IsDelete() || !r.IsBranch() {
-		return false
+		return false, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", r.OldRev, r.NewRev)
+	oldRev := r.OldRev()
+	newRev := r.NewRev()
+	if oldRev == "" || newRev == "" {
+		return false, nil
+	}
+
+	cmd := utils.Command(ctx, "git", "merge-base", "--is-ancestor", oldRev, newRev)
 	cmd.Dir = repoPath
-	return cmd.Run() != nil
+	err := cmd.Run()
+	if err == nil {
+		return false, nil // oldRev is an ancestor of newRev, not a force push
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr.ExitCode() == 1 {
+			return true, nil // oldRev is not an ancestor of newRev, this is a force push
+		}
+	}
+	return false, fmt.Errorf("failed to check force push: %w", err)
+
 }
 
 // DiffRefs computes ref updates by comparing before and after ref snapshots.
 // before and after are maps of full ref name (e.g. "refs/heads/main") to commit hash.
-func DiffRefs(before, after map[string]string) []RefUpdate {
+func DiffRefs(before, after map[string]string, repoPath string) []RefUpdate {
 	var updates []RefUpdate
 
 	// Detect new and changed refs
 	for refName, newHash := range after {
 		oldHash, existed := before[refName]
 		if !existed {
-			updates = append(updates, RefUpdate{
-				OldRev:  ZeroHash,
-				NewRev:  newHash,
-				RefName: refName,
+			updates = append(updates, refUpdate{
+				oldRev:   ZeroHash,
+				newRev:   newHash,
+				refName:  refName,
+				repoPath: repoPath,
 			})
 		} else if oldHash != newHash {
-			updates = append(updates, RefUpdate{
-				OldRev:  oldHash,
-				NewRev:  newHash,
-				RefName: refName,
+			updates = append(updates, refUpdate{
+				oldRev:   oldHash,
+				newRev:   newHash,
+				refName:  refName,
+				repoPath: repoPath,
 			})
 		}
 	}
@@ -172,10 +243,11 @@ func DiffRefs(before, after map[string]string) []RefUpdate {
 	// Detect deleted refs
 	for refName, oldHash := range before {
 		if _, exists := after[refName]; !exists {
-			updates = append(updates, RefUpdate{
-				OldRev:  oldHash,
-				NewRev:  ZeroHash,
-				RefName: refName,
+			updates = append(updates, refUpdate{
+				oldRev:   oldHash,
+				newRev:   ZeroHash,
+				refName:  refName,
+				repoPath: repoPath,
 			})
 		}
 	}

@@ -240,7 +240,7 @@ func TestHTTPReceiveHook(t *testing.T) {
 		}
 		update := call.updates[0]
 		if !update.IsBranch() {
-			t.Errorf("Expected branch update, got ref %q", update.RefName)
+			t.Errorf("Expected branch update, got ref %q", update.RefName())
 		}
 		if update.IsCreate() {
 			t.Errorf("Expected non-create (branch already exists from API)")
@@ -269,7 +269,7 @@ func TestHTTPReceiveHook(t *testing.T) {
 		}
 		update := call.updates[0]
 		if !update.IsTag() {
-			t.Errorf("Expected tag update, got ref %q", update.RefName)
+			t.Errorf("Expected tag update, got ref %q", update.RefName())
 		}
 		if !update.IsCreate() {
 			t.Errorf("Expected tag create")
@@ -294,7 +294,7 @@ func TestHTTPReceiveHook(t *testing.T) {
 		}
 		update := call.updates[0]
 		if !update.IsTag() {
-			t.Errorf("Expected tag update, got ref %q", update.RefName)
+			t.Errorf("Expected tag update, got ref %q", update.RefName())
 		}
 		if !update.IsDelete() {
 			t.Errorf("Expected tag delete")
@@ -400,14 +400,14 @@ func TestHTTPPreReceiveHookReceivesUpdates(t *testing.T) {
 	}
 
 	for i := range preUpdate {
-		if preUpdate[i].RefName != postUpdate[i].RefName {
-			t.Errorf("Update[%d] ref mismatch: pre=%q, post=%q", i, preUpdate[i].RefName, postUpdate[i].RefName)
+		if preUpdate[i].RefName() != postUpdate[i].RefName() {
+			t.Errorf("Update[%d] ref mismatch: pre=%q, post=%q", i, preUpdate[i].RefName(), postUpdate[i].RefName())
 		}
-		if preUpdate[i].OldRev != postUpdate[i].OldRev {
-			t.Errorf("Update[%d] old rev mismatch: pre=%q, post=%q", i, preUpdate[i].OldRev, postUpdate[i].OldRev)
+		if preUpdate[i].OldRev() != postUpdate[i].OldRev() {
+			t.Errorf("Update[%d] old rev mismatch: pre=%q, post=%q", i, preUpdate[i].OldRev(), postUpdate[i].OldRev())
 		}
-		if preUpdate[i].NewRev != postUpdate[i].NewRev {
-			t.Errorf("Update[%d] new rev mismatch: pre=%q, post=%q", i, preUpdate[i].NewRev, postUpdate[i].NewRev)
+		if preUpdate[i].NewRev() != postUpdate[i].NewRev() {
+			t.Errorf("Update[%d] new rev mismatch: pre=%q, post=%q", i, preUpdate[i].NewRev(), postUpdate[i].NewRev())
 		}
 	}
 
@@ -517,7 +517,7 @@ func TestSSHReceiveHook(t *testing.T) {
 		}
 		update := call.updates[0]
 		if !update.IsBranch() {
-			t.Errorf("Expected branch update, got ref %q", update.RefName)
+			t.Errorf("Expected branch update, got ref %q", update.RefName())
 		}
 		if update.IsCreate() {
 			t.Errorf("Expected non-create (branch already exists from API)")
