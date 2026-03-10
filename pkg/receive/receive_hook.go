@@ -102,7 +102,7 @@ func (r refUpdate) Name() string {
 
 // IsForce checks if this ref update is a non-fast-forward (force) push by invoking the git merge-base command.
 func (r refUpdate) IsForce(ctx context.Context) (bool, error) {
-	if r.oldRev == BreakHash || r.newRev == BreakHash {
+	if r.oldRev == BreakHash && r.newRev == BreakHash {
 		return true, nil
 	}
 	if r.repoPath == "" {

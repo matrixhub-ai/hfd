@@ -824,10 +824,8 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHook != nil {
-		// Resolve the revision to a hash so the hook has the target commit
-		newRev, _ := repo.ResolveRevision(rev)
 		if err := h.preReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(newRev, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
+			receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
 			responseJSON(w, err.Error(), http.StatusForbidden)
 			return
@@ -845,9 +843,8 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.postReceiveHook != nil {
-		newRev, _ := repo.ResolveRevision(rev)
 		if hookErr := h.postReceiveHook(r.Context(), ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(receive.BreakHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
+			receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); hookErr != nil {
 			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
 		}

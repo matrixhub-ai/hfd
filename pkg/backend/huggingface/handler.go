@@ -236,7 +236,7 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 		if err != nil {
 			return nil, repository.ErrRepositoryNotExists
 		}
-		err = h.syncMirror(ctx, repo, repoName, sourceURL, true)
+		err = h.syncMirror(ctx, repo, repoName, sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync mirror: %w", err)
 		}
@@ -249,7 +249,7 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 		if !isMirror {
 			return repo, nil
 		}
-		err = h.syncMirror(ctx, repo, repoName, sourceURL, false)
+		err = h.syncMirror(ctx, repo, repoName, sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sync mirror: %w", err)
 		}
@@ -257,13 +257,19 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string) (*rep
 	return repo, nil
 }
 
-// syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
-func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, first bool) error {
-	var before map[string]string
-	if h.postReceiveHook != nil && !first {
-		before, _ = repo.Refs()
+func removeKeyFromMap(m map[string]string, keys []string) map[string]string {
+	if m == nil {
+		return nil
 	}
+	result := make(map[string]string)
+	for _, key := range keys {
+		result[key] = m[key]
+	}
+	return result
+}
 
+// syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
+func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
 	remoteRefs, err := repo.ListRemoteRefs(ctx, sourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
@@ -275,11 +281,25 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 			return fmt.Errorf("failed to filter mirror refs: %w", err)
 		}
 	}
+	if len(remoteRefs) == 0 {
+		return nil
+	}
 
-	if h.preReceiveHook != nil && first {
+	var before map[string]string
+	if h.postReceiveHook != nil || h.preReceiveHook != nil {
+		before, _ = repo.Refs()
+	}
+
+	before = removeKeyFromMap(before, remoteRefs)
+
+	if h.preReceiveHook != nil {
 		var updates []receive.RefUpdate
 		for _, target := range remoteRefs {
-			updates = append(updates, receive.NewRefUpdate(receive.ZeroHash, receive.BreakHash, target, repo.RepoPath()))
+			oldRev, ok := before[target]
+			if oldRev == "" || !ok {
+				oldRev = receive.ZeroHash
+			}
+			updates = append(updates, receive.NewRefUpdate(oldRev, receive.BreakHash, target, repo.RepoPath()))
 		}
 		if err := h.preReceiveHook(ctx, repoName, updates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
@@ -292,6 +312,7 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 
 	if h.postReceiveHook != nil {
 		after, _ := repo.Refs()
+		after = removeKeyFromMap(after, remoteRefs)
 		updates := receive.DiffRefs(before, after, repo.RepoPath())
 		if len(updates) > 0 {
 			if err := h.postReceiveHook(ctx, repoName, updates); err != nil {
