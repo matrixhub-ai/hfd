@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
@@ -292,6 +293,167 @@ func TestSSHProxyMirror(t *testing.T) {
 		}
 		if string(content) != "# SSH Proxy Test\n" {
 			t.Errorf("Unexpected content from cached SSH proxy clone: %q", content)
+		}
+	})
+}
+
+// setupProxyServerWithRefFilter creates a proxy HTTP server that mirrors repositories
+// from upstreamURL on demand, applying the given ref filter.
+func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter repository.MirrorRefFilterFunc) (*httptest.Server, string) {
+	t.Helper()
+
+	dataDir, err := os.MkdirTemp("", "proxy-ref-filter-e2e-data")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dataDir) })
+
+	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStore := lfs.NewLocal(store.LFSDir())
+
+	var handler http.Handler
+
+	handler = backendhuggingface.NewHandler(
+		backendhuggingface.WithStorage(store),
+		backendhuggingface.WithLFSStore(lfsStore),
+		backendhuggingface.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		backendhuggingface.WithMirrorRefFilterFunc(refFilter),
+	)
+
+	handler = backendlfs.NewHandler(
+		backendlfs.WithStorage(store),
+		backendlfs.WithNext(handler),
+		backendlfs.WithLFSStore(lfsStore),
+	)
+
+	handler = backendhttp.NewHandler(
+		backendhttp.WithStorage(store),
+		backendhttp.WithNext(handler),
+		backendhttp.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		backendhttp.WithMirrorRefFilterFunc(refFilter),
+	)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(func() { server.Close() })
+
+	return server, dataDir
+}
+
+// TestHTTPProxyMirrorRefFilter verifies that cloning from a proxy server with
+// ref filtering only mirrors the allowed refs from the upstream.
+func TestHTTPProxyMirrorRefFilter(t *testing.T) {
+	upstream, _ := setupTestServer(t)
+
+	const org = "ref-filter-org"
+	const name = "ref-filter-repo"
+
+	// Create the repository on the upstream.
+	resp, err := http.Post(upstream.URL+"/api/repos/create", "application/json",
+		strings.NewReader(`{"type":"model","name":"`+name+`","organization":"`+org+`"}`))
+	if err != nil {
+		t.Fatalf("Failed to create upstream repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 creating upstream repo, got %d", resp.StatusCode)
+	}
+
+	clientDir, err := os.MkdirTemp("", "ref-filter-e2e-client")
+	if err != nil {
+		t.Fatalf("Failed to create temp client dir: %v", err)
+	}
+	defer os.RemoveAll(clientDir)
+
+	env := []string{"GIT_TERMINAL_PROMPT=0"}
+
+	// Clone empty repo from upstream and push a commit with a branch and tag.
+	upstreamGitURL := upstream.URL + "/" + org + "/" + name + ".git"
+	upstreamCloneDir := filepath.Join(clientDir, "upstream-clone")
+	runGitCmdE2E(t, "", env, "clone", upstreamGitURL, upstreamCloneDir)
+	runGitCmdE2E(t, upstreamCloneDir, env, "config", "user.email", "test@test.com")
+	runGitCmdE2E(t, upstreamCloneDir, env, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(upstreamCloneDir, "README.md"), []byte("# Ref Filter Test\n"), 0644); err != nil {
+		t.Fatalf("Failed to write README.md: %v", err)
+	}
+	runGitCmdE2E(t, upstreamCloneDir, env, "add", "README.md")
+	runGitCmdE2E(t, upstreamCloneDir, env, "commit", "-m", "Initial commit")
+	runGitCmdE2E(t, upstreamCloneDir, env, "push", "origin", "main")
+
+	// Create a feature branch and push it.
+	runGitCmdE2E(t, upstreamCloneDir, env, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(upstreamCloneDir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
+		t.Fatalf("Failed to write feature.txt: %v", err)
+	}
+	runGitCmdE2E(t, upstreamCloneDir, env, "add", "feature.txt")
+	runGitCmdE2E(t, upstreamCloneDir, env, "commit", "-m", "Feature commit")
+	runGitCmdE2E(t, upstreamCloneDir, env, "push", "origin", "feature")
+
+	// Create a tag on main and push it.
+	runGitCmdE2E(t, upstreamCloneDir, env, "checkout", "main")
+	runGitCmdE2E(t, upstreamCloneDir, env, "tag", "v1.0")
+	runGitCmdE2E(t, upstreamCloneDir, env, "push", "origin", "v1.0")
+
+	// Set up proxy with ref filter that only allows refs/heads/main.
+	onlyMainFilter := func(_ context.Context, _ string, refs []string) ([]string, error) {
+		var filtered []string
+		for _, ref := range refs {
+			if ref == "refs/heads/main" {
+				filtered = append(filtered, ref)
+			}
+		}
+		return filtered, nil
+	}
+
+	proxy, proxyDataDir := setupProxyServerWithRefFilter(t, upstream.URL, onlyMainFilter)
+	proxyGitURL := proxy.URL + "/" + org + "/" + name + ".git"
+
+	t.Run("CloneFromFilteredProxy", func(t *testing.T) {
+		cloneDir := filepath.Join(clientDir, "filtered-proxy-clone")
+		runGitCmdE2E(t, "", env, "clone", proxyGitURL, cloneDir)
+
+		content, err := os.ReadFile(filepath.Join(cloneDir, "README.md"))
+		if err != nil {
+			t.Fatalf("Failed to read README.md from proxy clone: %v", err)
+		}
+		if string(content) != "# Ref Filter Test\n" {
+			t.Errorf("Unexpected content from proxy clone: %q", content)
+		}
+	})
+
+	t.Run("FilteredBranchNotMirrored", func(t *testing.T) {
+		// The "feature" branch should not exist in the mirror.
+		repoPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
+		repo, err := repository.Open(repoPath)
+		if err != nil {
+			t.Fatalf("Failed to open proxy mirror repo: %v", err)
+		}
+		branches, err := repo.Branches()
+		if err != nil {
+			t.Fatalf("Failed to list branches: %v", err)
+		}
+		for _, b := range branches {
+			if b == "feature" {
+				t.Error("feature branch should not be mirrored, but found it")
+			}
+		}
+	})
+
+	t.Run("FilteredTagNotMirrored", func(t *testing.T) {
+		// The "v1.0" tag should not exist in the mirror.
+		repoPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
+		repo, err := repository.Open(repoPath)
+		if err != nil {
+			t.Fatalf("Failed to open proxy mirror repo: %v", err)
+		}
+		tags, err := repo.Tags()
+		if err != nil {
+			t.Fatalf("Failed to list tags: %v", err)
+		}
+		for _, tag := range tags {
+			if tag == "v1.0" {
+				t.Error("v1.0 tag should not be mirrored, but found it")
+			}
 		}
 	})
 }

@@ -18,15 +18,16 @@ import (
 
 // Handler
 type Handler struct {
-	storage          *storage.Storage
-	root             *mux.Router
-	next             http.Handler
-	mirrorSourceFunc repository.MirrorSourceFunc
-	lfsTeeCache      *lfs.TeeCache
-	permissionHook   permission.PermissionHook
-	preReceiveHook   receive.PreReceiveHook
-	postReceiveHook  receive.PostReceiveHook
-	lfsStore         lfs.Store
+	storage             *storage.Storage
+	root                *mux.Router
+	next                http.Handler
+	mirrorSourceFunc    repository.MirrorSourceFunc
+	mirrorRefFilterFunc repository.MirrorRefFilterFunc
+	lfsTeeCache         *lfs.TeeCache
+	permissionHook      permission.PermissionHook
+	preReceiveHook      receive.PreReceiveHook
+	postReceiveHook     receive.PostReceiveHook
+	lfsStore            lfs.Store
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -43,6 +44,14 @@ func WithStorage(storage *storage.Storage) Option {
 func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(h *Handler) {
 		h.mirrorSourceFunc = fn
+	}
+}
+
+// WithMirrorRefFilterFunc sets the ref filter callback for mirror operations.
+// When set, only refs accepted by the filter will be synced from the upstream.
+func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
+	return func(h *Handler) {
+		h.mirrorRefFilterFunc = fn
 	}
 }
 
@@ -244,8 +253,22 @@ func (h *Handler) syncMirror(ctx context.Context, repo *repository.Repository, r
 		before, _ = repo.Refs()
 	}
 
-	if err := repo.SyncMirror(ctx); err != nil {
-		return fmt.Errorf("failed to sync mirror: %w", err)
+	if h.mirrorRefFilterFunc != nil {
+		remoteRefs, err := repo.ListRemoteRefs(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list remote refs: %w", err)
+		}
+		remoteRefs, err = h.mirrorRefFilterFunc(ctx, repoName, remoteRefs)
+		if err != nil {
+			return fmt.Errorf("failed to filter mirror refs: %w", err)
+		}
+		if err := repo.SyncMirrorRefs(ctx, remoteRefs); err != nil {
+			return fmt.Errorf("failed to sync mirror refs: %w", err)
+		}
+	} else {
+		if err := repo.SyncMirror(ctx); err != nil {
+			return fmt.Errorf("failed to sync mirror: %w", err)
+		}
 	}
 
 	if h.postReceiveHook != nil {

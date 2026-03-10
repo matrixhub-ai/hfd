@@ -15,6 +15,11 @@ import (
 // mirror creation for that repository.
 type MirrorSourceFunc func(ctx context.Context, repoPath, repoName string) (string, error)
 
+// MirrorRefFilterFunc filters which refs should be synced during mirror operations.
+// It receives the repository name and a list of remote ref names (e.g. "refs/heads/main",
+// "refs/tags/v1.0") and returns the filtered list of refs to sync.
+type MirrorRefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
+
 // NewMirrorSourceFunc creates a MirrorFunc that derives the source URL by appending
 // repoName to baseURL.
 func NewMirrorSourceFunc(baseURL string) MirrorSourceFunc {
@@ -50,22 +55,6 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	}
 
 	return repo, nil
-}
-
-func (r *Repository) ShallowSyncMirror(ctx context.Context) error {
-	args := []string{
-		"fetch",
-		"--depth=1",
-		"--prune",
-		"origin",
-		"--progress",
-	}
-	cmd := utils.Command(ctx, "git", args...)
-	cmd.Dir = r.repoPath
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to shallow fetch repository: %w", err)
-	}
-	return nil
 }
 
 func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
@@ -109,7 +98,7 @@ func (r *Repository) IsMirror() (bool, string, error) {
 	return sourceURL != "", sourceURL, nil
 }
 
-// IsMirror checks if the repository is a mirror by looking for the "origin" remote and checking its configuration.
+// SyncMirror syncs all refs from the origin remote, optionally unshallowing if needed.
 func (r *Repository) SyncMirror(ctx context.Context) error {
 	args := []string{
 		"fetch",
@@ -125,4 +114,81 @@ func (r *Repository) SyncMirror(ctx context.Context) error {
 	cmd := utils.Command(ctx, "git", args...)
 	cmd.Dir = r.repoPath
 	return cmd.Run()
+}
+
+// ListRemoteRefs returns a list of all ref names from the "origin" remote.
+// The returned names are fully qualified (e.g. "refs/heads/main", "refs/tags/v1.0").
+func (r *Repository) ListRemoteRefs(ctx context.Context) ([]string, error) {
+	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", "origin")
+	cmd.Dir = r.repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote refs: %w", err)
+	}
+
+	var refs []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: <hash>\t<refname>
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		refs = append(refs, parts[1])
+	}
+	return refs, nil
+}
+
+// SyncMirrorRefs syncs only the specified refs from the origin remote.
+// Local refs that are not in the specified list are pruned.
+func (r *Repository) SyncMirrorRefs(ctx context.Context, refs []string) error {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	args := []string{
+		"fetch",
+		"origin",
+		"--no-tags",
+		"--progress",
+	}
+
+	if fi, err := os.Stat(filepath.Join(r.repoPath, "shallow")); err == nil && !fi.IsDir() {
+		args = append(args, "--unshallow")
+	}
+
+	// Add explicit refspecs for each desired ref.
+	for _, ref := range refs {
+		args = append(args, "+"+ref+":"+ref)
+	}
+
+	cmd := utils.Command(ctx, "git", args...)
+	cmd.Dir = r.repoPath
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to fetch repository refs: %w", err)
+	}
+
+	// Prune local refs that are not in the desired list.
+	desired := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		desired[ref] = true
+	}
+
+	localRefs, err := r.Refs()
+	if err != nil {
+		return err
+	}
+
+	for refName := range localRefs {
+		if !desired[refName] {
+			delCmd := utils.Command(ctx, "git", "update-ref", "-d", refName)
+			delCmd.Dir = r.repoPath
+			_ = delCmd.Run()
+		}
+	}
+
+	return nil
 }
