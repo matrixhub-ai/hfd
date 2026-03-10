@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,15 +25,51 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - uses: actions/setup-python@v5
+      - name: Test
+        run: go test ./...
+        env:
+          E2E_SUITE: unit
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: unit
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: http
+          - suite: ssh
+          - suite: proxy
+          - suite: lfs
+          - suite: hook-http
+          - suite: hook-ssh
+          - suite: hf-cli
+            python: true
+          - suite: hf-python
+            python: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Python
+        if: matrix.python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Install huggingface_hub
-        run: pip install 'huggingface_hub[cli]'
+      - name: Install Hugging Face tools
+        if: matrix.python
+        run: |
+          pip install --upgrade pip
+          pip install huggingface_hub
 
-      # Unit tests and e2e tests are run together.
-      # E2e tests use httptest.NewServer with a local temp dir and require
-      # no external credentials; they skip gracefully if tools are absent.
-      - name: Test
-        run: go test ./...
+      - name: Run e2e suite
+        env:
+          E2E_SUITE: ${{ matrix.suite }}
+        run: go test ./test/e2e -count=1
