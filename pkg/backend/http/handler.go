@@ -14,13 +14,14 @@ import (
 
 // Handler
 type Handler struct {
-	storage          *storage.Storage
-	root             *mux.Router
-	next             http.Handler
-	mirrorSourceFunc repository.MirrorSourceFunc
-	permissionHook   permission.PermissionHook
-	preReceiveHook   receive.PreReceiveHook
-	postReceiveHook  receive.PostReceiveHook
+	storage             *storage.Storage
+	root                *mux.Router
+	next                http.Handler
+	mirrorSourceFunc    repository.MirrorSourceFunc
+	mirrorRefFilterFunc repository.MirrorRefFilterFunc
+	permissionHook      permission.PermissionHook
+	preReceiveHook      receive.PreReceiveHook
+	postReceiveHook     receive.PostReceiveHook
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -44,6 +45,14 @@ func WithNext(next http.Handler) Option {
 func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(h *Handler) {
 		h.mirrorSourceFunc = fn
+	}
+}
+
+// WithMirrorRefFilterFunc sets the ref filter callback for mirror operations.
+// When set, only refs accepted by the filter will be synced from the upstream.
+func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
+	return func(h *Handler) {
+		h.mirrorRefFilterFunc = fn
 	}
 }
 
