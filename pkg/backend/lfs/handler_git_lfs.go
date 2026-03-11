@@ -31,8 +31,11 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 			op = permission.OperationUpdateRepo
 		}
 		repoName := bv.repoName()
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}

@@ -2,7 +2,6 @@ package backend_test
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,8 +140,8 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		// Auth hook that allows all operations
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
-				return nil
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+				return true, nil
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -162,8 +161,8 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		// Auth hook that denies all operations
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
-				return errors.New("access denied")
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+				return false, nil
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -184,11 +183,11 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		// Auth hook that allows fetches but denies pushes
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
 				if op == permission.OperationUpdateRepo {
-					return errors.New("push access denied")
+					return false, nil
 				}
-				return nil
+				return true, nil
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -220,10 +219,10 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		var capturedOp permission.Operation
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) error {
+			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
 				capturedRepo = repo
 				capturedOp = op
-				return nil
+				return true, nil
 			}),
 		)
 		server := httptest.NewServer(handler)

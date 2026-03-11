@@ -26,8 +26,11 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -128,8 +131,11 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationDeleteRepo, storageName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationDeleteRepo, storageName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -178,8 +184,11 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -225,8 +234,11 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -259,10 +271,13 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -341,10 +356,13 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -416,10 +434,13 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -499,10 +520,13 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
 			Ref: rev,
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -566,8 +590,11 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -652,8 +679,11 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -735,8 +765,11 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	compare := vars["compare"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -794,8 +827,11 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	rev := vars["rev"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}

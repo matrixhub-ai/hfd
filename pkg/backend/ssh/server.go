@@ -335,8 +335,12 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
-			slog.WarnContext(ctx, "ssh protocol: auth hook denied", "service", service, "repo", repoPath, "error", err)
+		if ok, err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
+			slog.WarnContext(ctx, "ssh protocol: auth hook error", "service", service, "repo", repoPath, "error", err)
+			sendExitStatus(channel, 1)
+			return
+		} else if !ok {
+			slog.WarnContext(ctx, "ssh protocol: auth hook denied", "service", service, "repo", repoPath)
 			sendExitStatus(channel, 1)
 			return
 		}
@@ -501,8 +505,12 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		if operation == "upload" {
 			op = permission.OperationUpdateRepo
 		}
-		if err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
-			slog.WarnContext(ctx, "ssh protocol: auth hook denied lfs operation", "operation", operation, "repo", repoPath, "error", err)
+		if ok, err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
+			slog.WarnContext(ctx, "ssh protocol: auth hook error", "operation", operation, "repo", repoPath, "error", err)
+			sendExitStatus(channel, 1)
+			return
+		} else if !ok {
+			slog.WarnContext(ctx, "ssh protocol: auth hook denied lfs operation", "operation", operation, "repo", repoPath)
 			sendExitStatus(channel, 1)
 			return
 		}

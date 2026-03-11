@@ -144,10 +144,10 @@ func main() {
 		)
 	}
 
-	permissionHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) error {
+	permissionHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		slog.InfoContext(ctx, "Permission check", "user", userInfo.User, "op", op, "repo", repoName, "context", opCtx)
-		return nil // or return an error to deny permission
+		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
 	preReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
@@ -193,7 +193,6 @@ func main() {
 		sharedMirror = mirror.NewMirror(
 			mirror.WithMirrorSourceFunc(mirrorSourceFunc),
 			mirror.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
-			mirror.WithPermissionHookFunc(permissionHook),
 			mirror.WithPreReceiveHookFunc(preReceiveHook),
 			mirror.WithPostReceiveHookFunc(postReceiveHook),
 			mirror.WithLFSCache(lfsTeeCache),

@@ -27,8 +27,11 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -102,8 +105,11 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	revpath := vars["revpath"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -151,8 +157,11 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	revpath := vars["revpath"]
 
 	if h.permissionHookFunc != nil {
-		if err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}

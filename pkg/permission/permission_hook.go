@@ -12,7 +12,6 @@ const (
 	operationAboutRead
 	operationAboutUpdate
 	operationAboutDelete
-	operationAboutProxy
 
 	operationAboutRepo
 
@@ -26,8 +25,6 @@ const (
 	OperationReadRepo = operationAboutRead | operationAboutRepo
 	// OperationUpdateRepo represents updating repository settings.
 	OperationUpdateRepo = operationAboutUpdate | operationAboutRepo
-	// OperationCreateProxyRepo represents proxying a create (mirror) from an upstream source.
-	OperationCreateProxyRepo = OperationCreateRepo | operationAboutProxy
 )
 
 // String returns a human-readable name for the operation.
@@ -41,8 +38,6 @@ func (o Operation) String() string {
 		return "read_repo"
 	case OperationUpdateRepo:
 		return "update_repo"
-	case OperationCreateProxyRepo:
-		return "create_proxy_repo"
 	default:
 		return "unknown"
 	}
@@ -70,10 +65,6 @@ func (o Operation) IsWrite() bool {
 		o&operationAboutDelete != 0
 }
 
-func (o Operation) IsRepoProxy() bool {
-	return o&OperationCreateProxyRepo == OperationCreateProxyRepo
-}
-
 // Context holds additional context about the operation being performed.
 type Context struct {
 	// Ref is the branch, tag, or revision name being operated on.
@@ -83,4 +74,4 @@ type Context struct {
 }
 
 // PermissionHookFunc is a function that checks whether an operation on a repository is allowed.
-type PermissionHookFunc func(ctx context.Context, op Operation, repoName string, opCtx Context) error
+type PermissionHookFunc func(ctx context.Context, op Operation, repoName string, opCtx Context) (bool, error)

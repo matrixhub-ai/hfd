@@ -514,12 +514,12 @@ func TestPermissionHookMatrix(t *testing.T) {
 
 	for _, protocol := range protocols {
 		t.Run(protocol.name, func(t *testing.T) {
-			permHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) error {
+			permHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
 				// Deny write operations (only allow read)
 				if !op.IsRead() {
-					return errors.New("write operations denied")
+					return false, nil
 				}
-				return nil
+				return true, nil
 			}
 
 			repoURL, env, createRepo, cleanup := protocol.setupFunc(t, permHook)

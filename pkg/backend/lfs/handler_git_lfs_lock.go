@@ -21,8 +21,11 @@ func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 
 	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, &lfs.VerifiableLockList{Message: "permission denied"}, http.StatusForbidden)
 			return
 		}
 	}
@@ -63,8 +66,11 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 
 	if h.permissionHookFunc != nil {
 		op := permission.OperationReadRepo
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, &lfs.VerifiableLockList{Message: "permission denied"}, http.StatusForbidden)
 			return
 		}
 	}
@@ -116,8 +122,11 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 
 	if h.permissionHookFunc != nil {
 		op := permission.OperationUpdateRepo
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, &lfs.VerifiableLockList{Message: "permission denied"}, http.StatusForbidden)
 			return
 		}
 	}
@@ -166,8 +175,11 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 
 	if h.permissionHookFunc != nil {
 		op := permission.OperationUpdateRepo
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseJSON(w, &lfs.VerifiableLockList{Message: err.Error()}, http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, &lfs.VerifiableLockList{Message: "permission denied"}, http.StatusForbidden)
 			return
 		}
 	}

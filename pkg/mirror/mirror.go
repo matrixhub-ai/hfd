@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
-	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
 	"golang.org/x/sync/singleflight"
@@ -18,7 +17,6 @@ import (
 type Mirror struct {
 	mirrorSourceFunc    repository.MirrorSourceFunc
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
-	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	lfsTeeCache         *lfs.TeeCache
@@ -41,13 +39,6 @@ func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 func WithMirrorRefFilterFunc(fn repository.MirrorRefFilterFunc) Option {
 	return func(m *Mirror) {
 		m.mirrorRefFilterFunc = fn
-	}
-}
-
-// WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
-	return func(m *Mirror) {
-		m.permissionHookFunc = fn
 	}
 }
 
@@ -125,12 +116,6 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 
 	if err != repository.ErrRepositoryNotExists {
 		return nil, err
-	}
-
-	if m.permissionHookFunc != nil {
-		if err := m.permissionHookFunc(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
-			return nil, err
-		}
 	}
 
 	v, err, _ := m.group.Do(repoName, func() (any, error) {

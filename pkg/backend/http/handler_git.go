@@ -59,8 +59,11 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseText(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseText(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseText(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}
@@ -130,8 +133,11 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseText(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
+			responseText(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseText(w, "permission denied", http.StatusForbidden)
 			return
 		}
 	}

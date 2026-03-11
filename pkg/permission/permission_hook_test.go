@@ -15,7 +15,6 @@ func TestOperationConstants(t *testing.T) {
 		permission.OperationDeleteRepo,
 		permission.OperationReadRepo,
 		permission.OperationUpdateRepo,
-		permission.OperationCreateProxyRepo,
 	}
 	seen := map[permission.Operation]bool{}
 	for _, op := range ops {
@@ -44,7 +43,6 @@ func TestOperationString(t *testing.T) {
 		{permission.OperationDeleteRepo, "delete_repo"},
 		{permission.OperationReadRepo, "read_repo"},
 		{permission.OperationUpdateRepo, "update_repo"},
-		{permission.OperationCreateProxyRepo, "create_proxy_repo"},
 		{permission.Operation(99), "unknown"},
 	}
 	for _, tt := range tests {
@@ -84,8 +82,7 @@ func TestAuthHookFineGrainedOperations(t *testing.T) {
 			return nil
 		case permission.OperationCreateRepo,
 			permission.OperationDeleteRepo,
-			permission.OperationUpdateRepo,
-			permission.OperationCreateProxyRepo:
+			permission.OperationUpdateRepo:
 			return errors.New("access denied for " + op.String())
 		default:
 			return errors.New("unknown operation")
@@ -99,8 +96,7 @@ func TestAuthHookFineGrainedOperations(t *testing.T) {
 		{permission.OperationReadRepo, false},
 		{permission.OperationCreateRepo, true},
 		{permission.OperationDeleteRepo, true},
-		{permission.OperationUpdateRepo, true},
-		{permission.OperationCreateProxyRepo, true},
+		{permission.OperationUpdateRepo, true}, 
 	}
 
 	for _, tt := range tests {
