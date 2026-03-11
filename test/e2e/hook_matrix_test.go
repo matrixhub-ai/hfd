@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -91,13 +90,13 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 
 	for _, protocol := range protocols {
 		t.Run(protocol.name, func(t *testing.T) {
-			preHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+			preHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 				for _, e := range updates {
 					if e.IsTag() {
-						return errors.New("tag operations not allowed")
+						return false, nil
 					}
 				}
-				return nil
+				return true, nil
 			}
 
 			postRecorder := &matrixHookRecorder{}

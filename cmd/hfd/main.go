@@ -150,13 +150,13 @@ func main() {
 		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
-	preReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+	preReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		for _, e := range updates {
 			slog.InfoContext(ctx, "Pre-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
 				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
 		}
-		return nil // or return an error to deny the push
+		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
 	postReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {

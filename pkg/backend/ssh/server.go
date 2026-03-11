@@ -423,11 +423,18 @@ func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Ch
 
 	// Pre-receive hook — can reject the push before pack data is processed.
 	if s.preReceiveHookFunc != nil && len(updates) > 0 {
-		if err := s.preReceiveHookFunc(ctx, repoPath, updates); err != nil {
+		if ok, err := s.preReceiveHookFunc(ctx, repoPath, updates); err != nil {
 			slog.WarnContext(ctx, "ssh protocol: pre-receive hook denied push", "repo", repoPath, "error", err)
 			cmd.Process.Kill()
 			pw.Close()
-			_ = cmd.Wait() // expected error: process was killed
+			_ = cmd.Wait()
+			sendExitStatus(channel, 1)
+			return
+		} else if !ok {
+			slog.WarnContext(ctx, "ssh protocol: pre-receive hook denied push", "repo", repoPath)
+			cmd.Process.Kill()
+			pw.Close()
+			_ = cmd.Wait()
 			sendExitStatus(channel, 1)
 			return
 		}

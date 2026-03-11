@@ -96,7 +96,7 @@ func TestAuthHookFineGrainedOperations(t *testing.T) {
 		{permission.OperationReadRepo, false},
 		{permission.OperationCreateRepo, true},
 		{permission.OperationDeleteRepo, true},
-		{permission.OperationUpdateRepo, true}, 
+		{permission.OperationUpdateRepo, true},
 	}
 
 	for _, tt := range tests {

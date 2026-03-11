@@ -204,8 +204,10 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 		return nil
 	}
 	if m.preReceiveHookFunc != nil {
-		if err := m.preReceiveHookFunc(ctx, repoName, preReceiveUpdates); err != nil {
+		if ok, err := m.preReceiveHookFunc(ctx, repoName, preReceiveUpdates); err != nil {
 			return fmt.Errorf("pre-receive hook error: %w", err)
+		} else if !ok {
+			return nil
 		}
 	}
 

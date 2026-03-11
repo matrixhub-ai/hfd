@@ -361,10 +361,13 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 				oldRev = receive.ZeroHash
 			}
 		}
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoName),
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the commit", http.StatusForbidden)
 			return
 		}
 	}

@@ -20,7 +20,7 @@ const BreakHash = ""
 
 // PreReceiveHookFunc is called before a git push is processed with the list of ref updates.
 // Returning a non-nil error will reject the push before any refs are updated.
-type PreReceiveHookFunc func(ctx context.Context, repoName string, updates []RefUpdate) error
+type PreReceiveHookFunc func(ctx context.Context, repoName string, updates []RefUpdate) (bool, error)
 
 // PostReceiveHookFunc is called after a successful git push with the list of ref updates.
 // It is used for notifications and logging; errors are logged but do not affect the push result.

@@ -323,10 +323,13 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		if newRev == "" {
 			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
 		}
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the branch creation", http.StatusForbidden)
 			return
 		}
 	}
@@ -407,8 +410,11 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHookFunc != nil {
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the branch deletion", http.StatusForbidden)
 			return
 		}
 	}
@@ -488,10 +494,13 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	if h.preReceiveHookFunc != nil {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag, repo.RepoPath()),
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the tag creation", http.StatusForbidden)
 			return
 		}
 	}
@@ -565,8 +574,11 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHookFunc != nil {
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, updates); err != nil {
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the tag deletion", http.StatusForbidden)
 			return
 		}
 	}
@@ -861,10 +873,13 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.preReceiveHookFunc != nil {
-		if err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
 		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusForbidden)
+			responseJSON(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseJSON(w, "pre-receive hook denied the super-squash operation", http.StatusForbidden)
 			return
 		}
 	}

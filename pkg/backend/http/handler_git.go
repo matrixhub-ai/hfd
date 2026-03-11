@@ -151,8 +151,11 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 
 	// Pre-receive hook — can reject the push before git-receive-pack processes it.
 	if service == repository.GitReceivePack && h.preReceiveHookFunc != nil && len(updates) > 0 {
-		if err := h.preReceiveHookFunc(r.Context(), repoName, updates); err != nil {
-			responseText(w, err.Error(), http.StatusForbidden)
+		if ok, err := h.preReceiveHookFunc(r.Context(), repoName, updates); err != nil {
+			responseText(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if !ok {
+			responseText(w, "pre-receive hook denied the push", http.StatusForbidden)
 			return
 		}
 	}
