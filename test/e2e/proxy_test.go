@@ -25,6 +25,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func newMirrorSourceFunc(baseURL string) repository.MirrorSourceFunc {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	return func(ctx context.Context, repoName string) (string, bool, error) {
+		return baseURL + "/" + repoName, true, nil
+	}
+}
+
 // setupProxyServer creates a proxy HTTP server that mirrors repositories from
 // upstreamURL on demand.
 func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, string) {
@@ -40,7 +47,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 	lfsStore := lfs.NewLocal(store.LFSDir())
 
 	sharedMirror := mirror.NewMirror(
-		mirror.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 	)
 
 	var handler http.Handler
@@ -92,7 +99,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 	}
 
 	sharedMirror := mirror.NewMirror(
-		mirror.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 	)
 
 	sshServer := backendssh.NewServer(
@@ -321,7 +328,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 	lfsStore := lfs.NewLocal(store.LFSDir())
 
 	sharedMirror := mirror.NewMirror(
-		mirror.WithMirrorSourceFunc(repository.NewMirrorSourceFunc(upstreamURL)),
+		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 		mirror.WithMirrorRefFilterFunc(refFilter),
 	)
 

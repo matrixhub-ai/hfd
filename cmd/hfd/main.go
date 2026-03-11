@@ -23,7 +23,6 @@ import (
 	"github.com/wzshiming/hfd/pkg/mirror"
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"
-	"github.com/wzshiming/hfd/pkg/repository"
 	"github.com/wzshiming/hfd/pkg/s3fs"
 	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
 	"github.com/wzshiming/hfd/pkg/storage"
@@ -170,14 +169,17 @@ func main() {
 	}
 
 	var sharedMirror *mirror.Mirror
-	var lfsTeeCache *lfs.TeeCache
 	if proxyURL != "" {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
-		lfsTeeCache = lfs.NewTeeCache(
+		lfsTeeCache := lfs.NewTeeCache(
 			utils.HTTPClient,
 			lfsStore,
 		)
-		mirrorSourceFunc := repository.NewMirrorSourceFunc(proxyURL)
+
+		baseURL := strings.TrimSuffix(proxyURL, "/")
+		mirrorSourceFunc := func(ctx context.Context, repoName string) (string, bool, error) {
+			return baseURL + "/" + repoName, true, nil
+		}
 		mirrorRefFilterFunc := func(ctx context.Context, repoName string, remoteRefs []string) ([]string, error) {
 			var filtered []string
 			for _, ref := range remoteRefs {
