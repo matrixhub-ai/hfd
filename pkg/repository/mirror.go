@@ -20,14 +20,6 @@ type MirrorSourceFunc func(ctx context.Context, repoName string) (string, bool, 
 // "refs/tags/v1.0") and returns the filtered list of refs to sync.
 type MirrorRefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
 
-// NewMirrorSourceFunc creates a MirrorSourceFunc that constructs the mirror source URL by appending the repository name to a given base URL.
-func NewMirrorSourceFunc(baseURL string) MirrorSourceFunc {
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	return func(ctx context.Context, repoName string) (string, bool, error) {
-		return baseURL + "/" + repoName, true, nil
-	}
-}
-
 // InitMirror initializes a new bare git repository at repoPath.
 // The returned Repository is ready to be used as a mirror of the source repository.
 func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {
