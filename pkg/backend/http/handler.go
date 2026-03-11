@@ -3,7 +3,6 @@ package backend
 import (
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/mux"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/storage"
 )
 
-// Handler
+// Handler handles HTTP requests for Git operations, including service discovery and upload/receive pack endpoints.
 type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
@@ -21,7 +20,6 @@ type Handler struct {
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
-	mirrorTTL           time.Duration
 	mirror              *mirror.Mirror
 }
 
