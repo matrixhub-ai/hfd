@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/storage"
@@ -38,8 +38,8 @@ func setupSSHTestServer(t *testing.T, authorizedKeys []ssh.PublicKey) (*httptest
 	// Set up HTTP handler chain (same order as main.go)
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 
 	handler = backendlfs.NewHandler(

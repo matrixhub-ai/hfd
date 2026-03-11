@@ -12,8 +12,8 @@ import (
 
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	"github.com/wzshiming/hfd/pkg/storage"
 )
@@ -32,8 +32,8 @@ func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Ser
 
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 
 	handler = backendlfs.NewHandler(

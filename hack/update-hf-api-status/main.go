@@ -23,7 +23,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 )
 
 const (
@@ -108,7 +108,7 @@ func fetchSpec(url string) (*OpenAPISpec, error) {
 // buildRouter creates the huggingface handler (no storage needed for route
 // inspection) and returns its underlying mux.Router.
 func buildRouter() *mux.Router {
-	return backendhuggingface.NewHandler().Router()
+	return backendhf.NewHandler().Router()
 }
 
 // apiEntry is one row in the completion table.

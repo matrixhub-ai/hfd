@@ -15,8 +15,8 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/hfd/internal/utils"
 	"github.com/wzshiming/hfd/pkg/authenticate"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/lfs"
@@ -235,14 +235,14 @@ func main() {
 
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(storage),
-		backendhuggingface.WithNext(handler),
-		backendhuggingface.WithMirror(sharedMirror),
-		backendhuggingface.WithPermissionHookFunc(permissionHook),
-		backendhuggingface.WithPreReceiveHookFunc(preReceiveHook),
-		backendhuggingface.WithPostReceiveHookFunc(postReceiveHook),
-		backendhuggingface.WithLFSStore(lfsStore),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(storage),
+		backendhf.WithNext(handler),
+		backendhf.WithMirror(sharedMirror),
+		backendhf.WithPermissionHookFunc(permissionHook),
+		backendhf.WithPreReceiveHookFunc(preReceiveHook),
+		backendhf.WithPostReceiveHookFunc(postReceiveHook),
+		backendhf.WithLFSStore(lfsStore),
 	)
 
 	handler = backendlfs.NewHandler(

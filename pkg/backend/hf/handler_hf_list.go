@@ -1,4 +1,4 @@
-package huggingface
+package hf
 
 import (
 	"encoding/base64"

@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/storage"
@@ -40,8 +40,8 @@ func setupHTTPProtocol(t *testing.T) (cloneURL string, env []string, cleanup fun
 	store := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
@@ -91,8 +91,8 @@ func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func
 
 	// Set up HTTP handler for repo creation
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),

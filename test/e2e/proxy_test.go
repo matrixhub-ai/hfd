@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/lfs"
@@ -52,10 +52,10 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
-		backendhuggingface.WithLFSStore(lfsStore),
-		backendhuggingface.WithMirror(sharedMirror),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
+		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -334,10 +334,10 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 
 	var handler http.Handler
 
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
-		backendhuggingface.WithLFSStore(lfsStore),
-		backendhuggingface.WithMirror(sharedMirror),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
+		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(

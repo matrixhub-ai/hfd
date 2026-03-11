@@ -16,8 +16,8 @@ import (
 	"testing"
 
 	"github.com/wzshiming/hfd/internal/utils"
+	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
 	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendhuggingface "github.com/wzshiming/hfd/pkg/backend/huggingface"
 	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	"github.com/wzshiming/hfd/pkg/permission"
@@ -158,8 +158,8 @@ func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHo
 	}
 
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
@@ -204,8 +204,8 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 
 	// HTTP handler for repo creation
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
@@ -575,8 +575,8 @@ func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFun
 	}
 
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
@@ -621,8 +621,8 @@ func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc
 
 	// HTTP handler for repo creation
 	var handler http.Handler
-	handler = backendhuggingface.NewHandler(
-		backendhuggingface.WithStorage(store),
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(store),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
