@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/wzshiming/hfd/pkg/lfs"
@@ -23,7 +24,7 @@ type Mirror struct {
 	lfsTeeCache         *lfs.TeeCache
 	ttl                 time.Duration
 	group               singleflight.Group
-	lastSync            map[string]time.Time
+	lastSync            sync.Map // map[string]time.Time, keyed by repoName
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -81,9 +82,7 @@ func WithLFSCache(tc *lfs.TeeCache) Option {
 
 // NewMirror creates a new Mirror with the provided options.
 func NewMirror(opts ...Option) *Mirror {
-	m := &Mirror{
-		lastSync: make(map[string]time.Time),
-	}
+	m := &Mirror{}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -109,46 +108,45 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		return repository.Open(repoPath)
 	}
 
+	repo, err := repository.Open(repoPath)
+	if err == nil {
+		if !m.shouldSync(repoName) {
+			return repo, nil
+		}
+		_, err, _ := m.group.Do(repoName, func() (any, error) {
+			defer m.markSynced(repoName)
+			return nil, m.syncMirror(ctx, repo, repoName, sourceURL)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return repo, nil
+	}
+
+	if err != repository.ErrRepositoryNotExists {
+		return nil, err
+	}
+
 	if m.permissionHookFunc != nil {
 		if err := m.permissionHookFunc(ctx, permission.OperationCreateProxyRepo, repoName, permission.Context{}); err != nil {
 			return nil, err
 		}
 	}
 
-	v, err, shared := m.group.Do(repoName, func() (any, error) {
-		return m.openOrSync(ctx, repoPath, repoName, sourceURL)
+	v, err, _ := m.group.Do(repoName, func() (any, error) {
+		repo, err = repository.InitMirror(ctx, repoPath, sourceURL)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
+			return nil, repository.ErrRepositoryNotExists
+		}
+		defer m.markSynced(repoName)
+		return repo, m.syncMirror(ctx, repo, repoName, sourceURL)
 	})
 	if err != nil {
 		return nil, err
 	}
-	if shared {
-		slog.InfoContext(ctx, "mirror sync shared result", "repo", repoName)
-	}
+
 	return v.(*repository.Repository), nil
-}
-
-func (m *Mirror) openOrSync(ctx context.Context, repoPath, repoName, sourceURL string) (*repository.Repository, error) {
-	repo, err := repository.Open(repoPath)
-	if err != nil {
-		if err != repository.ErrRepositoryNotExists {
-			return nil, err
-		}
-		repo, err = repository.InitMirror(ctx, repoPath, sourceURL)
-		if err != nil {
-			return nil, repository.ErrRepositoryNotExists
-		}
-	}
-
-	if !m.shouldSync(repoName) {
-		return repo, nil
-	}
-	defer m.markSynced(repoName)
-
-	err = m.syncMirror(ctx, repo, repoName, sourceURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sync mirror: %w", err)
-	}
-	return repo, nil
 }
 
 func filterKeyFromMap(m map[string]string, keys []string) map[string]string {
@@ -175,11 +173,12 @@ func (m *Mirror) shouldSync(repoName string) bool {
 		return true
 	}
 
-	last, ok := m.lastSync[repoName]
+	last, ok := m.lastSync.Load(repoName)
 	if !ok {
 		return true
 	}
-	return time.Since(last) >= m.ttl
+
+	return time.Since(last.(time.Time)) >= m.ttl
 }
 
 func (m *Mirror) markSynced(repoName string) {
@@ -187,7 +186,7 @@ func (m *Mirror) markSynced(repoName string) {
 		return
 	}
 
-	m.lastSync[repoName] = time.Now()
+	m.lastSync.Store(repoName, time.Now())
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
