@@ -50,7 +50,7 @@ var (
 	authSignKey      = "secret-sign-key"
 
 	proxyURL = ""
-	lfsURL   = ""
+	HostURL  = ""
 
 	mirrorTTL = time.Hour
 )
@@ -75,12 +75,12 @@ func init() {
 	flag.StringVar(&authSignKey, "sign-key", authSignKey, "Key for signing authentication tokens (enables token signing)")
 
 	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
-	flag.StringVar(&lfsURL, "lfs-url", lfsURL, "External LFS URL for the server, used by git-lfs-authenticate over SSH (e.g. http://localhost:8080)")
+	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
 
 	flag.Parse()
 
-	if lfsURL == "" {
+	if HostURL == "" {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Invalid address format: %v\n", err)
@@ -89,7 +89,7 @@ func init() {
 		if host == "" {
 			host = "localhost"
 		}
-		lfsURL = fmt.Sprintf("http://%s:%s", host, port)
+		HostURL = fmt.Sprintf("http://%s:%s", host, port)
 	}
 }
 
@@ -297,7 +297,7 @@ func main() {
 			backendssh.WithPreReceiveHookFunc(preReceiveHook),
 			backendssh.WithPostReceiveHookFunc(postReceiveHook),
 			backendssh.WithMirror(sharedMirror),
-			backendssh.WithLFSURL(lfsURL),
+			backendssh.WithLFSURL(HostURL),
 			backendssh.WithBasicAuthValidator(basicAuthValidator),
 			backendssh.WithPublicKeyValidator(publicKeyValidator),
 			backendssh.WithTokenSignValidator(tokenSignValidator),
