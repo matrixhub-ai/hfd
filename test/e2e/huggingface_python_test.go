@@ -37,19 +37,6 @@ func runPythonScript(t *testing.T, endpoint, script string) string {
 	return string(out)
 }
 
-// runPythonScriptMayFail runs a Python3 script and returns output and error without failing.
-func runPythonScriptMayFail(t *testing.T, endpoint, script string) (string, error) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "python3", "-c", script)
-	cmd.Env = append(os.Environ(),
-		"HF_ENDPOINT="+endpoint,
-		"HF_HUB_DISABLE_TELEMETRY=1",
-		"HF_TOKEN=dummy-token",
-	)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
 func TestPythonHFUploadFile(t *testing.T) {
 	checkPythonHFHub(t)
 

@@ -70,19 +70,6 @@ func runHFCmd(t *testing.T, endpoint string, args ...string) string {
 	return string(output)
 }
 
-// runHFCmdMayFail runs the hf CLI and returns output and error without failing.
-func runHFCmdMayFail(t *testing.T, endpoint string, args ...string) (string, error) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "hf", args...)
-	cmd.Env = append(os.Environ(),
-		"HF_ENDPOINT="+endpoint,
-		"HF_HUB_DISABLE_TELEMETRY=1",
-		"HF_TOKEN=dummy-token",
-	)
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
 func TestHuggingFaceUploadAndDownloadMatrix(t *testing.T) {
 	if _, err := exec.LookPath("hf"); err != nil {
 		t.Skip("hf CLI not available, skipping HF CLI matrix test")
