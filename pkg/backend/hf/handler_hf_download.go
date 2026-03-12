@@ -188,7 +188,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get commit hash for the HuggingFace client requirements
-	commits, err := repo.Commits(rev, 1, nil)
+	commits, err := repo.Commits(rev, &repository.CommitsOptions{Limit: 1})
 	commitHash := ""
 	if err == nil && len(commits) > 0 {
 		commitHash = commits[0].Hash().String()

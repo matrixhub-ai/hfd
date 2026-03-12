@@ -76,7 +76,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	// Get the commit SHA for this revision
 	commitHash := ""
-	commits, err := repo.Commits(rev, 1, nil)
+	commits, err := repo.Commits(rev, &repository.CommitsOptions{Limit: 1})
 	if err == nil && len(commits) > 0 {
 		commitHash = commits[0].Hash().String()
 	}
@@ -734,7 +734,7 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch one extra commit so we can detect whether a next page exists.
-	rawCommits, err := repo.Commits(rev, limit+1, &repository.CommitsOptions{Offset: offset})
+	rawCommits, err := repo.Commits(rev, &repository.CommitsOptions{Limit: limit + 1, Offset: offset})
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to list commits for %q: %v", rev, err), http.StatusInternalServerError)
 		return

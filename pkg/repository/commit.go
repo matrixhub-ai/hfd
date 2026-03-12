@@ -13,13 +13,14 @@ import (
 
 // CommitsOptions provides options for the Commits method.
 type CommitsOptions struct {
+	Limit  int
 	Offset int
 }
 
 // Commits returns a list of commits starting from the given revision.
 // If rev is empty, it defaults to the repository's default branch.
 // The limit parameter specifies the maximum number of commits to return.
-func (r *Repository) Commits(rev string, limit int, opts *CommitsOptions) ([]Commit, error) {
+func (r *Repository) Commits(rev string, opts *CommitsOptions) ([]Commit, error) {
 	if rev == "" {
 		rev = r.DefaultBranch()
 	}
@@ -46,7 +47,7 @@ func (r *Repository) Commits(rev string, limit int, opts *CommitsOptions) ([]Com
 			return nil // Skip until we reach the offset
 		}
 		commits = append(commits, Commit{r: r, commit: c})
-		if limit > 0 && len(commits) >= limit {
+		if opts.Limit > 0 && len(commits) >= opts.Limit {
 			return io.EOF // Stop after reaching the limit
 		}
 		return nil
