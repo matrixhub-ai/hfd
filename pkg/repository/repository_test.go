@@ -14,7 +14,7 @@ func TestDiskUsage(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	repo, err := Init(dir, "main")
+	repo, err := Init(context.Background(), dir, "main")
 	if err != nil {
 		t.Fatalf("Failed to init repo: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	repo, err := Init(dir, "main")
+	repo, err := Init(context.Background(), dir, "main")
 	if err != nil {
 		t.Fatalf("Failed to init repo: %v", err)
 	}

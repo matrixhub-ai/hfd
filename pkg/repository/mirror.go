@@ -29,7 +29,7 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
 
-	return Init(repoPath, defaultBranch)
+	return Init(ctx, repoPath, defaultBranch)
 }
 
 func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {

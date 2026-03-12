@@ -66,8 +66,8 @@ func IsValidGitProtocol(value string) bool {
 }
 
 // Init initializes a new git repository at the given path with the specified default branch.
-func Init(repoPath string, defaultBranch string) (*Repository, error) {
-	cmd := utils.Command(context.Background(), "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
+func Init(ctx context.Context, repoPath string, defaultBranch string) (*Repository, error) {
+	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
 	if err := cmd.Run(); err != nil {
 		_ = os.RemoveAll(repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)

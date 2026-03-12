@@ -127,7 +127,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	defaultBranch := "main"
 
 	// Initialize bare repository
-	repo, err := repository.Init(repoPath, defaultBranch)
+	repo, err := repository.Init(r.Context(), repoPath, defaultBranch)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to initialize repository: %v", err), http.StatusInternalServerError)
 		return
