@@ -34,13 +34,13 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(store),
-		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithLFSStorage(lfsStore),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStore(lfsStore),
+		backendlfs.WithLFSStorage(lfsStore),
 	)
 
 	handler = backendhttp.NewHandler(

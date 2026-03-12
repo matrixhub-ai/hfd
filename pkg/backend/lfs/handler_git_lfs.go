@@ -48,7 +48,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Create a response object
 	for _, object := range bv.Objects {
-		if h.lfsStore.Exists(object.Oid) {
+		if h.lfsStorage.Exists(object.Oid) {
 			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, true, false))
 			continue
 		}
@@ -105,7 +105,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 // handlePutContent receives data from the client and puts it into the content store
 func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if signer, ok := h.lfsStore.(lfs.SignPutter); ok {
+	if signer, ok := h.lfsStorage.(lfs.SignPutter); ok {
 		url, err := signer.SignPut(rv.Oid)
 		if err != nil {
 			responseJSON(w, fmt.Sprintf("failed to sign URL for LFS object %q: %v", rv.Oid, err), http.StatusInternalServerError)
@@ -114,7 +114,7 @@ func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 		return
 	}
-	if err := h.lfsStore.Put(rv.Oid, r.Body, r.ContentLength); err != nil {
+	if err := h.lfsStorage.Put(rv.Oid, r.Body, r.ContentLength); err != nil {
 		responseJSON(w, fmt.Sprintf("failed to put LFS object %s: %v", rv.Oid, err), http.StatusInternalServerError)
 		return
 	}
@@ -123,7 +123,7 @@ func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 // handleGetContent gets the content from the content store
 func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if !h.lfsStore.Exists(rv.Oid) {
+	if !h.lfsStorage.Exists(rv.Oid) {
 		if h.mirror != nil {
 			pf := h.mirror.Get(rv.Oid)
 			if pf != nil {
@@ -136,7 +136,7 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
 		return
 	}
-	if signer, ok := h.lfsStore.(lfs.SignGetter); ok {
+	if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
 		url, err := signer.SignGet(rv.Oid)
 		if err != nil {
 			responseJSON(w, fmt.Sprintf("failed to sign URL for LFS object %q: %v", rv.Oid, err), http.StatusInternalServerError)
@@ -145,7 +145,7 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 		return
 	}
-	if getter, ok := h.lfsStore.(lfs.Getter); ok {
+	if getter, ok := h.lfsStorage.(lfs.Getter); ok {
 		content, stat, err := getter.Get(rv.Oid)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -168,7 +168,7 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleVerifyObject(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	info, err := h.lfsStore.Info(rv.Oid)
+	info, err := h.lfsStorage.Info(rv.Oid)
 	if err != nil {
 		if os.IsNotExist(err) {
 			responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)

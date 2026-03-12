@@ -11,7 +11,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/lfs"
 )
 
-func TestContentStore(t *testing.T) {
+func TestContentStorage(t *testing.T) {
 	dir, err := os.MkdirTemp("", "lfs-store-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)

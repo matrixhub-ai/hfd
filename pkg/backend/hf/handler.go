@@ -20,7 +20,7 @@ type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
 	next                http.Handler
-	lfsStore            lfs.Store
+	lfsStorage          lfs.Storage
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
@@ -67,10 +67,10 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	}
 }
 
-// WithLFSStore configures the LFS storage backend.
-func WithLFSStore(store lfs.Store) Option {
+// WithLFSStorage configures the LFS storage backend.
+func WithLFSStorage(storage lfs.Storage) Option {
 	return func(h *Handler) {
-		h.lfsStore = store
+		h.lfsStorage = storage
 	}
 }
 

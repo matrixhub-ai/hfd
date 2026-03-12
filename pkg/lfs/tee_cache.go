@@ -38,7 +38,7 @@ func (f *Blob) Progress() int64 {
 type TeeCache struct {
 	httpClient *http.Client
 	cache      sync.Map
-	store      Store
+	store      Storage
 }
 
 // TeeCacheOption configures a TeeCache.
@@ -46,7 +46,7 @@ type TeeCacheOption func(*TeeCache)
 
 // NewTeeCache creates a new TeeCache.
 // store is used to persist fetched objects and check if objects already exist locally.
-func NewTeeCache(httpClient *http.Client, store Store, opts ...TeeCacheOption) *TeeCache {
+func NewTeeCache(httpClient *http.Client, store Storage, opts ...TeeCacheOption) *TeeCache {
 	p := &TeeCache{
 		httpClient: httpClient,
 		store:      store,
