@@ -238,7 +238,10 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 	generateTestKeyFile(t, keyFile)
 
 	// SSH server with hooks
-	var sshOpts []backendssh.Option
+	sshOpts := []backendssh.Option{
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(store),
+	}
 	if preHook != nil {
 		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(preHook))
 	}
@@ -246,7 +249,7 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(postHook))
 	}
 
-	sshServer := backendssh.NewServer(store.RepositoriesDir(), hostKey, sshOpts...)
+	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		httpServer.Close()
@@ -655,12 +658,15 @@ func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc
 	generateTestKeyFile(t, keyFile)
 
 	// SSH server with permission hook
-	var sshOpts []backendssh.Option
+	sshOpts := []backendssh.Option{
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(store),
+	}
 	if permHook != nil {
 		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(permHook))
 	}
 
-	sshServer := backendssh.NewServer(store.RepositoriesDir(), hostKey, sshOpts...)
+	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		httpServer.Close()

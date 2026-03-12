@@ -103,8 +103,8 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 	)
 
 	sshServer := backendssh.NewServer(
-		store.RepositoriesDir(),
-		hostKey,
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(store),
 		backendssh.WithMirror(sharedMirror),
 	)
 

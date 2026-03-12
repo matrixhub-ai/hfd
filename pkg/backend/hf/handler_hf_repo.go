@@ -35,7 +35,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -140,7 +140,7 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
+	repoPath := h.storage.ResolvePath(storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
 		return
@@ -193,13 +193,13 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	fromPath := repository.ResolvePath(h.storage.RepositoriesDir(), fromName)
+	fromPath := h.storage.ResolvePath(fromName)
 	if fromPath == "" {
 		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
 		return
 	}
 
-	toPath := repository.ResolvePath(h.storage.RepositoriesDir(), toName)
+	toPath := h.storage.ResolvePath(toName)
 	if toPath == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
 		return
@@ -243,7 +243,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -282,7 +282,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -370,7 +370,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -451,7 +451,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -540,7 +540,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -611,7 +611,7 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -700,7 +700,7 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -786,7 +786,7 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -848,7 +848,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return

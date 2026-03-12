@@ -36,7 +36,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -114,7 +114,7 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
@@ -166,7 +166,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return

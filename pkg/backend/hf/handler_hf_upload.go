@@ -103,7 +103,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 
 	urlName := "/" + storageName
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), storageName)
+	repoPath := h.storage.ResolvePath(storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("invalid repository name: %q", repoName), http.StatusBadRequest)
 		return
@@ -177,7 +177,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
 		return
@@ -244,7 +244,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := repository.ResolvePath(h.storage.RepositoriesDir(), ri.RepoName)
+	repoPath := h.storage.ResolvePath(ri.RepoName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return

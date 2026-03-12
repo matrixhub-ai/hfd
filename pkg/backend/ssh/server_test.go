@@ -18,6 +18,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/authenticate"
 	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
 	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
+	"github.com/wzshiming/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -53,14 +54,11 @@ func TestSSHProtocolServer(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate a host key for the SSH server
@@ -70,7 +68,7 @@ func TestSSHProtocolServer(t *testing.T) {
 	}
 
 	// Start SSH server on a random port
-	server := backendssh.NewServer(repositoriesDir, hostKey)
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -218,14 +216,11 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "auth-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key and authorized client key
@@ -242,7 +237,7 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 
 	// Start SSH server with public key auth
 	callback := backendssh.AuthorizedKeysCallback([]ssh.PublicKey{goodPubKey})
-	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithPublicKeyCallback(callback))
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithPublicKeyCallback(callback))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -385,14 +380,11 @@ func TestSSHLFSAuthenticate(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "lfs-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key
@@ -404,7 +396,7 @@ func TestSSHLFSAuthenticate(t *testing.T) {
 	httpURL := "http://localhost:8080"
 
 	// Start SSH server with HTTP URL configured
-	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithLFSURL(httpURL))
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithLFSURL(httpURL))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -527,13 +519,10 @@ func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	repoName := "lfs-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	hostKey, err := generateHostKey()
@@ -542,7 +531,7 @@ func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
 	}
 
 	// Start SSH server WITHOUT HTTP URL configured
-	server := backendssh.NewServer(repositoriesDir, hostKey)
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -595,14 +584,11 @@ func TestSSHPasswordAuth(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "pwd-auth-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key
@@ -613,7 +599,7 @@ func TestSSHPasswordAuth(t *testing.T) {
 
 	// Start SSH server with password auth
 	auth := authenticate.NewSimpleBasicAuthValidator("testuser", "testpass")
-	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithBasicAuthValidator(auth))
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithBasicAuthValidator(auth))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -680,14 +666,11 @@ func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "pk-auth-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key and client key
@@ -704,7 +687,7 @@ func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
 
 	// Start SSH server with public key auth
 	auth := authenticate.NewSimplePublicKeyValidator([][]byte{goodPubKey.Marshal()})
-	server := backendssh.NewServer(repositoriesDir, hostKey, backendssh.WithPublicKeyValidator(auth))
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithPublicKeyValidator(auth))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -768,14 +751,11 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	repositoriesDir := filepath.Join(repoDir, "repositories")
-	if err := os.MkdirAll(repositoriesDir, 0755); err != nil {
-		t.Fatalf("Failed to create repositories dir: %v", err)
-	}
+	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	// Create a bare repository
 	repoName := "lfs-auth-test-repo.git"
-	repoPath := filepath.Join(repositoriesDir, repoName)
+	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key
@@ -789,7 +769,7 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 	tokenSignValidator := authenticate.NewTokenSignValidator([]byte("secret"))
 
 	// Start SSH server with authenticator and LFS URL
-	server := backendssh.NewServer(repositoriesDir, hostKey,
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage),
 		backendssh.WithLFSURL(httpURL),
 		backendssh.WithBasicAuthValidator(basicAuth),
 		backendssh.WithTokenSignValidator(tokenSignValidator),

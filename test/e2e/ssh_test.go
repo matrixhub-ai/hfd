@@ -66,13 +66,16 @@ func setupSSHTestServer(t *testing.T, authorizedKeys []ssh.PublicKey) (*httptest
 	}
 
 	// Set up SSH server options
-	var sshOpts []backendssh.Option
+	sshOpts := []backendssh.Option{
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(store),
+	}
 	if len(authorizedKeys) > 0 {
 		callback := backendssh.AuthorizedKeysCallback(authorizedKeys)
 		sshOpts = append(sshOpts, backendssh.WithPublicKeyCallback(callback))
 	}
 
-	sshServer := backendssh.NewServer(store.RepositoriesDir(), hostKey, sshOpts...)
+	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen for SSH: %v", err)

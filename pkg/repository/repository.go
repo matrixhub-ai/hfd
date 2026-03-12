@@ -90,29 +90,6 @@ func Init(repoPath string, defaultBranch string) (*Repository, error) {
 	}, nil
 }
 
-// ResolvePath resolves a URL path to a filesystem path within the repositories directory, ensuring it ends with .git and preventing path traversal.
-func ResolvePath(repositoriesDir, urlPath string) string {
-	urlPath = strings.TrimPrefix(urlPath, "/")
-	if urlPath == "" {
-		return ""
-	}
-
-	if !strings.HasSuffix(urlPath, ".git") {
-		urlPath += ".git"
-	}
-
-	fullPath := filepath.Join(repositoriesDir, urlPath)
-	fullPath = filepath.Clean(fullPath)
-
-	// Prevent path traversal outside the repositories directory
-	rel, err := filepath.Rel(repositoriesDir, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return ""
-	}
-
-	return fullPath
-}
-
 // Open opens an existing git repository at the given path.
 func Open(repoPath string) (*Repository, error) {
 	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})

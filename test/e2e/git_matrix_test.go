@@ -156,7 +156,7 @@ func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func
 	}
 
 	// Set up SSH server
-	sshServer := backendssh.NewServer(store.RepositoriesDir(), hostKey)
+	sshServer := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(store))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		httpServer.Close()

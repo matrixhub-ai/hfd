@@ -294,6 +294,8 @@ func main() {
 			slog.InfoContext(ctx, "Generated SSH host key", "path", hostKeyPath)
 		}
 		sshOpts := []backendssh.Option{
+			backendssh.WithStorage(storage),
+			backendssh.WithHostKey(hostKeySigner),
 			backendssh.WithPermissionHookFunc(permissionHook),
 			backendssh.WithPreReceiveHookFunc(preReceiveHook),
 			backendssh.WithPostReceiveHookFunc(postReceiveHook),
@@ -304,7 +306,7 @@ func main() {
 			backendssh.WithTokenSignValidator(tokenSignValidator),
 		}
 
-		sshServer := backendssh.NewServer(storage.RepositoriesDir(), hostKeySigner, sshOpts...)
+		sshServer := backendssh.NewServer(sshOpts...)
 		slog.InfoContext(ctx, "Starting SSH protocol server", "addr", sshAddr)
 		go func() {
 			if err := sshServer.ListenAndServe(ctx, sshAddr); err != nil {

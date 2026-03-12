@@ -20,6 +20,7 @@ import (
 	"github.com/wzshiming/hfd/pkg/permission"
 	"github.com/wzshiming/hfd/pkg/receive"
 	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/wzshiming/hfd/pkg/storage"
 )
 
 // Signer is an alias for ssh.Signer to avoid requiring callers to import golang.org/x/crypto/ssh.
@@ -30,7 +31,7 @@ type PublicKey = ssh.PublicKey
 
 // Server implements the SSH protocol (ssh://) server for git operations.
 type Server struct {
-	repositoriesDir     string
+	storage             *storage.Storage
 	config              *ssh.ServerConfig
 	permissionHookFunc  permission.PermissionHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
@@ -157,21 +158,32 @@ func WithTokenSignValidator(auth authenticate.TokenSignValidator) Option {
 	}
 }
 
+// WithStorage sets the storage backend for the server, which is used to resolve
+func WithStorage(storage *storage.Storage) Option {
+	return func(s *Server) {
+		s.storage = storage
+	}
+}
+
+// WithHostKey adds the given SSH host key to the server configuration.
+func WithHostKey(hostKey ssh.Signer) Option {
+	return func(s *Server) {
+		s.config.AddHostKey(hostKey)
+	}
+}
+
 // NewServer creates a new SSH protocol server.
-func NewServer(repositoriesDir string, hostKey ssh.Signer, opts ...Option) *Server {
+func NewServer(opts ...Option) *Server {
 	config := &ssh.ServerConfig{
 		NoClientAuth: true,
 	}
 
 	s := &Server{
-		repositoriesDir: repositoriesDir,
-		config:          config,
+		config: config,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-
-	config.AddHostKey(hostKey)
 
 	return s
 }
@@ -311,7 +323,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 
 // executeCommand runs a git service command and pipes I/O through the SSH channel.
 func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string, env ...string) {
-	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
+	fullPath := s.storage.ResolvePath(repoPath)
 	if fullPath == "" {
 		sendExitStatus(channel, 1, "repository not found\n")
 		return
@@ -494,7 +506,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		return
 	}
 
-	fullPath := repository.ResolvePath(s.repositoriesDir, repoPath)
+	fullPath := s.storage.ResolvePath(repoPath)
 	if fullPath == "" {
 		sendExitStatus(channel, 1, "repository not found")
 		return
