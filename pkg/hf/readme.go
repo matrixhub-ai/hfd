@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Readme represents the contents of a README.md file in a HuggingFace Hub repository.
 type Readme struct {
 	Card *Card
 
