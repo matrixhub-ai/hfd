@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=1 go build -o /hfd ./cmd/hfd
+    CGO_ENABLED=0 go build -o /hfd ./cmd/hfd
 
 ##########################################
 
