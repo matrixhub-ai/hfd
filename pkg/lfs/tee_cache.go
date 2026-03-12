@@ -46,6 +46,7 @@ type TeeCache struct {
 	httpClient *http.Client
 	cache      sync.Map
 	storage    Storage
+	mut        sync.Mutex
 }
 
 // TeeCacheOption configures a TeeCache.
@@ -112,6 +113,13 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
 // body into the local storage while making it available for concurrent readers.
 func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64, downloadAction action) {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+	_, ok := m.cache.Load(oid)
+	if ok {
+		return
+	}
+
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to create download request", "oid", oid, "error", err)
