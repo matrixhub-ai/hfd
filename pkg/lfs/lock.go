@@ -25,7 +25,7 @@ func NewLock() *LockDB {
 	return &LockDB{}
 }
 
-// Add write locks to the store for the repo.
+// Add write locks to the storage for the repo.
 func (s *LockDB) Add(repo string, l ...Lock) error {
 	s.mut.Lock()
 	defer s.mut.Unlock()

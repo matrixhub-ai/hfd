@@ -18,7 +18,7 @@ func TestContentStorage(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	store := lfs.NewLocal(dir)
+	storage := lfs.NewLocal(dir)
 
 	data := []byte("hello world")
 	hash := sha256.Sum256(data)
@@ -26,22 +26,22 @@ func TestContentStorage(t *testing.T) {
 	size := int64(len(data))
 
 	// Test Exists for non-existent object
-	if store.Exists(oid) {
+	if storage.Exists(oid) {
 		t.Fatal("Expected object to not exist")
 	}
 
 	// Test Put
-	if err := store.Put(oid, bytes.NewReader(data), size); err != nil {
+	if err := storage.Put(oid, bytes.NewReader(data), size); err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
 
 	// Test Exists for existing object
-	if !store.Exists(oid) {
+	if !storage.Exists(oid) {
 		t.Fatal("Expected object to exist after Put")
 	}
 
 	// Test Info
-	info, err := store.Info(oid)
+	info, err := storage.Info(oid)
 	if err != nil {
 		t.Fatalf("Info failed: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestContentStorage(t *testing.T) {
 	}
 
 	// Test Get (Content implements Getter)
-	reader, stat, err := store.(lfs.Getter).Get(oid)
+	reader, stat, err := storage.(lfs.Getter).Get(oid)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}

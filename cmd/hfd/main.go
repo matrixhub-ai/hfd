@@ -106,7 +106,7 @@ func main() {
 
 	slog.InfoContext(ctx, "Starting hfd server", "addr", addr, "data", absRootDir)
 
-	var lfsStore = lfs.NewLocal(storage.LFSDir())
+	var lfsStorage = lfs.NewLocal(storage.LFSDir())
 	if s3Endpoint != "" && s3Bucket != "" {
 		if s3Repositories {
 			repositoriesDir := filepath.Join(absRootDir, "repositories")
@@ -133,7 +133,7 @@ func main() {
 			}()
 		}
 
-		lfsStore = lfs.NewS3(
+		lfsStorage = lfs.NewS3(
 			"lfs",
 			s3Endpoint,
 			s3AccessKey,
@@ -173,7 +173,7 @@ func main() {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
 		lfsTeeCache := lfs.NewTeeCache(
 			utils.HTTPClient,
-			lfsStore,
+			lfsStorage,
 		)
 
 		baseURL := strings.TrimSuffix(proxyURL, "/")
@@ -241,7 +241,7 @@ func main() {
 		backendhf.WithPermissionHookFunc(permissionHook),
 		backendhf.WithPreReceiveHookFunc(preReceiveHook),
 		backendhf.WithPostReceiveHookFunc(postReceiveHook),
-		backendhf.WithLFSStorage(lfsStore),
+		backendhf.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -250,7 +250,7 @@ func main() {
 		backendlfs.WithMirror(sharedMirror),
 		backendlfs.WithPermissionHookFunc(permissionHook),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
-		backendlfs.WithLFSStorage(lfsStore),
+		backendlfs.WithLFSStorage(lfsStorage),
 		backendlfs.WithMirror(sharedMirror),
 	)
 

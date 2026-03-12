@@ -26,25 +26,25 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStore := lfs.NewLocal(store.LFSDir())
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStorage := lfs.NewLocal(storage.LFSDir())
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
-		backendhf.WithLFSStorage(lfsStore),
+		backendhf.WithStorage(storage),
+		backendhf.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStore),
+		backendlfs.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 

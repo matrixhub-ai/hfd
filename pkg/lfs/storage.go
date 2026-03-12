@@ -14,7 +14,7 @@ type Storage interface {
 }
 
 // Getter is implemented by stores that support direct content retrieval.
-// Content store implements this; S3 does not — use SignGetter instead.
+// Content storage implements this; S3 does not — use SignGetter instead.
 type Getter interface {
 	Get(oid string) (io.ReadSeekCloser, os.FileInfo, error)
 }

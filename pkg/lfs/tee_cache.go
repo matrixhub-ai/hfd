@@ -38,18 +38,18 @@ func (f *Blob) Progress() int64 {
 type TeeCache struct {
 	httpClient *http.Client
 	cache      sync.Map
-	store      Storage
+	storage    Storage
 }
 
 // TeeCacheOption configures a TeeCache.
 type TeeCacheOption func(*TeeCache)
 
 // NewTeeCache creates a new TeeCache.
-// store is used to persist fetched objects and check if objects already exist locally.
-func NewTeeCache(httpClient *http.Client, store Storage, opts ...TeeCacheOption) *TeeCache {
+// storage is used to persist fetched objects and check if objects already exist locally.
+func NewTeeCache(httpClient *http.Client, storage Storage, opts ...TeeCacheOption) *TeeCache {
 	p := &TeeCache{
 		httpClient: httpClient,
-		store:      store,
+		storage:    storage,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -83,7 +83,7 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 		if ok {
 			continue
 		}
-		if m.store.Exists(obj.Oid) {
+		if m.storage.Exists(obj.Oid) {
 			continue
 		}
 
@@ -103,7 +103,7 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 }
 
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
-// body into the local store while making it available for concurrent readers.
+// body into the local storage while making it available for concurrent readers.
 func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64, downloadAction action) {
 	f := &Blob{
 		swmr: ioswmr.NewSWMR(
@@ -148,8 +148,8 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64
 
 	go func() {
 		defer reader.Close()
-		if err := m.store.Put(oid, reader, size); err != nil {
-			slog.ErrorContext(ctx, "LFS tee cache: failed to store object", "oid", oid, "error", err)
+		if err := m.storage.Put(oid, reader, size); err != nil {
+			slog.ErrorContext(ctx, "LFS tee cache: failed to storage object", "oid", oid, "error", err)
 			return
 		}
 	}()

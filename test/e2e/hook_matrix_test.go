@@ -145,10 +145,10 @@ func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHo
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	var httpOpts []backendhttp.Option
-	httpOpts = append(httpOpts, backendhttp.WithStorage(store))
+	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
 	if preHook != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(preHook))
 	}
@@ -158,10 +158,10 @@ func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHo
 
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	httpOpts = append(httpOpts, backendhttp.WithNext(handler))
@@ -199,19 +199,19 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	// HTTP handler for repo creation
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 
@@ -240,7 +240,7 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 	// SSH server with hooks
 	sshOpts := []backendssh.Option{
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(store),
+		backendssh.WithStorage(storage),
 	}
 	if preHook != nil {
 		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(preHook))
@@ -568,20 +568,20 @@ func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFun
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	var httpOpts []backendhttp.Option
-	httpOpts = append(httpOpts, backendhttp.WithStorage(store))
+	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
 	if permHook != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(permHook))
 	}
 
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	httpOpts = append(httpOpts, backendhttp.WithNext(handler))
@@ -619,19 +619,19 @@ func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	// HTTP handler for repo creation
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 
@@ -660,7 +660,7 @@ func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc
 	// SSH server with permission hook
 	sshOpts := []backendssh.Option{
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(store),
+		backendssh.WithStorage(storage),
 	}
 	if permHook != nil {
 		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(permHook))

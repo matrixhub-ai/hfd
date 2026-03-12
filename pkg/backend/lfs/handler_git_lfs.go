@@ -163,7 +163,7 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 		http.ServeContent(w, r, rv.Oid, stat.ModTime(), content)
 		return
 	}
-	responseJSON(w, fmt.Sprintf("LFS store does not support direct content retrieval for object %s", rv.Oid), http.StatusNotImplemented)
+	responseJSON(w, fmt.Sprintf("LFS storage does not support direct content retrieval for object %s", rv.Oid), http.StatusNotImplemented)
 }
 
 func (h *Handler) handleVerifyObject(w http.ResponseWriter, r *http.Request) {
