@@ -37,18 +37,18 @@ func setupHTTPProtocol(t *testing.T) (cloneURL string, env []string, cleanup fun
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 
@@ -87,19 +87,19 @@ func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	// Set up HTTP handler for repo creation
 	var handler http.Handler
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 
@@ -156,7 +156,7 @@ func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func
 	}
 
 	// Set up SSH server
-	sshServer := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(store))
+	sshServer := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		httpServer.Close()

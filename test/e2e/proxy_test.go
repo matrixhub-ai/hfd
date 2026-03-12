@@ -43,8 +43,8 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStore := lfs.NewLocal(store.LFSDir())
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStorage := lfs.NewLocal(storage.LFSDir())
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
@@ -53,19 +53,19 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
-		backendhf.WithLFSStorage(lfsStore),
+		backendhf.WithStorage(storage),
+		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStore),
+		backendlfs.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
 	)
@@ -87,7 +87,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -104,7 +104,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 
 	sshServer := backendssh.NewServer(
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(store),
+		backendssh.WithStorage(storage),
 		backendssh.WithMirror(sharedMirror),
 	)
 
@@ -324,8 +324,8 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStore := lfs.NewLocal(store.LFSDir())
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStorage := lfs.NewLocal(storage.LFSDir())
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
@@ -335,19 +335,19 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
-		backendhf.WithLFSStorage(lfsStore),
+		backendhf.WithStorage(storage),
+		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStore),
+		backendlfs.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
 	)

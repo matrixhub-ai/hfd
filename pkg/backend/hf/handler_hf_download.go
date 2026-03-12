@@ -263,7 +263,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
 					return
 				}
-				responseJSON(w, fmt.Errorf("LFS store does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
+				responseJSON(w, fmt.Errorf("LFS storage does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
 				return
 			}
 		}

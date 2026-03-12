@@ -28,21 +28,21 @@ func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Ser
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 

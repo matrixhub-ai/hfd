@@ -33,22 +33,22 @@ func setupSSHTestServer(t *testing.T, authorizedKeys []ssh.PublicKey) (*httptest
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	store := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := storage.NewStorage(storage.WithRootDir(dataDir))
 
 	// Set up HTTP handler chain (same order as main.go)
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(store),
+		backendhf.WithStorage(storage),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(store),
+		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(store),
+		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
 
@@ -68,7 +68,7 @@ func setupSSHTestServer(t *testing.T, authorizedKeys []ssh.PublicKey) (*httptest
 	// Set up SSH server options
 	sshOpts := []backendssh.Option{
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(store),
+		backendssh.WithStorage(storage),
 	}
 	if len(authorizedKeys) > 0 {
 		callback := backendssh.AuthorizedKeysCallback(authorizedKeys)
