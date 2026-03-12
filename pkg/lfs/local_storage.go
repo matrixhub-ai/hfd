@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	errHashMismatch = errors.New("Content hash does not match OID")
-	errSizeMismatch = errors.New("Content size does not match")
+	errHashMismatch = errors.New("content hash does not match OID")
+	errSizeMismatch = errors.New("content size does not match")
 )
 
 // localStorage provides a simple file system based storage.
