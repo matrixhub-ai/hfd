@@ -26,11 +26,11 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
 	sourceURL = strings.TrimSuffix(sourceURL, ".git") + ".git"
 
-	defaultBrach, err := getDefaultBranch(ctx, sourceURL)
+	defaultBranch, err := getDefaultBranch(ctx, sourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
-	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBrach)
+	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
 	if err := cmd.Run(); err != nil {
 		_ = os.RemoveAll(repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
