@@ -16,6 +16,7 @@ import (
 	"time"
 )
 
+// Anonymous is the username used for unauthenticated users.
 const Anonymous = "<anonymous>"
 
 type contextKey struct{}
