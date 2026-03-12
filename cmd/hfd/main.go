@@ -144,13 +144,13 @@ func main() {
 		)
 	}
 
-	permissionHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+	permissionHookFunc := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		slog.InfoContext(ctx, "Permission check", "user", userInfo.User, "op", op, "repo", repoName, "context", opCtx)
 		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
-	preReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
+	preReceiveHookFunc := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		for _, e := range updates {
 			slog.InfoContext(ctx, "Pre-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
@@ -159,7 +159,7 @@ func main() {
 		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
-	postReceiveHook := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+	postReceiveHookFunc := func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		for _, e := range updates {
 			slog.InfoContext(ctx, "Post-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
@@ -193,8 +193,8 @@ func main() {
 		sharedMirror = mirror.NewMirror(
 			mirror.WithMirrorSourceFunc(mirrorSourceFunc),
 			mirror.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
-			mirror.WithPreReceiveHookFunc(preReceiveHook),
-			mirror.WithPostReceiveHookFunc(postReceiveHook),
+			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
+			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
 			mirror.WithLFSCache(lfsTeeCache),
 			mirror.WithTTL(mirrorTTL),
 		)
@@ -238,9 +238,9 @@ func main() {
 		backendhf.WithStorage(storage),
 		backendhf.WithNext(handler),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPermissionHookFunc(permissionHook),
-		backendhf.WithPreReceiveHookFunc(preReceiveHook),
-		backendhf.WithPostReceiveHookFunc(postReceiveHook),
+		backendhf.WithPermissionHookFunc(permissionHookFunc),
+		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
+		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
 		backendhf.WithLFSStorage(lfsStorage),
 	)
 
@@ -248,7 +248,7 @@ func main() {
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 		backendlfs.WithMirror(sharedMirror),
-		backendlfs.WithPermissionHookFunc(permissionHook),
+		backendlfs.WithPermissionHookFunc(permissionHookFunc),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
 		backendlfs.WithLFSStorage(lfsStorage),
 		backendlfs.WithMirror(sharedMirror),
@@ -258,9 +258,9 @@ func main() {
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
-		backendhttp.WithPermissionHookFunc(permissionHook),
-		backendhttp.WithPreReceiveHookFunc(preReceiveHook),
-		backendhttp.WithPostReceiveHookFunc(postReceiveHook),
+		backendhttp.WithPermissionHookFunc(permissionHookFunc),
+		backendhttp.WithPreReceiveHookFunc(preReceiveHookFunc),
+		backendhttp.WithPostReceiveHookFunc(postReceiveHookFunc),
 	)
 
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
@@ -296,9 +296,9 @@ func main() {
 		sshOpts := []backendssh.Option{
 			backendssh.WithStorage(storage),
 			backendssh.WithHostKey(hostKeySigner),
-			backendssh.WithPermissionHookFunc(permissionHook),
-			backendssh.WithPreReceiveHookFunc(preReceiveHook),
-			backendssh.WithPostReceiveHookFunc(postReceiveHook),
+			backendssh.WithPermissionHookFunc(permissionHookFunc),
+			backendssh.WithPreReceiveHookFunc(preReceiveHookFunc),
+			backendssh.WithPostReceiveHookFunc(postReceiveHookFunc),
 			backendssh.WithMirror(sharedMirror),
 			backendssh.WithLFSURL(HostURL),
 			backendssh.WithBasicAuthValidator(basicAuthValidator),
