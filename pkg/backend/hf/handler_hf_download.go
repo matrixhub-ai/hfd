@@ -1,9 +1,11 @@
 package hf
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -65,23 +67,30 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseJSON(w, toHFTreeEntries(entries, expand), http.StatusOK)
+	responseJSON(w, toHFTreeEntries(r.Context(), entries, expand), http.StatusOK)
 }
 
-func toHFTreeEntries(entries []*repository.TreeEntry, expand bool) []treeEntry {
+func toHFTreeEntries(ctx context.Context, entries []*repository.TreeEntry, expand bool) []treeEntry {
 	result := make([]treeEntry, len(entries))
 	for i, e := range entries {
+
+		blob, err := e.Blob()
+		if err != nil {
+			slog.WarnContext(ctx, "failed to get blob for tree entry, skipping", "path", e.Path(), "error", err)
+			continue
+		}
+
 		result[i] = treeEntry{
-			OID:  e.OID(),
+			OID:  e.Hash().String(),
 			Path: e.Path(),
 			Type: e.Type(),
-			Size: e.Size(),
+			Size: blob.Size(),
 		}
-		if ptr := e.LFSPointer(); ptr != nil {
+		if ptr, _ := blob.LFSPointer(); ptr != nil {
 			result[i].LFS = &lfsPointer{
 				OID:         ptr.OID(),
 				Size:        ptr.Size(),
-				PointerSize: e.Size(),
+				PointerSize: blob.Size(),
 			}
 			result[i].Size = ptr.Size()
 		}

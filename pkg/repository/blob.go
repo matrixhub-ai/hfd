@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 // Blob represents a file in the repository at a specific revision.
@@ -15,6 +16,10 @@ type Blob struct {
 	modTime   time.Time
 	newReader func() (io.ReadCloser, error)
 	hash      Hash
+
+	lfsErr error
+	lfs    *lfs.Pointer
+	r      *Repository
 }
 
 // Name returns the file name of the blob.
@@ -47,6 +52,39 @@ func (b *Blob) String() string {
 	return fmt.Sprintf("%s (%d bytes)", b.name, b.size)
 }
 
+// LFSPointer returns the LFSPointer pointer information if the entry is an LFSPointer-tracked file, or nil otherwise.
+func (b *Blob) LFSPointer() (*lfs.Pointer, error) {
+	if b.r != nil {
+		b.lfs, b.lfsErr = b.parseLFS(b.r)
+		b.r = nil
+	}
+	return b.lfs, b.lfsErr
+}
+
+func (b *Blob) parseLFS(r *Repository) (*lfs.Pointer, error) {
+	blob, err := r.repo.BlobObject(b.hash)
+	if err != nil {
+		return nil, err
+	}
+
+	if blob.Size > lfs.MaxLFSPointerSize {
+		return nil, nil
+	}
+
+	reader, err := blob.Reader()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	ptr, err := lfs.DecodePointer(reader)
+	if err != nil {
+		return nil, err
+	}
+	return ptr, nil
+}
+
 // Blob returns the Blob object for this entry if it is a file, or an error if it is a directory or if the blob cannot be accessed.
 func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
 	if rev == "" {
@@ -74,5 +112,6 @@ func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
 		modTime:   commit.Committer.When,
 		newReader: file.Reader,
 		hash:      file.Hash,
+		r:         r,
 	}, nil
 }

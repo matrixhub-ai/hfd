@@ -2,12 +2,11 @@ package repository
 
 import (
 	"fmt"
+	"io"
 	"path"
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 // EntryType represents the type of a tree entry, either a file or a directory.
@@ -20,16 +19,15 @@ const (
 
 // TreeEntry represents a file or directory in the repository.
 type TreeEntry struct {
-	oid        string
+	hash       Hash
 	path       string
 	entryType  EntryType
-	size       int64
-	lfs        *lfs.Pointer
 	lastCommit *Commit
+	r          *Repository
 }
 
-// OID returns the Git object ID of the entry.
-func (e *TreeEntry) OID() string { return e.oid }
+// Hash returns the Git object hash of the tree entry.
+func (e *TreeEntry) Hash() Hash { return e.hash }
 
 // Path returns the file path of the entry relative to the repository root.
 func (e *TreeEntry) Path() string { return e.path }
@@ -37,40 +35,34 @@ func (e *TreeEntry) Path() string { return e.path }
 // Type returns the type of the entry (file or directory).
 func (e *TreeEntry) Type() EntryType { return e.entryType }
 
-// Size returns the size of the entry in bytes.
-func (e *TreeEntry) Size() int64 { return e.size }
-
-// LFSPointer returns the LFSPointer pointer information if the entry is an LFSPointer-tracked file, or nil otherwise.
-func (e *TreeEntry) LFSPointer() *lfs.Pointer { return e.lfs }
-
 // LastCommit returns the last commit that modified this entry, or nil if not expanded.
 func (e *TreeEntry) LastCommit() *Commit { return e.lastCommit }
+
+// Blob returns a Blob object for this entry if it is a file, or an error if it is a directory or if there was an issue retrieving the blob.
+func (e *TreeEntry) Blob() (*Blob, error) {
+	if e.entryType != EntryTypeFile {
+		return nil, fmt.Errorf("entry is not a file")
+	}
+
+	blob, err := e.r.repo.BlobObject(e.hash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get blob object: %w", err)
+	}
+
+	return &Blob{
+		name:      path.Base(e.path),
+		size:      blob.Size,
+		modTime:   e.lastCommit.commit.Committer.When,
+		newReader: func() (io.ReadCloser, error) { return blob.Reader() },
+		hash:      blob.Hash,
+		r:         e.r,
+	}, nil
+}
 
 // TreeOptions provides options for the HFTree method.
 type TreeOptions struct {
 	// Recursive enables recursive traversal of subdirectories.
 	Recursive bool
-}
-
-// blobMetadata populates the Size and LFS fields for a file entry.
-func (r *Repository) blobMetadata(hfentry *TreeEntry) {
-	hash := plumbing.NewHash(hfentry.oid)
-	blob, err := r.repo.BlobObject(hash)
-	if err != nil {
-		return
-	}
-	hfentry.size = blob.Size
-	if blob.Size <= lfs.MaxLFSPointerSize {
-		reader, err := blob.Reader()
-		if err != nil {
-			return
-		}
-		ptr, err := lfs.DecodePointer(reader)
-		_ = reader.Close()
-		if err == nil && ptr != nil {
-			hfentry.lfs = ptr
-		}
-	}
 }
 
 // Tree returns the list of files and directories at the given revision and path, with options for recursive traversal and metadata expansion.
@@ -136,10 +128,14 @@ func (r *Repository) TreeSize(rev string, treePath string) (int64, error) {
 	var total int64
 	for _, entry := range entries {
 		if entry.Type() == EntryTypeFile {
-			if entry.LFSPointer() != nil {
-				total += entry.LFSPointer().Size()
+			entryBlob, err := entry.Blob()
+			if err != nil {
+				return 0, fmt.Errorf("failed to get blob for entry %q: %w", entry.Path(), err)
+			}
+			if ptr, _ := entryBlob.LFSPointer(); ptr != nil {
+				total += ptr.Size()
 			} else {
-				total += entry.Size()
+				total += entryBlob.Size()
 			}
 		}
 	}
@@ -152,12 +148,12 @@ func (r *Repository) walkTree(commit *object.Commit, tree *object.Tree, basePath
 		entryPath := path.Join(basePath, entry.Name)
 		if entry.Mode.IsFile() {
 			hfentry := TreeEntry{
-				oid:       entry.Hash.String(),
+				hash:      entry.Hash,
 				path:      entryPath,
 				entryType: EntryTypeFile,
+				r:         r,
 			}
 
-			r.blobMetadata(&hfentry)
 			hfentry.lastCommit = &Commit{r: r, commit: commit}
 
 			if err := cb(&hfentry); err != nil {
@@ -165,10 +161,9 @@ func (r *Repository) walkTree(commit *object.Commit, tree *object.Tree, basePath
 			}
 		} else {
 			hfentry := TreeEntry{
-				oid:       entry.Hash.String(),
+				hash:      entry.Hash,
 				path:      entryPath,
 				entryType: EntryTypeDirectory,
-				size:      0,
 			}
 			hfentry.lastCommit = &Commit{r: r, commit: commit}
 
