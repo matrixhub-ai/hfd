@@ -54,14 +54,14 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(store),
-		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithLFSStorage(lfsStore),
 		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStore(lfsStore),
+		backendlfs.WithLFSStorage(lfsStore),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -336,14 +336,14 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(store),
-		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithLFSStorage(lfsStore),
 		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(store),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStore(lfsStore),
+		backendlfs.WithLFSStorage(lfsStore),
 	)
 
 	handler = backendhttp.NewHandler(

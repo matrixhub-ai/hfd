@@ -241,7 +241,7 @@ func main() {
 		backendhf.WithPermissionHookFunc(permissionHook),
 		backendhf.WithPreReceiveHookFunc(preReceiveHook),
 		backendhf.WithPostReceiveHookFunc(postReceiveHook),
-		backendhf.WithLFSStore(lfsStore),
+		backendhf.WithLFSStorage(lfsStore),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -250,7 +250,7 @@ func main() {
 		backendlfs.WithMirror(sharedMirror),
 		backendlfs.WithPermissionHookFunc(permissionHook),
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
-		backendlfs.WithLFSStore(lfsStore),
+		backendlfs.WithLFSStorage(lfsStore),
 		backendlfs.WithMirror(sharedMirror),
 	)
 

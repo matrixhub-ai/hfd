@@ -15,19 +15,19 @@ var (
 	errSizeMismatch = errors.New("Content size does not match")
 )
 
-// localStore provides a simple file system based storage.
-type localStore struct {
+// localStorage provides a simple file system based storage.
+type localStorage struct {
 	basePath string
 }
 
 // NewLocal creates a new local file system based Store. The basePath is the root directory where objects will be stored.
-func NewLocal(basePath string) Store {
-	return &localStore{basePath: basePath}
+func NewLocal(basePath string) Storage {
+	return &localStorage{basePath: basePath}
 }
 
 // Get takes a Meta object and retreives the content from the store, returning
 // it as an io.ReaderCloser. If fromByte > 0, the reader starts from that byte
-func (s *localStore) Get(oid string) (io.ReadSeekCloser, os.FileInfo, error) {
+func (s *localStorage) Get(oid string) (io.ReadSeekCloser, os.FileInfo, error) {
 	path := filepath.Join(s.basePath, transformKey(oid))
 
 	f, err := os.Open(path)
@@ -42,7 +42,7 @@ func (s *localStore) Get(oid string) (io.ReadSeekCloser, os.FileInfo, error) {
 }
 
 // Put takes a Meta object and an io.Reader and writes the content to the store.
-func (s *localStore) Put(oid string, r io.Reader, size int64) error {
+func (s *localStorage) Put(oid string, r io.Reader, size int64) error {
 	path := filepath.Join(s.basePath, transformKey(oid))
 
 	dir := filepath.Dir(path)
@@ -83,13 +83,13 @@ func (s *localStore) Put(oid string, r io.Reader, size int64) error {
 	return nil
 }
 
-func (s *localStore) Info(oid string) (os.FileInfo, error) {
+func (s *localStorage) Info(oid string) (os.FileInfo, error) {
 	path := filepath.Join(s.basePath, transformKey(oid))
 	return os.Stat(path)
 }
 
 // Exists returns true if the object exists in the content store.
-func (s *localStore) Exists(oid string) bool {
+func (s *localStorage) Exists(oid string) bool {
 	path := filepath.Join(s.basePath, transformKey(oid))
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return false

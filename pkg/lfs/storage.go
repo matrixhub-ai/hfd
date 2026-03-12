@@ -5,9 +5,9 @@ import (
 	"os"
 )
 
-// Store is the base interface for LFS storage backends.
+// Storage is the base interface for LFS storage backends.
 // Both file system (Content) and S3 backends implement this interface.
-type Store interface {
+type Storage interface {
 	Put(oid string, r io.Reader, size int64) error
 	Info(oid string) (os.FileInfo, error)
 	Exists(oid string) bool

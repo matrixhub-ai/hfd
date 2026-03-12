@@ -215,7 +215,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Repo-Commit", commitHash)
 				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
-				if h.mirror != nil && !h.lfsStore.Exists(ptr.OID()) {
+				if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
 					// Try tee cache fetch if configured
 					if h.mirror != nil {
 						sourceURL, started, err := h.mirror.StartLFSFetch(r.Context(), ri.RepoName, []lfs.LFSObject{
@@ -237,7 +237,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 					return
 				}
-				if signer, ok := h.lfsStore.(lfs.SignGetter); ok {
+				if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
 					url, err := signer.SignGet(ptr.OID())
 					if err != nil {
 						responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
@@ -246,7 +246,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 					return
 				}
-				if getter, ok := h.lfsStore.(lfs.Getter); ok {
+				if getter, ok := h.lfsStorage.(lfs.Getter); ok {
 					content, stat, err := getter.Get(ptr.OID())
 					if err != nil {
 						if os.IsNotExist(err) {

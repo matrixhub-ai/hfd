@@ -18,7 +18,7 @@ type Handler struct {
 	storage            *storage.Storage
 	root               *mux.Router
 	next               http.Handler
-	lfsStore           lfs.Store
+	lfsStorage         lfs.Storage
 	locksStore         *lfs.LockDB
 	permissionHookFunc permission.PermissionHookFunc
 	tokenSignValidator authenticate.TokenSignValidator
@@ -56,10 +56,10 @@ func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
 	}
 }
 
-// WithLFSStore configures the LFS storage backend.
-func WithLFSStore(store lfs.Store) Option {
+// WithLFSStorage configures the LFS storage backend.
+func WithLFSStorage(storage lfs.Storage) Option {
 	return func(h *Handler) {
-		h.lfsStore = store
+		h.lfsStorage = storage
 	}
 }
 
