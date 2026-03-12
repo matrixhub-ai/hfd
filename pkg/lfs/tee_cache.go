@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/wzshiming/ioswmr"
 )
@@ -13,23 +14,29 @@ import (
 // Blob tracks the state of an in-flight LFS object fetch, allowing concurrent readers to access
 // the data as it is being downloaded and written to the local store.
 type Blob struct {
-	swmr  ioswmr.SWMR
-	total int64
+	swmr    ioswmr.SWMR
+	total   int64
+	modTime time.Time
 }
 
 // NewReadSeeker returns a new ReadSeeker for serving in-flight content.
-func (f *Blob) NewReadSeeker() io.ReadSeekCloser {
-	return f.swmr.NewReadSeeker(0, int(f.total))
+func (b *Blob) NewReadSeeker() io.ReadSeekCloser {
+	return b.swmr.NewReadSeeker(0, int(b.total))
 }
 
 // Total returns the total size of the object being fetched.
-func (f *Blob) Total() int64 {
-	return f.total
+func (b *Blob) Total() int64 {
+	return b.total
+}
+
+// ModTime returns the Last-Modified time of the object being fetched, if available.
+func (b *Blob) ModTime() time.Time {
+	return b.modTime
 }
 
 // Progress returns the number of bytes currently available for reading.
-func (f *Blob) Progress() int64 {
-	return int64(f.swmr.Length())
+func (b *Blob) Progress() int64 {
+	return int64(b.swmr.Length())
 }
 
 // TeeCache fetches LFS objects from an upstream source, tees the download
@@ -79,20 +86,20 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 	}
 
 	for _, obj := range batchResp.Objects {
-		_, ok := m.cache.Load(obj.Oid)
-		if ok {
-			continue
-		}
-		if m.storage.Exists(obj.Oid) {
-			continue
-		}
-
 		if obj.Error != nil {
 			continue
 		}
 
 		downloadAction, ok := obj.Actions["download"]
 		if !ok {
+			continue
+		}
+
+		_, ok = m.cache.Load(obj.Oid)
+		if ok {
+			continue
+		}
+		if m.storage.Exists(obj.Oid) {
 			continue
 		}
 
@@ -105,19 +112,6 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
 // body into the local storage while making it available for concurrent readers.
 func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64, downloadAction action) {
-	f := &Blob{
-		swmr: ioswmr.NewSWMR(
-			ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
-			ioswmr.WithAutoClose(),
-			ioswmr.WithBeforeCloseFunc(func() {
-				m.cache.Delete(oid)
-			}),
-		),
-		total: size,
-	}
-
-	m.cache.Store(oid, f)
-
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to create download request", "oid", oid, "error", err)
@@ -136,6 +130,24 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64
 		return
 	}
 
+	f := &Blob{
+		swmr: ioswmr.NewSWMR(
+			ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
+			ioswmr.WithAutoClose(),
+			ioswmr.WithBeforeCloseFunc(func() {
+				m.cache.Delete(oid)
+			}),
+		),
+		total: size,
+	}
+	lastModified := resp.Header.Get("Last-Modified")
+	if modTime, err := time.Parse(http.TimeFormat, lastModified); err != nil {
+		f.modTime = time.Now()
+	} else {
+		f.modTime = modTime
+	}
+
+	m.cache.Store(oid, f)
 	reader := f.swmr.NewReader(0)
 
 	go func() {

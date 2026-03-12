@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/gorilla/mux"
 
@@ -230,7 +229,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 							pf := h.mirror.Get(ptr.OID())
 							rs := pf.NewReadSeeker()
 							defer rs.Close()
-							http.ServeContent(w, r, ptr.OID(), time.Now(), rs)
+							http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
 							return
 						}
 					}

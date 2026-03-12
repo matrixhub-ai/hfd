@@ -129,7 +129,7 @@ func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 			if pf != nil {
 				rs := pf.NewReadSeeker()
 				defer rs.Close()
-				http.ServeContent(w, r, rv.Oid, time.Now(), rs)
+				http.ServeContent(w, r, rv.Oid, pf.ModTime(), rs)
 				return
 			}
 		}
