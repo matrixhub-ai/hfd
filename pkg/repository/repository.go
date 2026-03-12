@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 
+	"github.com/matrixhub-ai/hfd/internal/lru"
 	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
@@ -33,12 +35,16 @@ const (
 
 // Repository represents a Git repository and provides methods to interact with it.
 type Repository struct {
-	repo     *git.Repository
-	repoPath string
+	repo          *git.Repository
+	repoPath      string
+	defaultBranch atomic.Pointer[string]
 }
 
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
 func IsRepository(repoPath string) bool {
+	if _, ok := lruCache.Get(repoPath); ok {
+		return true
+	}
 	stat, err := os.Stat(filepath.Join(repoPath, "HEAD"))
 	if err == nil && stat.Size() != 0 {
 		return true
@@ -82,16 +88,26 @@ func Init(ctx context.Context, repoPath string, defaultBranch string) (*Reposito
 	return repo, nil
 }
 
+var lruCache = lru.New[string, *Repository](128) // Cache up to 128 repositories in memory
+
 // Open opens an existing git repository at the given path.
-func Open(repoPath string) (*Repository, error) {
-	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
-	if err != nil {
-		return nil, err
+func Open(repoPath string) (repo *Repository, err error) {
+	repo, ok := lruCache.GetOrNew(repoPath, func() (*Repository, bool) {
+		var r *git.Repository
+		r, err = git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
+		if err != nil {
+			return nil, false
+		}
+		return &Repository{
+			repo:     r,
+			repoPath: repoPath,
+		}, true
+
+	})
+	if ok {
+		return repo, nil
 	}
-	return &Repository{
-		repo:     repo,
-		repoPath: repoPath,
-	}, nil
+	return nil, err
 }
 
 // RepoPath returns the filesystem path of the repository.
@@ -136,6 +152,15 @@ func (r *Repository) SplitRevisionAndPath(refpath string) (rev string, path stri
 
 // DefaultBranch returns the default branch name of the repository by reading the HEAD file.
 func (r *Repository) DefaultBranch() string {
+	if db := r.defaultBranch.Load(); db != nil {
+		return *db
+	}
+	db := r.parseDefaultBranch()
+	r.defaultBranch.Store(&db)
+	return db
+}
+
+func (r *Repository) parseDefaultBranch() string {
 	head := filepath.Join(r.repoPath, "HEAD")
 	data, err := os.ReadFile(head)
 	if err != nil {
@@ -174,6 +199,7 @@ func (r *Repository) Branches() ([]string, error) {
 
 // Remove deletes the repository directory and all its contents from disk.
 func (r *Repository) Remove() error {
+	lruCache.Remove(r.repoPath)
 	return os.RemoveAll(r.repoPath)
 }
 
@@ -349,6 +375,8 @@ func (r *Repository) Move(newPath string) error {
 	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
 		return err
 	}
+	lruCache.Remove(r.repoPath)
+	lruCache.Remove(newPath)
 	return os.Rename(r.repoPath, newPath)
 }
 
