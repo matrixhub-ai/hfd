@@ -9,7 +9,7 @@ require (
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/wzshiming/httpseek v0.5.0
-	github.com/wzshiming/ioswmr v0.0.0-20260302055634-59c8070e7d03
+	github.com/wzshiming/ioswmr v0.1.0
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
 	gopkg.in/yaml.v3 v3.0.1
