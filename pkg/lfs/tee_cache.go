@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/wzshiming/ioswmr"
 )
 
@@ -54,9 +55,9 @@ type TeeCacheOption func(*TeeCache)
 
 // NewTeeCache creates a new TeeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func NewTeeCache(httpClient *http.Client, storage Storage, opts ...TeeCacheOption) *TeeCache {
+func NewTeeCache(storage Storage, opts ...TeeCacheOption) *TeeCache {
 	p := &TeeCache{
-		httpClient: httpClient,
+		httpClient: utils.HTTPClient,
 		storage:    storage,
 	}
 	for _, opt := range opts {

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gorilla/handlers"
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -172,7 +171,6 @@ func main() {
 	if proxyURL != "" {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
 		lfsTeeCache := lfs.NewTeeCache(
-			utils.HTTPClient,
 			lfsStorage,
 		)
 
