@@ -3,7 +3,7 @@ package mirror
 import (
 	"context"
 
-	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 // Get attempts to retrieve the LFS object with the given OID from the mirror's tee cache.

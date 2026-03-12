@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wzshiming/hfd/internal/utils"
-	"github.com/wzshiming/hfd/pkg/authenticate"
-	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
-	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
-	"github.com/wzshiming/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
+	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // setupAuthTestServer creates an HTTP test server with basic authentication enabled.

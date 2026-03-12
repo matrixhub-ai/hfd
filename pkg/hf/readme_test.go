@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wzshiming/hfd/pkg/hf"
+	"github.com/matrixhub-ai/hfd/pkg/hf"
 )
 
 func TestReadme_RepoTags_EvalResults(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // ZeroHash is the zero hash used for ref create/delete operations.

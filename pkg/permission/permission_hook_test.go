@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 func TestOperationConstants(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // Stateless performs a stateless Git operation (like upload-pack or receive-pack) for the repository.

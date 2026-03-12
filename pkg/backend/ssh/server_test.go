@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wzshiming/hfd/internal/utils"
-	"github.com/wzshiming/hfd/pkg/authenticate"
-	backendssh "github.com/wzshiming/hfd/pkg/backend/ssh"
-	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
-	"github.com/wzshiming/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
 

@@ -14,13 +14,13 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/wzshiming/hfd/internal/utils"
-	"github.com/wzshiming/hfd/pkg/authenticate"
-	"github.com/wzshiming/hfd/pkg/mirror"
-	"github.com/wzshiming/hfd/pkg/permission"
-	"github.com/wzshiming/hfd/pkg/receive"
-	"github.com/wzshiming/hfd/pkg/repository"
-	"github.com/wzshiming/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // Signer is an alias for ssh.Signer to avoid requiring callers to import golang.org/x/crypto/ssh.

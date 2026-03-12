@@ -12,10 +12,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
 
-	"github.com/wzshiming/hfd/pkg/authenticate"
-	"github.com/wzshiming/hfd/pkg/permission"
-	"github.com/wzshiming/hfd/pkg/receive"
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // handleInfoRevision handles the /api/{repoType}/{repo_id}/revision/{rev} and /api/{repoType}/{repo_id} endpoint

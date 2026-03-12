@@ -10,9 +10,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/wzshiming/hfd/pkg/lfs"
-	"github.com/wzshiming/hfd/pkg/permission"
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {

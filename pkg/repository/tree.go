@@ -7,7 +7,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 // EntryType represents the type of a tree entry, either a file or a directory.

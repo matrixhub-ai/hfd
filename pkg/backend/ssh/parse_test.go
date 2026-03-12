@@ -3,7 +3,7 @@ package ssh
 import (
 	"testing"
 
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 func TestParseCommand(t *testing.T) {

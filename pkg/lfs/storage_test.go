@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/wzshiming/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 func TestContentStorage(t *testing.T) {

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wzshiming/hfd/pkg/lfs"
-	"github.com/wzshiming/hfd/pkg/receive"
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"golang.org/x/sync/singleflight"
 )
 

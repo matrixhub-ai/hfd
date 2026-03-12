@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/wzshiming/hfd/pkg/hf"
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/hf"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // handleList is the unified handler for listing repositories of different types (models, datasets, spaces).

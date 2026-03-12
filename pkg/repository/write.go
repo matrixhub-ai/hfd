@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // CommitOperationType represents the type of operation in a commit.

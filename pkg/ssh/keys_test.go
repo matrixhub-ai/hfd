@@ -9,7 +9,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	pkgssh "github.com/wzshiming/hfd/pkg/ssh"
+	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 )
 
 func TestParseAuthorizedKeys(t *testing.T) {

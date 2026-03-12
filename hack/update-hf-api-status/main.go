@@ -23,7 +23,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 )
 
 const (

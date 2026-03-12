@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // Mount mounts the specified S3 bucket to the given mount point using s3fs.

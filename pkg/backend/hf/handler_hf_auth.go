@@ -3,7 +3,7 @@ package hf
 import (
 	"net/http"
 
-	"github.com/wzshiming/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 )
 
 // handleWhoami handles GET /api/whoami-v2

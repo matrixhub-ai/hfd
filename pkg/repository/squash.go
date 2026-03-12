@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wzshiming/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // SuperSquash squashes all commits in the given rev into a single root commit

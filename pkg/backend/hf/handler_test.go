@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
-	"github.com/wzshiming/hfd/pkg/storage"
+	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {

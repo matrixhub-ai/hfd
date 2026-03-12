@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wzshiming/hfd/internal/utils"
-	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	"github.com/wzshiming/hfd/pkg/permission"
-	"github.com/wzshiming/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/internal/utils"
+	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // runGitCmd runs a git command in the specified directory.

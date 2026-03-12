@@ -3,7 +3,7 @@ package hf
 import (
 	"encoding/json"
 
-	"github.com/wzshiming/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // whoamiResponse represents the response for the /api/whoami-v2 endpoint.

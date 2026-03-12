@@ -12,9 +12,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/wzshiming/hfd/pkg/authenticate"
-	"github.com/wzshiming/hfd/pkg/lfs"
-	"github.com/wzshiming/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 const (

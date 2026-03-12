@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	backendhf "github.com/wzshiming/hfd/pkg/backend/hf"
-	backendhttp "github.com/wzshiming/hfd/pkg/backend/http"
-	backendlfs "github.com/wzshiming/hfd/pkg/backend/lfs"
-	"github.com/wzshiming/hfd/pkg/lfs"
-	"github.com/wzshiming/hfd/pkg/storage"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
+	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {

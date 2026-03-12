@@ -1,4 +1,4 @@
-module github.com/wzshiming/hfd
+module github.com/matrixhub-ai/hfd
 
 go 1.25
 
