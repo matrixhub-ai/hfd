@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+
+	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 var (
@@ -64,30 +67,19 @@ func IsValidGitProtocol(value string) bool {
 
 // Init initializes a new git repository at the given path with the specified default branch.
 func Init(repoPath string, defaultBranch string) (*Repository, error) {
-	repo, err := git.PlainInitWithOptions(repoPath, &git.PlainInitOptions{
-		Bare: true,
-		InitOptions: git.InitOptions{
-			DefaultBranch: plumbing.NewBranchReferenceName(defaultBranch),
-		},
-	})
-	if err != nil {
-		return nil, err
+	cmd := utils.Command(context.Background(), "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
+	if err := cmd.Run(); err != nil {
+		_ = os.RemoveAll(repoPath)
+		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
 	}
 
-	conf, err := repo.Config()
+	repo, err := Open(repoPath)
 	if err != nil {
-		return nil, err
+		_ = os.RemoveAll(repoPath)
+		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
-	conf.Raw.AddOption("receive", "", "shallowUpdate", "true")
 
-	err = repo.SetConfig(conf)
-	if err != nil {
-		return nil, err
-	}
-	return &Repository{
-		repo:     repo,
-		repoPath: repoPath,
-	}, nil
+	return repo, nil
 }
 
 // Open opens an existing git repository at the given path.

@@ -50,6 +50,7 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 	env := append(os.Environ(),
 		"GIT_INDEX_FILE="+tmpIndexPath,
 		"GIT_DIR="+r.repoPath,
+		"GIT_WORK_TREE="+r.repoPath,
 	)
 
 	// Try to read the current tree into the index (ignore error for new branches)

@@ -3,8 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/matrixhub-ai/hfd/internal/utils"
@@ -30,19 +28,8 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
-	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
-	if err := cmd.Run(); err != nil {
-		_ = os.RemoveAll(repoPath)
-		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
-	}
 
-	repo, err := Open(repoPath)
-	if err != nil {
-		_ = os.RemoveAll(repoPath)
-		return nil, fmt.Errorf("failed to open git repository: %w", err)
-	}
-
-	return repo, nil
+	return Init(repoPath, defaultBranch)
 }
 
 func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
@@ -106,10 +93,6 @@ func (r *Repository) SyncMirrorRefs(ctx context.Context, sourceURL string, refs 
 		sourceURL,
 		"--no-tags",
 		"--progress",
-	}
-
-	if fi, err := os.Stat(filepath.Join(r.repoPath, "shallow")); err == nil && !fi.IsDir() {
-		args = append(args, "--unshallow")
 	}
 
 	// Add explicit refspecs for each desired ref.
