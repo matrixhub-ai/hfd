@@ -104,7 +104,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		if !m.shouldSync(repoName) {
 			return repo, nil
 		}
-		_, err, _ := m.group.Do(repoName, func() (any, error) {
+		_, err, _ := m.group.Do(repoPath, func() (any, error) {
 			defer m.markSynced(repoName)
 			return nil, m.syncMirror(ctx, repo, repoName, sourceURL)
 		})
@@ -118,7 +118,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		return nil, err
 	}
 
-	v, err, _ := m.group.Do(repoName, func() (any, error) {
+	v, err, _ := m.group.Do(repoPath, func() (any, error) {
 		repo, err = repository.InitMirror(ctx, repoPath, sourceURL)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
