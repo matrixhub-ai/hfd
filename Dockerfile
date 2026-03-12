@@ -10,9 +10,6 @@ FROM ${IMAGE_PREFIX}library/golang:${GOLANG_VERSION}-alpine${ALPINE_VERSION} AS 
 
 WORKDIR /app
 
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add gcc musl-dev
-
 ARG GOPROXY
 ENV GOPROXY=${GOPROXY}
 RUN --mount=type=cache,target=/go/pkg/mod \
