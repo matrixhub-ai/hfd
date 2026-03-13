@@ -89,14 +89,33 @@ func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
 	return isMirror, err
 }
 
-// OpenOrSync opens the repository at repoPath. If it doesn't exist and mirrorSourceFunc is set, it attempts to initialize a mirror from the source URL.
-func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*repository.Repository, error) {
-	sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
-	if err != nil {
-		return nil, err
+type syncOption struct {
+	SourceURL string
+}
+
+// WithSyncMirrorSourceURL sets the source URL for mirror sync operations, overriding the default mirrorSourceFunc lookup.
+func WithSyncMirrorSourceURL(url string) func(*syncOption) {
+	return func(o *syncOption) {
+		o.SourceURL = url
 	}
-	if !isMirror {
-		return repository.Open(repoPath)
+}
+
+// OpenOrSync opens the mirror repository at repoPath, syncing with the source URL if necessary based on TTL.
+func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts ...func(*syncOption)) (*repository.Repository, error) {
+	var opt syncOption
+	for _, o := range opts {
+		o(&opt)
+	}
+
+	if opt.SourceURL == "" {
+		sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
+		if err != nil {
+			return nil, err
+		}
+		if !isMirror {
+			return repository.Open(repoPath)
+		}
+		opt.SourceURL = sourceURL
 	}
 
 	repo, err := repository.Open(repoPath)
@@ -106,7 +125,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 		}
 		_, err, _ := m.group.Do(repoPath, func() (any, error) {
 			defer m.markSynced(repoName)
-			return nil, m.syncMirror(ctx, repo, repoName, sourceURL)
+			return nil, m.syncMirror(ctx, repo, repoName, opt.SourceURL)
 		})
 		if err != nil {
 			return nil, err
@@ -119,13 +138,13 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 	}
 
 	v, err, _ := m.group.Do(repoPath, func() (any, error) {
-		repo, err = repository.InitMirror(ctx, repoPath, sourceURL)
+		repo, err = repository.InitMirror(ctx, repoPath, opt.SourceURL)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
 			return nil, repository.ErrRepositoryNotExists
 		}
 		defer m.markSynced(repoName)
-		err = m.syncMirror(ctx, repo, repoName, sourceURL)
+		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
 		if err != nil {
 			return nil, err
 		}
@@ -136,6 +155,43 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string) (*re
 	}
 
 	return v.(*repository.Repository), nil
+}
+
+// Sync forcefully syncs the mirror repository at repoPath with the source URL, regardless of TTL.
+func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...func(*syncOption)) error {
+	var opt syncOption
+	for _, o := range opts {
+		o(&opt)
+	}
+
+	if opt.SourceURL == "" {
+		sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
+		if err != nil {
+			return err
+		}
+		if !isMirror {
+			return fmt.Errorf("repository %q is not configured as a mirror", repoName)
+		}
+		opt.SourceURL = sourceURL
+	}
+
+	repo, err := repository.Open(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open mirror repository: %w", err)
+	}
+
+	_, err, _ = m.group.Do(repoPath, func() (any, error) {
+		defer m.markSynced(repoName)
+		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
+		if err != nil {
+			return nil, err
+		}
+		return repo, nil
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func filterKeyFromMap(m map[string]string, keys []string) map[string]string {
