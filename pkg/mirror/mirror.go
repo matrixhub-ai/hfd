@@ -120,11 +120,11 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 
 	repo, err := repository.Open(repoPath)
 	if err == nil {
-		if !m.shouldSync(repoName) {
+		if !m.shouldSync(repoPath) {
 			return repo, nil
 		}
 		_, err, _ := m.group.Do(repoPath, func() (any, error) {
-			defer m.markSynced(repoName)
+			defer m.markSynced(repoPath)
 			return nil, m.syncMirror(ctx, repo, repoName, opt.SourceURL)
 		})
 		if err != nil {
@@ -143,7 +143,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
 			return nil, repository.ErrRepositoryNotExists
 		}
-		defer m.markSynced(repoName)
+		defer m.markSynced(repoPath)
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
 		if err != nil {
 			return nil, err
@@ -181,7 +181,7 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 	}
 
 	_, err, _ = m.group.Do(repoPath, func() (any, error) {
-		defer m.markSynced(repoName)
+		defer m.markSynced(repoPath)
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
 		if err != nil {
 			return nil, err
@@ -213,12 +213,12 @@ func keys(m map[string]string) []string {
 	return result
 }
 
-func (m *Mirror) shouldSync(repoName string) bool {
+func (m *Mirror) shouldSync(repoPath string) bool {
 	if m.ttl <= 0 {
 		return true
 	}
 
-	last, ok := m.lastSync.Load(repoName)
+	last, ok := m.lastSync.Load(repoPath)
 	if !ok {
 		return true
 	}
@@ -226,12 +226,12 @@ func (m *Mirror) shouldSync(repoName string) bool {
 	return time.Since(last.(time.Time)) >= m.ttl
 }
 
-func (m *Mirror) markSynced(repoName string) {
+func (m *Mirror) markSynced(repoPath string) {
 	if m.ttl <= 0 {
 		return
 	}
 
-	m.lastSync.Store(repoName, time.Now())
+	m.lastSync.Store(repoPath, time.Now())
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
