@@ -11,7 +11,7 @@ func TestParseCommand(t *testing.T) {
 		name      string
 		cmdLine   string
 		service   string
-		repoPath  string
+		repoName  string
 		operation string
 		wantErr   bool
 	}{
@@ -19,53 +19,53 @@ func TestParseCommand(t *testing.T) {
 			name:     "git-upload-pack with quotes",
 			cmdLine:  "git-upload-pack '/repo.git'",
 			service:  repository.GitUploadPack,
-			repoPath: "/repo.git",
+			repoName: "/repo.git",
 		},
 		{
 			name:     "git-upload-pack without quotes",
 			cmdLine:  "git-upload-pack /repo.git",
 			service:  repository.GitUploadPack,
-			repoPath: "/repo.git",
+			repoName: "/repo.git",
 		},
 		{
 			name:     "git-receive-pack with quotes",
 			cmdLine:  "git-receive-pack '/repo.git'",
 			service:  repository.GitReceivePack,
-			repoPath: "/repo.git",
+			repoName: "/repo.git",
 		},
 		{
 			name:      "git-lfs-authenticate download",
 			cmdLine:   "git-lfs-authenticate '/repo.git' download",
 			service:   repository.GitLFSAuthenticate,
-			repoPath:  "/repo.git",
+			repoName:  "/repo.git",
 			operation: "download",
 		},
 		{
 			name:      "git-lfs-authenticate upload",
 			cmdLine:   "git-lfs-authenticate '/repo.git' upload",
 			service:   repository.GitLFSAuthenticate,
-			repoPath:  "/repo.git",
+			repoName:  "/repo.git",
 			operation: "upload",
 		},
 		{
 			name:      "git-lfs-authenticate without quotes",
 			cmdLine:   "git-lfs-authenticate /user/model upload",
 			service:   repository.GitLFSAuthenticate,
-			repoPath:  "/user/model",
+			repoName:  "/user/model",
 			operation: "upload",
 		},
 		{
 			name:      "git-lfs-transfer download",
 			cmdLine:   "git-lfs-transfer '/repo.git' download",
 			service:   repository.GitLFSTransfer,
-			repoPath:  "/repo.git",
+			repoName:  "/repo.git",
 			operation: "download",
 		},
 		{
 			name:      "git-lfs-transfer upload",
 			cmdLine:   "git-lfs-transfer '/repo.git' upload",
 			service:   repository.GitLFSTransfer,
-			repoPath:  "/repo.git",
+			repoName:  "/repo.git",
 			operation: "upload",
 		},
 		{
@@ -110,8 +110,8 @@ func TestParseCommand(t *testing.T) {
 			if cmd.service != tt.service {
 				t.Errorf("service = %q, want %q", cmd.service, tt.service)
 			}
-			if cmd.repoPath != tt.repoPath {
-				t.Errorf("repoPath = %q, want %q", cmd.repoPath, tt.repoPath)
+			if cmd.repoName != tt.repoName {
+				t.Errorf("repoName = %q, want %q", cmd.repoName, tt.repoName)
 			}
 			if cmd.operation != tt.operation {
 				t.Errorf("operation = %q, want %q", cmd.operation, tt.operation)

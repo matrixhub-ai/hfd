@@ -306,11 +306,11 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 
 			switch cmd.service {
 			case repository.GitLFSAuthenticate:
-				s.executeLFSAuthenticate(ctx, channel, cmd.repoPath, cmd.operation)
+				s.executeLFSAuthenticate(ctx, channel, cmd.repoName, cmd.operation)
 			case repository.GitLFSTransfer:
 				sendExitStatus(channel, 1, "git-lfs-transfer is not supported\n")
 			default:
-				s.executeCommand(ctx, channel, cmd.service, cmd.repoPath, envs...)
+				s.executeCommand(ctx, channel, cmd.service, cmd.repoName, envs...)
 			}
 			return
 		default:
@@ -322,23 +322,23 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 }
 
 // executeCommand runs a git service command and pipes I/O through the SSH channel.
-func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoPath string, env ...string) {
-	fullPath := s.storage.ResolvePath(repoPath)
-	if fullPath == "" {
+func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoName string, env ...string) {
+	repoPath := s.storage.ResolvePath(repoName)
+	if repoPath == "" {
 		sendExitStatus(channel, 1, "repository not found\n")
 		return
 	}
 
 	// Reject pushes to mirror repositories
 	if service == repository.GitReceivePack && s.mirror != nil {
-		isMirror, err := s.mirror.IsMirror(ctx, repoPath)
+		isMirror, err := s.mirror.IsMirror(ctx, repoName)
 		if err != nil {
-			slog.ErrorContext(ctx, "ssh protocol: failed to check mirror status", "repo", repoPath, "error", err)
+			slog.ErrorContext(ctx, "ssh protocol: failed to check mirror status", "repo", repoName, "error", err)
 			sendExitStatus(channel, 1, "")
 			return
 		}
 		if isMirror {
-			slog.WarnContext(ctx, "ssh protocol: push to mirror repository denied", "repo", repoPath)
+			slog.WarnContext(ctx, "ssh protocol: push to mirror repository denied", "repo", repoName)
 			sendExitStatus(channel, 1, "push to mirror repository denied")
 			return
 		}
@@ -349,8 +349,8 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		if service == repository.GitReceivePack {
 			op = permission.OperationUpdateRepo
 		}
-		if ok, err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
-			slog.WarnContext(ctx, "ssh protocol: permission hook error", "service", service, "repo", repoPath, "error", err)
+		if ok, err := s.permissionHookFunc(ctx, op, repoName, permission.Context{}); err != nil {
+			slog.WarnContext(ctx, "ssh protocol: permission hook error", "service", service, "repo", repoName, "error", err)
 			sendExitStatus(channel, 1, "")
 			return
 		} else if !ok {
@@ -359,13 +359,13 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		}
 	}
 
-	_, err := s.openRepo(ctx, fullPath, repoPath, service)
+	_, err := s.openRepo(ctx, repoPath, repoName, service)
 	if err != nil {
 		if err == repository.ErrRepositoryNotExists {
 			sendExitStatus(channel, 1, "repository not found\n")
 			return
 		}
-		slog.WarnContext(ctx, "ssh protocol: failed to open repository", "repo", repoPath, "error", err)
+		slog.WarnContext(ctx, "ssh protocol: failed to open repository", "repo", repoName, "error", err)
 		sendExitStatus(channel, 1, "")
 		return
 	}
@@ -373,12 +373,12 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	// For receive-pack with permission/receive hooks: use pipe-based approach
 	// to intercept pkt-line commands for permission checking before the push completes.
 	if service == repository.GitReceivePack && (s.preReceiveHookFunc != nil || s.postReceiveHookFunc != nil) {
-		s.executeReceivePackWithHooks(ctx, channel, service, repoPath, fullPath, env...)
+		s.executeReceivePackWithHooks(ctx, channel, service, repoName, repoPath, env...)
 		return
 	}
 
 	cmd := utils.Command(ctx, service, ".")
-	cmd.Dir = fullPath
+	cmd.Dir = repoPath
 	cmd.Stdin = channel
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
@@ -483,8 +483,8 @@ type lfsAuthResponse struct {
 	ExpiresIn int               `json:"expires_in,omitempty"`
 }
 
-func lfsHref(httpURL, repoPath string) string {
-	href := strings.TrimRight(httpURL, "/") + "/" + strings.TrimPrefix(repoPath, "/")
+func lfsHref(httpURL, repoName string) string {
+	href := strings.TrimRight(httpURL, "/") + "/" + strings.TrimPrefix(repoName, "/")
 	if !strings.HasSuffix(href, ".git") {
 		href += ".git"
 	}
@@ -494,7 +494,7 @@ func lfsHref(httpURL, repoPath string) string {
 
 // executeLFSAuthenticate handles the git-lfs-authenticate command by returning
 // a JSON response with the LFS API endpoint URL.
-func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel, repoPath string, operation string) {
+func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel, repoName string, operation string) {
 	if s.lfsURL == "" {
 		sendExitStatus(channel, 1, "server not configured for host url")
 		return
@@ -506,8 +506,8 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		return
 	}
 
-	fullPath := s.storage.ResolvePath(repoPath)
-	if fullPath == "" {
+	repoPath := s.storage.ResolvePath(repoName)
+	if repoPath == "" {
 		sendExitStatus(channel, 1, "repository not found")
 		return
 	}
@@ -517,8 +517,8 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		if operation == "upload" {
 			op = permission.OperationUpdateRepo
 		}
-		if ok, err := s.permissionHookFunc(ctx, op, repoPath, permission.Context{}); err != nil {
-			slog.WarnContext(ctx, "ssh protocol: permission hook error", "operation", operation, "repo", repoPath, "error", err)
+		if ok, err := s.permissionHookFunc(ctx, op, repoName, permission.Context{}); err != nil {
+			slog.WarnContext(ctx, "ssh protocol: permission hook error", "operation", operation, "repo", repoName, "error", err)
 			sendExitStatus(channel, 1, "")
 			return
 		} else if !ok {
@@ -528,7 +528,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 	}
 
 	// Build the LFS API href
-	href := lfsHref(s.lfsURL, repoPath)
+	href := lfsHref(s.lfsURL, repoName)
 
 	resp := lfsAuthResponse{
 		Href:      href,
@@ -567,7 +567,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 // parsedCommand holds the result of parsing an SSH exec command.
 type parsedCommand struct {
 	service   string
-	repoPath  string
+	repoName  string
 	operation string // only for git-lfs-authenticate and git-lfs-transfer
 }
 
@@ -584,8 +584,8 @@ func parseCommand(cmdLine string) (*parsedCommand, error) {
 
 	switch service {
 	case repository.GitUploadPack, repository.GitReceivePack:
-		repoPath := strings.Trim(rest, "'")
-		return &parsedCommand{service: service, repoPath: repoPath}, nil
+		repoName := strings.Trim(rest, "'")
+		return &parsedCommand{service: service, repoName: repoName}, nil
 
 	case repository.GitLFSAuthenticate, repository.GitLFSTransfer:
 		// Format: git-lfs-authenticate <path> <operation>
@@ -594,9 +594,9 @@ func parseCommand(cmdLine string) (*parsedCommand, error) {
 		if len(subParts) != 2 {
 			return nil, fmt.Errorf("invalid %s format: %q", service, cmdLine)
 		}
-		repoPath := strings.Trim(subParts[0], "'")
+		repoName := strings.Trim(subParts[0], "'")
 		operation := strings.TrimSpace(subParts[1])
-		return &parsedCommand{service: service, repoPath: repoPath, operation: operation}, nil
+		return &parsedCommand{service: service, repoName: repoName, operation: operation}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported service: %s", service)
