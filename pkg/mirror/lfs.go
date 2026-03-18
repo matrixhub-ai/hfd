@@ -12,18 +12,18 @@ func (m *Mirror) Get(oid string) *lfs.Blob {
 }
 
 // StartLFSFetch attempts to fetch the given LFS objects from the mirror's upstream source.
-func (m *Mirror) StartLFSFetch(ctx context.Context, repoName string, objects []lfs.LFSObject) (string, bool, error) {
+func (m *Mirror) StartLFSFetch(ctx context.Context, repoName string, objects []lfs.LFSObject) (bool, error) {
 	sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
 	if err != nil {
-		return "", false, err
+		return false, err
 	}
 	if !isMirror || sourceURL == "" {
-		return "", false, nil
+		return false, nil
 	}
 
 	if err := m.lfsTeeCache.StartFetch(ctx, sourceURL, objects); err != nil {
-		return sourceURL, false, err
+		return false, err
 	}
 
-	return sourceURL, true, nil
+	return true, nil
 }

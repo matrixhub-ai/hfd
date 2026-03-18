@@ -288,5 +288,36 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 			}
 		}
 	}
+
+	err = m.syncMirrorLFS(ctx, repo, repoName, sourceURL)
+	if err != nil {
+		return fmt.Errorf("failed to sync mirror LFS objects: %w", err)
+	}
 	return nil
+}
+
+func (m *Mirror) syncMirrorLFS(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
+	if m.lfsTeeCache == nil {
+		return nil
+	}
+
+	lfsPointers, err := repo.ScanLFSPointers()
+	if err != nil {
+		return fmt.Errorf("failed to scan LFS pointers: %w", err)
+	}
+
+	if len(lfsPointers) == 0 {
+		return nil
+	}
+
+	objects := []lfs.LFSObject{}
+
+	for _, pointer := range lfsPointers {
+		objects = append(objects, lfs.LFSObject{
+			Oid:  pointer.OID(),
+			Size: pointer.Size(),
+		})
+	}
+
+	return m.lfsTeeCache.StartFetch(ctx, sourceURL, objects)
 }

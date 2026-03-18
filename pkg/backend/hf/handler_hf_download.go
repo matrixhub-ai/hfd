@@ -226,11 +226,11 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
 					// Try tee cache fetch if configured
 					if h.mirror != nil {
-						sourceURL, started, err := h.mirror.StartLFSFetch(r.Context(), ri.RepoName, []lfs.LFSObject{
+						started, err := h.mirror.StartLFSFetch(r.Context(), ri.RepoName, []lfs.LFSObject{
 							{Oid: ptr.OID(), Size: ptr.Size()},
 						})
 						if err != nil {
-							responseJSON(w, fmt.Errorf("failed to fetch LFS object %q from upstream source %q: %v", ptr.OID(), sourceURL, err), http.StatusInternalServerError)
+							responseJSON(w, fmt.Errorf("failed to fetch LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 							return
 						}
 

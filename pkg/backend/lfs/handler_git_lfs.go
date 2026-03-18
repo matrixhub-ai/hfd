@@ -68,9 +68,9 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 		for i, obj := range missingObjects {
 			lfsObjects[i] = lfs.LFSObject{Oid: obj.Oid, Size: obj.Size}
 		}
-		sourceURL, started, err := h.mirror.StartLFSFetch(r.Context(), repoName, lfsObjects)
+		started, err := h.mirror.StartLFSFetch(r.Context(), repoName, lfsObjects)
 		if err != nil {
-			responseJSON(w, fmt.Errorf("failed to fetch LFS objects from upstream source %q: %v", sourceURL, err), http.StatusInternalServerError)
+			responseJSON(w, fmt.Errorf("failed to fetch LFS objects: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if started {

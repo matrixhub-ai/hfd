@@ -82,7 +82,23 @@ func (m *TeeCache) Get(oid string) *Blob {
 // StartFetch initiates fetching the specified LFS objects from the given source URL.
 func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []LFSObject) error {
 	client := newClient(m.httpClient)
-	batchResp, err := client.GetBatch(ctx, sourceURL, objects)
+
+	missingObjects := make([]LFSObject, 0, len(objects))
+	for _, obj := range objects {
+		if m.storage.Exists(obj.Oid) {
+			continue
+		}
+		if _, ok := m.cache.Load(obj.Oid); ok {
+			continue
+		}
+		missingObjects = append(missingObjects, obj)
+	}
+
+	if len(missingObjects) == 0 {
+		return nil
+	}
+
+	batchResp, err := client.GetBatch(ctx, sourceURL, missingObjects)
 	if err != nil {
 		return err
 	}
@@ -94,14 +110,6 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 
 		downloadAction, ok := obj.Actions["download"]
 		if !ok {
-			continue
-		}
-
-		_, ok = m.cache.Load(obj.Oid)
-		if ok {
-			continue
-		}
-		if m.storage.Exists(obj.Oid) {
 			continue
 		}
 
