@@ -21,7 +21,7 @@ func TestSyncMirrorRefs(t *testing.T) {
 		t.Fatalf("init mirror: %v", err)
 	}
 
-	remoteRefs, err := repo.RemoteRefs(ctx, upstream)
+	remoteRefs, err := GetRemoteRefs(ctx, upstream)
 	if err != nil {
 		t.Fatalf("remote refs: %v", err)
 	}

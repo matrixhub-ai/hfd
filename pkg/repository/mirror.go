@@ -24,7 +24,7 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
 	sourceURL = strings.TrimSuffix(sourceURL, ".git") + ".git"
 
-	defaultBranch, err := getDefaultBranch(ctx, sourceURL)
+	defaultBranch, err := GetRemoteDefaultBranch(ctx, sourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
@@ -32,7 +32,8 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	return Init(ctx, repoPath, defaultBranch)
 }
 
-func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
+// GetRemoteDefaultBranch retrieves the default branch name of the repository at the given source URL.
+func GetRemoteDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 	cmd := utils.Command(ctx, "git", "ls-remote", "--symref", sourceURL)
 	out, err := cmd.Output()
 	if err != nil {
@@ -55,11 +56,10 @@ func getDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
 	return "", fmt.Errorf("HEAD symref not found in git ls-remote output")
 }
 
-// RemoteRefs returns a list of all ref names from the sourceURL.
+// GetRemoteRefs returns a list of all ref names from the sourceURL.
 // The returned names are fully qualified (e.g. "refs/heads/main", "refs/tags/v1.0").
-func (r *Repository) RemoteRefs(ctx context.Context, sourceURL string) (map[string]string, error) {
+func GetRemoteRefs(ctx context.Context, sourceURL string) (map[string]string, error) {
 	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", sourceURL)
-	cmd.Dir = r.repoPath
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list remote refs: %w", err)

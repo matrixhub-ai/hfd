@@ -236,7 +236,7 @@ func (m *Mirror) markSynced(repoPath string) {
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
 func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
-	remoteRefsMap, err := repo.RemoteRefs(ctx, sourceURL)
+	remoteRefsMap, err := repository.GetRemoteRefs(ctx, sourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
 	}
