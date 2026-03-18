@@ -91,12 +91,20 @@ func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
 
 type syncOption struct {
 	SourceURL string
+	Refs      []string
 }
 
 // WithSyncMirrorSourceURL sets the source URL for mirror sync operations, overriding the default mirrorSourceFunc lookup.
 func WithSyncMirrorSourceURL(url string) func(*syncOption) {
 	return func(o *syncOption) {
 		o.SourceURL = url
+	}
+}
+
+// WithSyncMirrorRefs sets the specific refs to sync during mirror operations, overriding the default mirrorRefFilterFunc.
+func WithSyncMirrorRefs(refs []string) func(*syncOption) {
+	return func(o *syncOption) {
+		o.Refs = refs
 	}
 }
 
@@ -125,7 +133,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		}
 		_, err, _ := m.group.Do(repoPath, func() (any, error) {
 			defer m.markSynced(repoPath)
-			return nil, m.syncMirror(ctx, repo, repoName, opt.SourceURL)
+			return nil, m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 		})
 		if err != nil {
 			return nil, err
@@ -144,7 +152,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 			return nil, repository.ErrRepositoryNotExists
 		}
 		defer m.markSynced(repoPath)
-		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
+		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +190,7 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 
 	_, err, _ = m.group.Do(repoPath, func() (any, error) {
 		defer m.markSynced(repoPath)
-		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL)
+		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +208,11 @@ func filterKeyFromMap(m map[string]string, keys []string) map[string]string {
 	}
 	result := make(map[string]string)
 	for _, key := range keys {
-		result[key] = m[key]
+		val, ok := m[key]
+		if !ok {
+			continue
+		}
+		result[key] = val
 	}
 	return result
 }
@@ -235,14 +247,16 @@ func (m *Mirror) markSynced(repoPath string) {
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
-func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
+func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, refs []string) error {
 	remoteRefsMap, err := repository.GetRemoteRefs(ctx, sourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
 	refsFilter := keys(remoteRefsMap)
-	if m.mirrorRefFilterFunc != nil {
+	if len(refs) > 0 {
+		refsFilter = refs
+	} else if m.mirrorRefFilterFunc != nil {
 		refsFilter, err = m.mirrorRefFilterFunc(ctx, repoName, refsFilter)
 		if err != nil {
 			return fmt.Errorf("failed to filter mirror refs: %w", err)
