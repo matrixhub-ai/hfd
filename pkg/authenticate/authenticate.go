@@ -46,14 +46,35 @@ type BasicAuthValidator interface {
 	Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error)
 }
 
+// BasicAuthValidatorFunc is a helper type to allow using functions as BasicAuthValidators.
+type BasicAuthValidatorFunc func(ctx context.Context, username, password string) (user string, next, ok bool, err error)
+
+func (f BasicAuthValidatorFunc) Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error) {
+	return f(ctx, username, password)
+}
+
 // TokenValidator validates a bearer token.
 type TokenValidator interface {
 	Validate(ctx context.Context, token string) (user string, next, ok bool, err error)
 }
 
+// TokenValidatorFunc is a helper type to allow using functions as TokenValidators.
+type TokenValidatorFunc func(ctx context.Context, token string) (user string, next, ok bool, err error)
+
+func (f TokenValidatorFunc) Validate(ctx context.Context, token string) (user string, next, ok bool, err error) {
+	return f(ctx, token)
+}
+
 // PublicKeyValidator validates an SSH public key.
 type PublicKeyValidator interface {
 	Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
+}
+
+// PublicKeyValidatorFunc is a helper type to allow using functions as PublicKeyValidators.
+type PublicKeyValidatorFunc func(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
+
+func (f PublicKeyValidatorFunc) Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error) {
+	return f(ctx, username, keyType, marshaledKey)
 }
 
 // TokenSignValidator is an interface for signing and validating tokens.
