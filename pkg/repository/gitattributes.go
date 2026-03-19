@@ -48,10 +48,10 @@ func (r *Repository) GitAttributes(rev string) (*GitAttributes, error) {
 		return nil, nil
 	}
 
-	var ga *GitAttributes
-	lruGitattributesCache.GetOrNew(blob.Hash(), func() (*GitAttributes, bool) {
-		ga, err = parseGitAttributes(blob)
-		return ga, err == nil
+	ga, _ := lruGitattributesCache.GetOrNew(blob.Hash(), func() (*GitAttributes, bool) {
+		parsed, parseErr := parseGitAttributes(blob)
+		err = parseErr
+		return parsed, parseErr == nil
 	})
 	return ga, err
 }
