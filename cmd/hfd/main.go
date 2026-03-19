@@ -99,6 +99,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	err = os.MkdirAll(absRootDir, 0755)
+	if err != nil {
+		slog.ErrorContext(ctx, "Error creating repo directory", "path", absRootDir, "error", err)
+		os.Exit(1)
+	}
+
 	storage := storage.NewStorage(
 		storage.WithRootDir(absRootDir),
 	)
