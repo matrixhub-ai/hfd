@@ -1,0 +1,8 @@
+services:
+  hfd:
+    image: ghcr.io/matrixhub-ai/hfd:latest
+    ports:
+      - "8080:8080"
+      - "2222:2222"
+    volumes:
+      - ./data1/:/data/
