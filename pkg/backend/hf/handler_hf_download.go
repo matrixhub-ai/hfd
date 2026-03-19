@@ -209,72 +209,50 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is an LFS pointer file
-	if blob.Size() <= lfs.MaxLFSPointerSize {
-		reader, err := blob.NewReader()
-		if err == nil {
-			defer func() {
-				_ = reader.Close()
-			}()
-			ptr, err := lfs.DecodePointer(reader)
-			if err == nil && ptr != nil {
-				// This is an LFS file, redirect to the LFS object
-				// Set HuggingFace-required headers before redirect
-				w.Header().Set("X-Repo-Commit", commitHash)
-				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
+	if ptr, _ := blob.LFSPointer(); ptr != nil {
+		// This is an LFS file, redirect to the LFS object
+		// Set HuggingFace-required headers before redirect
+		w.Header().Set("X-Repo-Commit", commitHash)
+		w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
-				if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
-					// Try tee cache fetch if configured
-					if h.mirror != nil {
-						started, err := h.mirror.StartLFSFetch(r.Context(), ri.RepoName, []lfs.LFSObject{
-							{Oid: ptr.OID(), Size: ptr.Size()},
-						})
-						if err != nil {
-							responseJSON(w, fmt.Errorf("failed to fetch LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
-							return
-						}
-
-						if started {
-							pf := h.mirror.Get(ptr.OID())
-							rs := pf.NewReadSeeker()
-							defer rs.Close()
-							http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
-							return
-						}
-					}
+		if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
+			if pf := h.mirror.Get(ptr.OID()); pf != nil {
+				rs := pf.NewReadSeeker()
+				defer rs.Close()
+				http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
+				return
+			}
+			responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
+			return
+		}
+		if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
+			url, err := signer.SignGet(ptr.OID())
+			if err != nil {
+				responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+			return
+		}
+		if getter, ok := h.lfsStorage.(lfs.Getter); ok {
+			content, stat, err := getter.Get(ptr.OID())
+			if err != nil {
+				if os.IsNotExist(err) {
 					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 					return
 				}
-				if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
-					url, err := signer.SignGet(ptr.OID())
-					if err != nil {
-						responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
-						return
-					}
-					http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-					return
-				}
-				if getter, ok := h.lfsStorage.(lfs.Getter); ok {
-					content, stat, err := getter.Get(ptr.OID())
-					if err != nil {
-						if os.IsNotExist(err) {
-							responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
-							return
-						}
-						responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
-						return
-					}
-					defer func() {
-						_ = content.Close()
-					}()
-
-					http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
-					return
-				}
-				responseJSON(w, fmt.Errorf("LFS storage does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
+				responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 				return
 			}
+			defer func() {
+				_ = content.Close()
+			}()
+
+			http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
+			return
 		}
+		responseJSON(w, fmt.Errorf("LFS storage does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
+		return
 	}
 
 	// Set HuggingFace-required headers

@@ -43,9 +43,6 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	var responseObjects []*lfsRepresentation
 
-	// Collect missing objects for potential proxy fetch
-	var missingObjects []*lfsRequestVars
-
 	// Create a response object
 	for _, object := range bv.Objects {
 		if h.lfsStorage.Exists(object.Oid) {
@@ -53,42 +50,26 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if h.mirror != nil {
+			if pf := h.mirror.Get(object.Oid); pf != nil {
+				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, true, false))
+				continue
+			}
+		}
+
 		// Object is not found
 		if bv.Operation == "upload" {
 			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, false, true))
 		} else {
-			missingObjects = append(missingObjects, object)
-		}
-	}
-
-	// Try to fetch missing objects from proxy source
-	if h.mirror != nil && len(missingObjects) > 0 {
-		repoName := bv.repoName()
-		lfsObjects := make([]lfs.LFSObject, len(missingObjects))
-		for i, obj := range missingObjects {
-			lfsObjects[i] = lfs.LFSObject{Oid: obj.Oid, Size: obj.Size}
-		}
-		started, err := h.mirror.StartLFSFetch(r.Context(), repoName, lfsObjects)
-		if err != nil {
-			responseJSON(w, fmt.Errorf("failed to fetch LFS objects: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if started {
-			for _, obj := range missingObjects {
-				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), obj, true, false))
+			rep := &lfsRepresentation{
+				Oid:  object.Oid,
+				Size: object.Size,
+				Error: &lfsObjectError{
+					Code:    404,
+					Message: "Not found",
+				},
 			}
-		} else {
-			for _, obj := range missingObjects {
-				rep := &lfsRepresentation{
-					Oid:  obj.Oid,
-					Size: obj.Size,
-					Error: &lfsObjectError{
-						Code:    404,
-						Message: "Not found",
-					},
-				}
-				responseObjects = append(responseObjects, rep)
-			}
+			responseObjects = append(responseObjects, rep)
 		}
 	}
 
