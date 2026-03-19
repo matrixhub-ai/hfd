@@ -1,6 +1,8 @@
 package e2e_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -583,5 +585,92 @@ func TestCreateRepoHasDefaultGitAttributes(t *testing.T) {
 		if !strings.Contains(string(body), pattern) {
 			t.Errorf("Expected .gitattributes to contain %q, got:\n%s", pattern, body)
 		}
+	}
+}
+
+func TestHuggingFaceUploadLFSFile(t *testing.T) {
+	if _, err := exec.LookPath("hf"); err != nil {
+		t.Skip("hf CLI not available, skipping HF CLI LFS upload test")
+	}
+
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	uploadDir, err := os.MkdirTemp("", "hf-lfs-upload")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(uploadDir)
+
+	// Create binary content that should be treated as LFS due to default .gitattributes
+	binaryContent := make([]byte, 2048)
+	for i := range binaryContent {
+		binaryContent[i] = byte(i % 256)
+	}
+	if err := os.WriteFile(filepath.Join(uploadDir, "model.bin"), binaryContent, 0644); err != nil {
+		t.Fatalf("Failed to write model.bin: %v", err)
+	}
+
+	runHFCmd(t, endpoint, "upload", "lfs-user/hf-lfs-model", uploadDir, ".", "--commit-message", "Upload LFS file")
+
+	// Download via resolve to ensure the content is served through LFS
+	resp, err := http.Get(endpoint + "/lfs-user/hf-lfs-model/resolve/main/model.bin")
+	if err != nil {
+		t.Fatalf("Failed to resolve LFS file: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 resolving LFS file, got %d", resp.StatusCode)
+	}
+	downloaded, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read LFS file content: %v", err)
+	}
+	if !bytes.Equal(downloaded, binaryContent) {
+		t.Fatalf("Resolved LFS content mismatch: got %d bytes, want %d", len(downloaded), len(binaryContent))
+	}
+
+	// Verify the tree API marks the file as LFS and reports the correct size
+	treeResp, err := http.Get(endpoint + "/api/models/lfs-user/hf-lfs-model/tree/main/")
+	if err != nil {
+		t.Fatalf("Failed to get tree: %v", err)
+	}
+	defer treeResp.Body.Close()
+	if treeResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 from tree endpoint, got %d", treeResp.StatusCode)
+	}
+
+	var entries []struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+		LFS  *struct {
+			OID  string `json:"oid"`
+			Size int64  `json:"size"`
+		} `json:"lfs"`
+	}
+	if err := json.NewDecoder(treeResp.Body).Decode(&entries); err != nil {
+		t.Fatalf("Failed to decode tree response: %v", err)
+	}
+
+	found := false
+	for _, entry := range entries {
+		if entry.Path != "model.bin" {
+			continue
+		}
+		found = true
+		if entry.LFS == nil {
+			t.Fatalf("Expected model.bin to be marked as LFS, got regular entry")
+		}
+		if entry.LFS.Size != int64(len(binaryContent)) {
+			t.Errorf("Unexpected LFS size: got %d, want %d", entry.LFS.Size, len(binaryContent))
+		}
+		if entry.Size != int64(len(binaryContent)) {
+			t.Errorf("Unexpected tree size for model.bin: got %d, want %d", entry.Size, len(binaryContent))
+		}
+		break
+	}
+
+	if !found {
+		t.Fatalf("model.bin not found in tree response")
 	}
 }
