@@ -1,6 +1,11 @@
 package e2e_test
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +21,11 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
+
+func sha256Hex(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
@@ -583,5 +593,227 @@ func TestCreateRepoHasDefaultGitAttributes(t *testing.T) {
 		if !strings.Contains(string(body), pattern) {
 			t.Errorf("Expected .gitattributes to contain %q, got:\n%s", pattern, body)
 		}
+	}
+}
+
+func TestHuggingFaceUploadLFS(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Step 1: Create repo via HF API
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json",
+		strings.NewReader(`{"type":"model","name":"hf-lfs-model","organization":"lfs-user"}`))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 creating repo, got %d", resp.StatusCode)
+	}
+
+	// Step 2: Verify preupload returns "lfs" for .bin files
+	preuploadBody := `{"files":[{"path":"model.bin","size":1024,"sample":""}]}`
+	resp, err = http.Post(endpoint+"/api/models/lfs-user/hf-lfs-model/preupload/main",
+		"application/json", strings.NewReader(preuploadBody))
+	if err != nil {
+		t.Fatalf("Failed to call preupload: %v", err)
+	}
+	preuploadResp, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read preupload response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for preupload, got %d: %s", resp.StatusCode, preuploadResp)
+	}
+
+	var preuploadResult struct {
+		Files []struct {
+			Path       string `json:"path"`
+			UploadMode string `json:"uploadMode"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(preuploadResp, &preuploadResult); err != nil {
+		t.Fatalf("Failed to parse preupload JSON: %v", err)
+	}
+	if len(preuploadResult.Files) != 1 || preuploadResult.Files[0].UploadMode != "lfs" {
+		t.Fatalf("Expected lfs upload mode for model.bin, got: %s", preuploadResp)
+	}
+
+	// Step 3: Prepare binary content and compute SHA256
+	binContent := make([]byte, 1024)
+	for i := range binContent {
+		binContent[i] = byte(i % 256)
+	}
+
+	oid := sha256Hex(binContent)
+
+	// Step 4: Upload LFS content via batch API
+	batchBody := fmt.Sprintf(`{"operation":"upload","objects":[{"oid":"%s","size":%d}]}`, oid, len(binContent))
+	req, err := http.NewRequest("POST", endpoint+"/lfs-user/hf-lfs-model.git/info/lfs/objects/batch",
+		strings.NewReader(batchBody))
+	if err != nil {
+		t.Fatalf("Failed to create batch request: %v", err)
+	}
+	req.Header.Set("Accept", "application/vnd.git-lfs+json")
+	req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to call LFS batch: %v", err)
+	}
+	batchResp, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read batch response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for LFS batch, got %d: %s", resp.StatusCode, batchResp)
+	}
+
+	var batchResult struct {
+		Objects []struct {
+			OID     string `json:"oid"`
+			Size    int64  `json:"size"`
+			Actions map[string]struct {
+				Href   string            `json:"href"`
+				Header map[string]string `json:"header"`
+			} `json:"actions"`
+		} `json:"objects"`
+	}
+	if err := json.Unmarshal(batchResp, &batchResult); err != nil {
+		t.Fatalf("Failed to parse batch JSON: %v", err)
+	}
+	if len(batchResult.Objects) != 1 {
+		t.Fatalf("Expected 1 object in batch response, got %d", len(batchResult.Objects))
+	}
+	uploadAction, ok := batchResult.Objects[0].Actions["upload"]
+	if !ok {
+		t.Fatalf("Expected upload action in batch response, got: %s", batchResp)
+	}
+
+	// Step 5: PUT the actual file content to LFS storage
+	putReq, err := http.NewRequest("PUT", uploadAction.Href, bytes.NewReader(binContent))
+	if err != nil {
+		t.Fatalf("Failed to create PUT request: %v", err)
+	}
+	putReq.Header.Set("Content-Type", "application/octet-stream")
+	putReq.ContentLength = int64(len(binContent))
+	for k, v := range uploadAction.Header {
+		putReq.Header.Set(k, v)
+	}
+
+	resp, err = http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatalf("Failed to PUT LFS content: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for LFS PUT, got %d", resp.StatusCode)
+	}
+
+	// Step 6: Commit with lfsFile operation via HF API
+	ndjson := fmt.Sprintf("{\"key\":\"header\",\"value\":{\"summary\":\"Add LFS model file\"}}\n"+
+		"{\"key\":\"lfsFile\",\"value\":{\"path\":\"model.bin\",\"algo\":\"sha256\",\"oid\":\"%s\",\"size\":%d}}\n"+
+		"{\"key\":\"file\",\"value\":{\"content\":\"# LFS Upload Test\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n",
+		oid, len(binContent))
+
+	resp, err = http.Post(endpoint+"/api/models/lfs-user/hf-lfs-model/commit/main",
+		"application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	commitResp, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read commit response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for commit, got %d: %s", resp.StatusCode, commitResp)
+	}
+
+	// Step 7: Verify resolve returns the actual LFS content (not the pointer)
+	resp, err = http.Get(endpoint + "/lfs-user/hf-lfs-model/resolve/main/model.bin")
+	if err != nil {
+		t.Fatalf("Failed to resolve model.bin: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read model.bin body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for model.bin resolve, got %d: %s", resp.StatusCode, body)
+	}
+	if len(body) != len(binContent) {
+		t.Fatalf("model.bin size mismatch: got %d, want %d", len(body), len(binContent))
+	}
+	for i := range binContent {
+		if body[i] != binContent[i] {
+			t.Fatalf("model.bin content mismatch at byte %d: got %d, want %d", i, body[i], binContent[i])
+		}
+	}
+
+	// Step 8: Verify regular file is also accessible
+	resp, err = http.Get(endpoint + "/lfs-user/hf-lfs-model/resolve/main/README.md")
+	if err != nil {
+		t.Fatalf("Failed to resolve README.md: %v", err)
+	}
+	readmeBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read README.md body: %v", err)
+	}
+	if string(readmeBody) != "# LFS Upload Test\n" {
+		t.Fatalf("README.md content mismatch: got %q, want %q", readmeBody, "# LFS Upload Test\n")
+	}
+
+	// Step 9: Verify tree API marks model.bin as LFS with correct size
+	resp, err = http.Get(endpoint + "/api/models/lfs-user/hf-lfs-model/tree/main")
+	if err != nil {
+		t.Fatalf("Failed to get tree: %v", err)
+	}
+	treeBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read tree body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for tree, got %d: %s", resp.StatusCode, treeBody)
+	}
+
+	var treeEntries []struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+		LFS  *struct {
+			OID         string `json:"oid"`
+			Size        int64  `json:"size"`
+			PointerSize int64  `json:"pointerSize"`
+		} `json:"lfs,omitempty"`
+	}
+	if err := json.Unmarshal(treeBody, &treeEntries); err != nil {
+		t.Fatalf("Failed to parse tree JSON: %v", err)
+	}
+
+	found := false
+	for _, entry := range treeEntries {
+		if entry.Path == "model.bin" {
+			found = true
+			if entry.LFS == nil {
+				t.Fatalf("Expected model.bin to have LFS metadata, but lfs field is nil")
+			}
+			if entry.LFS.OID != oid {
+				t.Errorf("LFS OID mismatch: got %q, want %q", entry.LFS.OID, oid)
+			}
+			if entry.LFS.Size != int64(len(binContent)) {
+				t.Errorf("LFS size mismatch: got %d, want %d", entry.LFS.Size, len(binContent))
+			}
+			if entry.Size != int64(len(binContent)) {
+				t.Errorf("Tree entry size mismatch: got %d, want %d", entry.Size, len(binContent))
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("model.bin not found in tree entries: %s", treeBody)
 	}
 }
