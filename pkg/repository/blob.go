@@ -55,14 +55,14 @@ func (b *Blob) String() string {
 // LFSPointer returns the LFSPointer pointer information if the entry is an LFSPointer-tracked file, or nil otherwise.
 func (b *Blob) LFSPointer() (*lfs.Pointer, error) {
 	if b.r != nil {
-		b.lfs, b.lfsErr = b.parseLFS(b.r)
+		b.lfs, b.lfsErr = b.r.parseLFS(b.hash)
 		b.r = nil
 	}
 	return b.lfs, b.lfsErr
 }
 
-func (b *Blob) parseLFS(r *Repository) (*lfs.Pointer, error) {
-	blob, err := r.repo.BlobObject(b.hash)
+func (r *Repository) parseLFS(hash Hash) (*lfs.Pointer, error) {
+	blob, err := r.repo.BlobObject(hash)
 	if err != nil {
 		return nil, err
 	}
