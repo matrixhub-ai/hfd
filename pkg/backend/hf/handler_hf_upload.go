@@ -22,12 +22,6 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-const (
-	// lfsThreshold is the file size threshold for LFS upload mode.
-	// Files larger than this will be uploaded via LFS.
-	lfsThreshold = 10 * 1024 * 1024 // 10MB
-)
-
 func requestOrigin(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
@@ -200,7 +194,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	var respFiles []preuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
-		if file.Size > lfsThreshold || gitAttrs.IsLFS(file.Path) {
+		if gitAttrs.IsLFS(file.Path) {
 			uploadMode = "lfs"
 		}
 
