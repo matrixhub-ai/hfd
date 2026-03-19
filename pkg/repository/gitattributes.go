@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitattributes"
+	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 
 // GitattributesFileName is the name of the .gitattributes file in the repository.
@@ -37,6 +38,8 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 	return ok && attr.IsValueSet() && attr.Value() == "lfs"
 }
 
+var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
+
 // GitAttributes reads and parses the .gitattributes file from the repository
 // at the given revision. Returns nil (not an error) if the file does not exist.
 func (r *Repository) GitAttributes(rev string) (*GitAttributes, error) {
@@ -44,6 +47,16 @@ func (r *Repository) GitAttributes(rev string) (*GitAttributes, error) {
 	if err != nil {
 		return nil, nil
 	}
+
+	var ga *GitAttributes
+	lruGitattributesCache.GetOrNew(blob.Hash(), func() (*GitAttributes, bool) {
+		ga, err = parseGitAttributes(blob)
+		return ga, err == nil
+	})
+	return ga, err
+}
+
+func parseGitAttributes(blob *Blob) (*GitAttributes, error) {
 	reader, err := blob.NewReader()
 	if err != nil {
 		return nil, nil
