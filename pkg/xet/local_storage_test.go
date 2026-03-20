@@ -2,8 +2,6 @@ package xet_test
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"os"
 	"testing"
@@ -20,9 +18,9 @@ func TestCASStorage(t *testing.T) {
 
 	storage := xet.NewLocal(dir)
 
+	// Xet uses its own content hash (not SHA-256 of raw data)
 	data := []byte("hello xet cas world")
-	hash := sha256.Sum256(data)
-	oid := hex.EncodeToString(hash[:])
+	oid := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	size := int64(len(data))
 
 	// Test Exists for non-existent object
@@ -30,7 +28,7 @@ func TestCASStorage(t *testing.T) {
 		t.Fatal("Expected object to not exist")
 	}
 
-	// Test Put
+	// Test Put (no hash verification since xet hash != SHA-256)
 	if err := storage.Put(oid, bytes.NewReader(data), size); err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
@@ -69,25 +67,6 @@ func TestCASStorage(t *testing.T) {
 	}
 }
 
-func TestCASStorageHashMismatch(t *testing.T) {
-	dir, err := os.MkdirTemp("", "xet-store-hash-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	storage := xet.NewLocal(dir)
-
-	data := []byte("some data")
-	wrongOID := "0000000000000000000000000000000000000000000000000000000000000000"
-	size := int64(len(data))
-
-	err = storage.Put(wrongOID, bytes.NewReader(data), size)
-	if err == nil {
-		t.Fatal("Expected error for hash mismatch")
-	}
-}
-
 func TestCASStorageSizeMismatch(t *testing.T) {
 	dir, err := os.MkdirTemp("", "xet-store-size-test-*")
 	if err != nil {
@@ -98,8 +77,7 @@ func TestCASStorageSizeMismatch(t *testing.T) {
 	storage := xet.NewLocal(dir)
 
 	data := []byte("some data")
-	hash := sha256.Sum256(data)
-	oid := hex.EncodeToString(hash[:])
+	oid := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 	err = storage.Put(oid, bytes.NewReader(data), 999)
 	if err == nil {

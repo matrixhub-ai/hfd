@@ -2,8 +2,6 @@ package xet
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -35,150 +33,163 @@ func setupTestServer(t *testing.T) *httptest.Server {
 	return server
 }
 
-func TestCASPutAndGet(t *testing.T) {
+func TestXorbUploadAndFetch(t *testing.T) {
 	server := setupTestServer(t)
 
-	data := []byte("hello xet cas")
-	hash := sha256.Sum256(data)
-	oid := hex.EncodeToString(hash[:])
+	data := []byte("compressed xorb data content")
+	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
-	// PUT object
-	req, err := http.NewRequest(http.MethodPut, server.URL+"/xet/cas/objects/"+oid, bytes.NewReader(data))
+	// POST xorb
+	resp, err := http.Post(server.URL+"/v1/xorbs/default/"+hash, "application/octet-stream", bytes.NewReader(data))
 	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
-	}
-	req.ContentLength = int64(len(data))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Expected 200 for PUT, got %d", resp.StatusCode)
-	}
-
-	// GET object
-	resp, err = http.Get(server.URL + "/xet/cas/objects/" + oid)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
+		t.Fatalf("Post xorb failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Expected 200 for GET, got %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for POST xorb, got %d: %s", resp.StatusCode, body)
 	}
 
-	got, err := io.ReadAll(resp.Body)
+	var uploadResp uploadXorbResponse
+	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
+		t.Fatalf("Failed to decode upload response: %v", err)
+	}
+	if !uploadResp.WasInserted {
+		t.Error("Expected was_inserted=true")
+	}
+
+	// HEAD xorb - check it exists
+	req, _ := http.NewRequest(http.MethodHead, server.URL+"/v1/xorbs/default/"+hash, nil)
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("ReadAll failed: %v", err)
+		t.Fatalf("Head xorb failed: %v", err)
 	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("Get data = %q, want %q", got, data)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for HEAD xorb, got %d", resp.StatusCode)
 	}
 
-	// Verify ETag header
-	if etag := resp.Header.Get("ETag"); etag != "\""+oid+"\"" {
-		t.Errorf("Expected ETag %q, got %q", "\""+oid+"\"", etag)
+	// GET reconstruction (V1) for the stored xorb
+	resp, err = http.Get(server.URL + "/v1/reconstructions/" + hash)
+	if err != nil {
+		t.Fatalf("Get reconstruction failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for GET reconstruction, got %d: %s", resp.StatusCode, body)
+	}
+
+	var reconResp queryReconstructionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&reconResp); err != nil {
+		t.Fatalf("Failed to decode reconstruction response: %v", err)
+	}
+
+	if len(reconResp.Terms) != 1 || reconResp.Terms[0].Hash != hash {
+		t.Errorf("Unexpected reconstruction terms: %+v", reconResp.Terms)
+	}
+
+	fetchInfos, ok := reconResp.FetchInfo[hash]
+	if !ok || len(fetchInfos) == 0 {
+		t.Fatal("Expected fetch_info for hash")
+	}
+
+	// Fetch the actual data via fetch_term URL
+	fetchURL := fetchInfos[0].URL
+	resp, err = http.Get(fetchURL)
+	if err != nil {
+		t.Fatalf("Fetch term failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for fetch_term, got %d: %s", resp.StatusCode, body)
+	}
+
+	got, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("Fetch term data = %q, want %q", got, data)
 	}
 }
 
-func TestCASGetNotFound(t *testing.T) {
+func TestXorbNotFound(t *testing.T) {
 	server := setupTestServer(t)
 
-	resp, err := http.Get(server.URL + "/xet/cas/objects/0000000000000000000000000000000000000000000000000000000000000000")
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	defer resp.Body.Close()
+	hash := "0000000000000000000000000000000000000000000000000000000000000000"
 
+	// HEAD xorb - should be 404
+	req, _ := http.NewRequest(http.MethodHead, server.URL+"/v1/xorbs/default/"+hash, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Head xorb failed: %v", err)
+	}
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("Expected 404, got %d", resp.StatusCode)
 	}
-}
 
-func TestCASHas(t *testing.T) {
-	server := setupTestServer(t)
-
-	// Store an object first
-	data := []byte("test object for has check")
-	hash := sha256.Sum256(data)
-	existingOID := hex.EncodeToString(hash[:])
-
-	req, err := http.NewRequest(http.MethodPut, server.URL+"/xet/cas/objects/"+existingOID, bytes.NewReader(data))
+	// GET reconstruction - should be 404
+	resp, err = http.Get(server.URL + "/v1/reconstructions/" + hash)
 	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
-	}
-	req.ContentLength = int64(len(data))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
+		t.Fatalf("Get reconstruction failed: %v", err)
 	}
 	resp.Body.Close()
-
-	// Batch has check
-	missingOID := "0000000000000000000000000000000000000000000000000000000000000000"
-	hasReq := hasRequest{
-		Hashes: []string{existingOID, missingOID},
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404 for reconstruction, got %d", resp.StatusCode)
 	}
-	body, _ := json.Marshal(hasReq)
+}
 
-	resp, err = http.Post(server.URL+"/xet/cas/objects/has", "application/json", bytes.NewReader(body))
+func TestShardUpload(t *testing.T) {
+	server := setupTestServer(t)
+
+	shardData := []byte("shard metadata content")
+	resp, err := http.Post(server.URL+"/shards", "application/octet-stream", bytes.NewReader(shardData))
 	if err != nil {
-		t.Fatalf("Has failed: %v", err)
+		t.Fatalf("Post shard failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for POST shard, got %d: %s", resp.StatusCode, body)
 	}
 
-	var hasResp hasResponse
-	if err := json.NewDecoder(resp.Body).Decode(&hasResp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
+	var shardResp uploadShardResponse
+	if err := json.NewDecoder(resp.Body).Decode(&shardResp); err != nil {
+		t.Fatalf("Failed to decode shard response: %v", err)
 	}
-
-	if !hasResp.Exists[existingOID] {
-		t.Errorf("Expected existing OID %q to be reported as existing", existingOID)
-	}
-	if hasResp.Exists[missingOID] {
-		t.Errorf("Expected missing OID %q to be reported as not existing", missingOID)
+	if shardResp.Result != 1 {
+		t.Errorf("Expected result=1 (SyncPerformed), got %d", shardResp.Result)
 	}
 }
 
-func TestCASPutHashMismatch(t *testing.T) {
+func TestHealthCheck(t *testing.T) {
 	server := setupTestServer(t)
 
-	data := []byte("some data")
-	wrongOID := "0000000000000000000000000000000000000000000000000000000000000000"
-
-	req, err := http.NewRequest(http.MethodPut, server.URL+"/xet/cas/objects/"+wrongOID, bytes.NewReader(data))
+	resp, err := http.Get(server.URL + "/health")
 	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
-	}
-	req.ContentLength = int64(len(data))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
+		t.Fatalf("Health check failed: %v", err)
 	}
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("Expected 500 for hash mismatch, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 for health check, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Cache-Control") == "" {
+		t.Error("Expected Cache-Control header on health check")
 	}
 }
 
-func TestCASGetInvalidHash(t *testing.T) {
+func TestInvalidHashRejected(t *testing.T) {
 	server := setupTestServer(t)
 
-	// Path traversal attempt should be rejected by route regex (only hex chars allowed)
-	resp, err := http.Get(server.URL + "/xet/cas/objects/..")
+	// Path traversal attempt should be rejected by route regex
+	resp, err := http.Get(server.URL + "/v1/reconstructions/..")
 	if err != nil {
-		t.Fatalf("Get failed: %v", err)
+		t.Fatalf("Request failed: %v", err)
 	}
 	resp.Body.Close()
 

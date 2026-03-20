@@ -1,8 +1,6 @@
 package xet
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +9,6 @@ import (
 )
 
 var (
-	errHashMismatch = errors.New("content hash does not match")
 	errSizeMismatch = errors.New("content size does not match")
 )
 
@@ -42,7 +39,8 @@ func (s *localStorage) Get(hash string) (io.ReadSeekCloser, os.FileInfo, error) 
 	return f, stat, nil
 }
 
-// Put stores a CAS object, verifying that the content hash matches the given hash.
+// Put stores a CAS object. The hash is a xet content hash (not SHA-256 of the raw data)
+// so no hash verification is performed; only size is validated when size > 0.
 func (s *localStorage) Put(hash string, r io.Reader, size int64) error {
 	path := filepath.Join(s.basePath, transformKey(hash))
 
@@ -59,23 +57,15 @@ func (s *localStorage) Put(hash string, r io.Reader, size int64) error {
 		_ = os.Remove(file.Name())
 	}()
 
-	h := sha256.New()
-	hw := io.MultiWriter(h, file)
-
-	written, err := io.Copy(hw, r)
+	written, err := io.Copy(file, r)
 	if err != nil {
 		_ = file.Close()
 		return err
 	}
 	_ = file.Close()
 
-	if written != size {
+	if size > 0 && written != size {
 		return fmt.Errorf("%w: expected %d bytes, got %d bytes", errSizeMismatch, size, written)
-	}
-
-	shaStr := hex.EncodeToString(h.Sum(nil))
-	if shaStr != hash {
-		return errHashMismatch
 	}
 
 	if err := os.Rename(file.Name(), path); err != nil {

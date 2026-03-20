@@ -53,9 +53,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) register() {
-	h.root.HandleFunc("/xet/cas/objects/{hash:[a-f0-9]+}", h.handleGetObject).Methods(http.MethodGet, http.MethodHead)
-	h.root.HandleFunc("/xet/cas/objects/{hash:[a-f0-9]+}", h.handlePutObject).Methods(http.MethodPut)
-	h.root.HandleFunc("/xet/cas/objects/has", h.handleHas).Methods(http.MethodPost)
+	// Xet CAS protocol endpoints (per xet-core OpenAPI spec):
+	// POST /v1/xorbs/{prefix}/{hash}   - upload a xorb
+	// HEAD /v1/xorbs/{prefix}/{hash}   - check if a xorb exists
+	// POST /shards                     - upload a shard
+	// GET  /v1/chunks/{prefix}/{hash}  - global dedup query
+	// GET  /v1/reconstructions/{file_id} - file reconstruction (V1)
+	// GET  /v2/reconstructions/{file_id} - file reconstruction (V2)
+	// GET  /v1/fetch_term              - fetch raw xorb data
+	// HEAD /v1/files/{file_id}         - get file size
+	// GET  /health                     - health check
+	h.root.HandleFunc("/v1/xorbs/{prefix}/{hash:[a-f0-9]+}", h.handlePostXorb).Methods(http.MethodPost)
+	h.root.HandleFunc("/v1/xorbs/{prefix}/{hash:[a-f0-9]+}", h.handleHeadXorb).Methods(http.MethodHead)
+	h.root.HandleFunc("/shards", h.handlePostShard).Methods(http.MethodPost)
+	h.root.HandleFunc("/v1/chunks/{prefix}/{hash:[a-f0-9]+}", h.handleGetChunk).Methods(http.MethodGet)
+	h.root.HandleFunc("/v1/reconstructions/{file_id:[a-f0-9]+}", h.handleGetReconstruction).Methods(http.MethodGet)
+	h.root.HandleFunc("/v2/reconstructions/{file_id:[a-f0-9]+}", h.handleGetReconstructionV2).Methods(http.MethodGet)
+	h.root.HandleFunc("/v1/fetch_term", h.handleFetchTerm).Methods(http.MethodGet)
+	h.root.HandleFunc("/v1/files/{file_id:[a-f0-9]+}", h.handleHeadFile).Methods(http.MethodHead)
+	h.root.HandleFunc("/health", h.handleHealth).Methods(http.MethodGet)
 	h.root.NotFoundHandler = h.next
 }
 
