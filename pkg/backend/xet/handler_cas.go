@@ -1,6 +1,7 @@
 package xet
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -185,17 +186,14 @@ func (h *Handler) handlePostShard(w http.ResponseWriter, r *http.Request) {
 
 	// Derive a unique key from shard content using SHA-256 hash.
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-	if err := h.xetStorage.Put(hash, strings.NewReader(string(data)), int64(len(data))); err != nil {
+	if err := h.xetStorage.Put(hash, bytes.NewReader(data), int64(len(data))); err != nil {
 		responseJSON(w, fmt.Sprintf("failed to store shard: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	// Parse and index file reconstruction data from the shard.
-	if err := h.xetStorage.RegisterShard(data); err != nil {
-		// Log but don't fail - shard is stored, reconstruction index is best-effort.
-		// Non-conforming shards (e.g. test payloads) are allowed.
-		_ = err
-	}
+	// Non-conforming shards (e.g. test payloads) are allowed; parse errors are ignored.
+	_ = h.xetStorage.RegisterShard(data)
 
 	responseJSON(w, uploadShardResponse{Result: 1}, http.StatusOK)
 }

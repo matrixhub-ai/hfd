@@ -55,9 +55,6 @@ func ParseShard(data []byte) ([]FileReconstruction, error) {
 	}
 
 	// Validate magic tag (32 bytes)
-	if len(shardMagicTag) != 32 {
-		return nil, fmt.Errorf("internal: shardMagicTag length %d != 32", len(shardMagicTag))
-	}
 	for i := 0; i < 32; i++ {
 		if data[i] != shardMagicTag[i] {
 			return nil, fmt.Errorf("%w at byte %d: got 0x%02x, want 0x%02x", errBadShardMagic, i, data[i], shardMagicTag[i])
