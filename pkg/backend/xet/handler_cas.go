@@ -75,6 +75,79 @@ type queryReconstructionResponseV2 struct {
 	Xorbs                map[string][]xorbMultiRangeFetch `json:"xorbs"`
 }
 
+// batchReconstructionResponse is the response for batch reconstruction queries.
+type batchReconstructionResponse struct {
+	OffsetIntoFirstRange int64                  `json:"offset_into_first_range"`
+	Terms                []reconstructionTerm   `json:"terms"`
+	FetchInfo            map[string][]fetchInfo `json:"fetch_info"`
+}
+
+// fileRange represents a half-open byte range [start, end).
+type fileRange struct {
+	start int64
+	end   int64
+}
+
+// parseRangeHeader parses an HTTP Range header per RFC 7233.
+// Supports: bytes=start-end, bytes=start-, bytes=-suffixLen.
+// Returns (nil, nil) if no Range header is present.
+func parseRangeHeader(r *http.Request, totalSize int64) (*fileRange, error) {
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		return nil, nil
+	}
+
+	const prefix = "bytes="
+	if !strings.HasPrefix(rangeHeader, prefix) {
+		return nil, fmt.Errorf("invalid range header: %s", rangeHeader)
+	}
+
+	rangeSpec := rangeHeader[len(prefix):]
+	parts := strings.SplitN(rangeSpec, "-", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid range syntax: %s", rangeHeader)
+	}
+
+	startStr, endStr := parts[0], parts[1]
+
+	switch {
+	case startStr == "" && endStr != "":
+		// bytes=-N (suffix)
+		suffixLen, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid suffix range: %s", rangeHeader)
+		}
+		start := totalSize - suffixLen
+		if start < 0 {
+			start = 0
+		}
+		return &fileRange{start: start, end: totalSize}, nil
+	case startStr != "" && endStr == "":
+		// bytes=start-
+		start, err := strconv.ParseInt(startStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid range start: %s", rangeHeader)
+		}
+		return &fileRange{start: start, end: totalSize}, nil
+	case startStr != "" && endStr != "":
+		// bytes=start-end (inclusive end per HTTP spec, convert to exclusive)
+		start, err := strconv.ParseInt(startStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid range start: %s", rangeHeader)
+		}
+		end, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid range end: %s", rangeHeader)
+		}
+		if start > end {
+			return nil, fmt.Errorf("range start > end: %s", rangeHeader)
+		}
+		return &fileRange{start: start, end: end + 1}, nil
+	default:
+		return nil, fmt.Errorf("invalid range syntax: %s", rangeHeader)
+	}
+}
+
 // handlePostXorb handles POST /v1/xorbs/{prefix}/{hash} - upload a xorb.
 func (h *Handler) handlePostXorb(w http.ResponseWriter, r *http.Request) {
 	hash := mux.Vars(r)["hash"]
@@ -152,6 +225,67 @@ func requestOrigin(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
+// encodeTerm encodes a V1 fetch term (hash only) as base64url.
+func encodeTerm(hash string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(hash))
+}
+
+// encodeTermWithRanges encodes a V2 fetch term with embedded byte ranges as base64url.
+// Format: "hash:start0-end0,start1-end1,..." where ranges use exclusive end.
+func encodeTermWithRanges(hash string, ranges []xorbRangeDescriptor) string {
+	parts := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		// byteRange has inclusive end, convert to exclusive for term encoding
+		parts = append(parts, fmt.Sprintf("%d-%d", r.Bytes.Start, r.Bytes.End+1))
+	}
+	payload := fmt.Sprintf("%s:%s", hash, strings.Join(parts, ","))
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+// decodedTerm is a decoded fetch term: hash and optional byte ranges (exclusive end).
+type decodedTerm struct {
+	hash       string
+	byteRanges []fileRange
+}
+
+// decodeTerm decodes a fetch term. Supports both V1 (hash only) and V2 (hash + ranges).
+func decodeTerm(term string) (*decodedTerm, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(term)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64: %w", err)
+	}
+
+	payload := string(decoded)
+
+	if idx := strings.IndexByte(payload, ':'); idx >= 0 {
+		hash := payload[:idx]
+		rangesStr := payload[idx+1:]
+		var byteRanges []fileRange
+		for _, r := range strings.Split(rangesStr, ",") {
+			r = strings.TrimSpace(r)
+			if r == "" {
+				continue
+			}
+			parts := strings.SplitN(r, "-", 2)
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid range syntax: %s", r)
+			}
+			start, err := strconv.ParseInt(parts[0], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid range start: %w", err)
+			}
+			end, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid range end: %w", err)
+			}
+			byteRanges = append(byteRanges, fileRange{start: start, end: end})
+		}
+		return &decodedTerm{hash: hash, byteRanges: byteRanges}, nil
+	}
+
+	return &decodedTerm{hash: payload}, nil
+}
+
 // handleGetReconstruction handles GET /v1/reconstructions/{file_id} - V1 file reconstruction.
 func (h *Handler) handleGetReconstruction(w http.ResponseWriter, r *http.Request) {
 	fileID := mux.Vars(r)["file_id"]
@@ -168,7 +302,7 @@ func (h *Handler) handleGetReconstruction(w http.ResponseWriter, r *http.Request
 	}
 
 	size := info.Size()
-	encodedTerm := base64.RawURLEncoding.EncodeToString([]byte(fileID))
+	encodedTerm := encodeTerm(fileID)
 	fetchURL := fmt.Sprintf("%s/v1/fetch_term?term=%s", baseURL, encodedTerm)
 
 	resp := queryReconstructionResponse{
@@ -215,8 +349,7 @@ func (h *Handler) handleGetReconstructionV2(w http.ResponseWriter, r *http.Reque
 		Bytes:  byteRange{Start: 0, End: size - 1},
 	}
 
-	payload := fmt.Sprintf("%s:0-%d", fileID, size)
-	encodedTerm := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	encodedTerm := encodeTermWithRanges(fileID, []xorbRangeDescriptor{rangeDesc})
 	fetchURL := fmt.Sprintf("%s/v1/fetch_term?term=%s", baseURL, encodedTerm)
 
 	resp := queryReconstructionResponseV2{
@@ -241,7 +374,63 @@ func (h *Handler) handleGetReconstructionV2(w http.ResponseWriter, r *http.Reque
 	responseJSON(w, resp, http.StatusOK)
 }
 
+// handleBatchGetReconstruction handles GET /v1/reconstructions?file_id=...&file_id=...
+// Batch query for reconstruction information for multiple files.
+func (h *Handler) handleBatchGetReconstruction(w http.ResponseWriter, r *http.Request) {
+	baseURL := requestOrigin(r)
+
+	fileIDs := r.URL.Query()["file_id"]
+	if len(fileIDs) == 0 {
+		responseJSON(w, batchReconstructionResponse{
+			Terms:     []reconstructionTerm{},
+			FetchInfo: map[string][]fetchInfo{},
+		}, http.StatusOK)
+		return
+	}
+
+	var allTerms []reconstructionTerm
+	allFetchInfo := map[string][]fetchInfo{}
+
+	for _, fileID := range fileIDs {
+		info, err := h.xetStorage.Info(fileID)
+		if err != nil {
+			continue // skip missing files in batch
+		}
+
+		size := info.Size()
+		encodedTerm := encodeTerm(fileID)
+		fetchURL := fmt.Sprintf("%s/v1/fetch_term?term=%s", baseURL, encodedTerm)
+
+		allTerms = append(allTerms, reconstructionTerm{
+			Hash:           fileID,
+			UnpackedLength: size,
+			Range:          indexRange{Start: 0, End: 1},
+		})
+
+		allFetchInfo[fileID] = []fetchInfo{
+			{
+				Range:    indexRange{Start: 0, End: 1},
+				URL:      fetchURL,
+				URLRange: byteRange{Start: 0, End: size - 1},
+			},
+		}
+	}
+
+	resp := batchReconstructionResponse{
+		OffsetIntoFirstRange: 0,
+		Terms:                allTerms,
+		FetchInfo:            allFetchInfo,
+	}
+	responseJSON(w, resp, http.StatusOK)
+}
+
 // handleFetchTerm handles GET /v1/fetch_term?term=<base64> - fetch raw xorb data.
+//
+// For V1 terms (hash only), the byte range comes from the HTTP Range header.
+// For V2 terms (hash + ranges), all encoded byte ranges are fetched and
+// concatenated in order. If the client sends a single-range HTTP Range header,
+// that takes priority. If there are multiple embedded ranges and no Range header,
+// a multipart/byteranges response is returned per RFC 7233.
 func (h *Handler) handleFetchTerm(w http.ResponseWriter, r *http.Request) {
 	term := r.URL.Query().Get("term")
 	if term == "" {
@@ -249,20 +438,93 @@ func (h *Handler) handleFetchTerm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decoded, err := base64.RawURLEncoding.DecodeString(term)
+	decoded, err := decodeTerm(term)
 	if err != nil {
-		responseJSON(w, fmt.Sprintf("invalid term encoding: %v", err), http.StatusBadRequest)
+		responseJSON(w, fmt.Sprintf("invalid term: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	payload := string(decoded)
+	hash := decoded.hash
 
-	// Parse hash (and optional byte ranges): "hash" or "hash:start-end,start-end"
-	hash := payload
-	if idx := strings.IndexByte(payload, ':'); idx >= 0 {
-		hash = payload[:idx]
+	if len(decoded.byteRanges) > 0 {
+		// V2 term with embedded byte ranges.
+		content, stat, err := h.xetStorage.Get(hash)
+		if err != nil {
+			if os.IsNotExist(err) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			responseJSON(w, fmt.Sprintf("xorb not found: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		totalSize := stat.Size()
+
+		// If the client sends a single-range HTTP Range header, serve just that range.
+		// This simulates S3/CDN behavior where the Range header controls the response.
+		httpRange, parseErr := parseRangeHeader(r, totalSize)
+		if parseErr != nil {
+			_ = content.Close()
+			http.Error(w, parseErr.Error(), http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if httpRange != nil {
+			data, readErr := readRange(content, httpRange)
+			_ = content.Close()
+			if readErr != nil {
+				responseJSON(w, fmt.Sprintf("range read error: %v", readErr), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(data)
+			return
+		}
+
+		// Single embedded range: return directly.
+		if len(decoded.byteRanges) == 1 {
+			data, readErr := readRange(content, &decoded.byteRanges[0])
+			_ = content.Close()
+			if readErr != nil {
+				responseJSON(w, fmt.Sprintf("range read error: %v", readErr), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(data)
+			return
+		}
+
+		// Multiple embedded ranges: return multipart/byteranges per RFC 7233.
+		const boundary = "xet_multipart_boundary"
+		var body []byte
+		for _, br := range decoded.byteRanges {
+			data, readErr := readRange(content, &br)
+			if readErr != nil {
+				_ = content.Close()
+				responseJSON(w, fmt.Sprintf("range read error: %v", readErr), http.StatusInternalServerError)
+				return
+			}
+			inclusiveEnd := br.end - 1
+			partHeader := fmt.Sprintf("--%s\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes %d-%d/%d\r\n\r\n",
+				boundary, br.start, inclusiveEnd, totalSize)
+			body = append(body, []byte(partHeader)...)
+			body = append(body, data...)
+			body = append(body, []byte("\r\n")...)
+		}
+		body = append(body, []byte(fmt.Sprintf("--%s--\r\n", boundary))...)
+		_ = content.Close()
+
+		w.Header().Set("Content-Type", fmt.Sprintf("multipart/byteranges; boundary=%s", boundary))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(body)
+		return
 	}
 
+	// V1 term: byte range comes from the HTTP Range header.
 	content, stat, err := h.xetStorage.Get(hash)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -276,7 +538,42 @@ func (h *Handler) handleFetchTerm(w http.ResponseWriter, r *http.Request) {
 		_ = content.Close()
 	}()
 
-	// Serve the full content; http.ServeContent handles Range headers.
+	// http.ServeContent handles Range headers automatically.
+	http.ServeContent(w, r, hash, stat.ModTime(), content)
+}
+
+// readRange reads a byte range from a ReadSeeker and returns the data.
+func readRange(rs io.ReadSeeker, fr *fileRange) ([]byte, error) {
+	if _, err := rs.Seek(fr.start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	length := fr.end - fr.start
+	data := make([]byte, length)
+	n, err := io.ReadFull(rs, data)
+	if err != nil {
+		return nil, err
+	}
+	return data[:n], nil
+}
+
+// handleGetXorb handles GET /v1/get_xorb/{prefix}/{hash}/ - direct xorb download.
+// Supports Range header for partial downloads per RFC 7233.
+func (h *Handler) handleGetXorb(w http.ResponseWriter, r *http.Request) {
+	hash := mux.Vars(r)["hash"]
+
+	content, stat, err := h.xetStorage.Get(hash)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		responseJSON(w, fmt.Sprintf("failed to get xorb: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		_ = content.Close()
+	}()
+
 	http.ServeContent(w, r, hash, stat.ModTime(), content)
 }
 

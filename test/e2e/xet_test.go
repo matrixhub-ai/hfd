@@ -114,15 +114,25 @@ func TestXetCASUploadAndDownload(t *testing.T) {
 		t.Fatalf("Expected 200 for health check, got %d", resp.StatusCode)
 	}
 
-	// Use hf_xet Python library to upload data through the CAS.
-	// This tests the full xet upload path: hf_xet chunks the data, compresses
-	// into xorbs, uploads via POST /v1/xorbs, and uploads the shard via POST /shards.
+	// Use hf_xet Python library to upload and download data through the CAS.
+	// This tests the full xet round-trip path:
+	// Upload: hf_xet chunks the data, compresses into xorbs, uploads via POST /v1/xorbs,
+	//   and uploads the shard via POST /shards.
+	// Download: hf_xet fetches reconstruction info, then downloads via /v1/fetch_term.
+	tmpDir, err := os.MkdirTemp("", "xet-e2e-download")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	script := fmt.Sprintf(`
 import hf_xet
 import time
+import os
 import sys
 
 endpoint = %q
+tmpdir = %q
 
 # Upload bytes to the CAS
 data = b"Hello from xet e2e test! " * 100  # 2500 bytes
@@ -156,8 +166,36 @@ if len(xet_hash) != 64:
     print(f"FAIL: expected 64-char hash, got {len(xet_hash)}", flush=True)
     sys.exit(1)
 
+# Download the data back from the CAS
+dest_path = os.path.join(tmpdir, "downloaded.bin")
+download_info = hf_xet.PyXetDownloadInfo(
+    hash=xet_hash,
+    file_size=file_size,
+    destination_path=dest_path,
+)
+print(f"Downloading hash={xet_hash} to {dest_path}", flush=True)
+hf_xet.download_files(
+    [download_info],
+    endpoint=endpoint,
+    token_info=("Bearer dummy-token", int(time.time()) + 3600),
+    token_refresher=None,
+    progress_updater=None,
+    request_headers=None,
+)
+
+# Verify downloaded content matches
+with open(dest_path, "rb") as f:
+    downloaded = f.read()
+
+if downloaded != data:
+    print(f"FAIL: downloaded {len(downloaded)} bytes, expected {len(data)} bytes", flush=True)
+    if len(downloaded) < 200:
+        print(f"Downloaded: {downloaded!r}", flush=True)
+    sys.exit(1)
+
+print(f"Download OK: verified {len(downloaded)} bytes match", flush=True)
 print("PASS", flush=True)
-`, endpoint)
+`, endpoint, tmpDir)
 
 	cmd := exec.CommandContext(t.Context(), "python3", "-c", script)
 	cmd.Env = append(os.Environ(),
