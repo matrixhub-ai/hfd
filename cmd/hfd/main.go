@@ -18,6 +18,7 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	backendxet "github.com/matrixhub-ai/hfd/pkg/backend/xet"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +26,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/pkg/xet"
 )
 
 var (
@@ -263,6 +265,14 @@ func main() {
 		backendlfs.WithMirror(sharedMirror),
 		backendlfs.WithXetEnabled(xetEnabled),
 	)
+
+	if xetEnabled {
+		xetStorage := xet.NewLocal(storage.XetDir())
+		handler = backendxet.NewHandler(
+			backendxet.WithNext(handler),
+			backendxet.WithXetStorage(xetStorage),
+		)
+	}
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),

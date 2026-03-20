@@ -10,6 +10,7 @@ type Storage struct {
 	rootDir         string
 	repositoriesDir string
 	lfsDir          string
+	xetDir          string
 }
 
 // Option defines a functional option for configuring the Storage.
@@ -33,6 +34,7 @@ func NewStorage(opts ...Option) *Storage {
 	}
 
 	h.lfsDir = filepath.Join(h.rootDir, "lfs")
+	h.xetDir = filepath.Join(h.rootDir, "xet")
 	h.repositoriesDir = filepath.Join(h.rootDir, "repositories")
 
 	return h
@@ -51,6 +53,11 @@ func (s *Storage) RepositoriesDir() string {
 // LFSDir returns the directory path for storing LFS objects.
 func (s *Storage) LFSDir() string {
 	return s.lfsDir
+}
+
+// XetDir returns the directory path for storing xet CAS objects.
+func (s *Storage) XetDir() string {
+	return s.xetDir
 }
 
 // ResolvePath resolves the given URL path to an absolute filesystem path within the repositories directory.
