@@ -25,6 +25,8 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	xetEndpoint         string
+	xetToken            string
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -79,6 +81,22 @@ func WithLFSStorage(storage lfs.Storage) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithXetEndpoint configures the xet CAS endpoint URL. When set, xet backend is enabled
+// and xet token endpoints become available.
+func WithXetEndpoint(endpoint string) Option {
+	return func(h *Handler) {
+		h.xetEndpoint = endpoint
+	}
+}
+
+// WithXetToken sets a static token for xet CAS authentication. If not set, the
+// client's authorization header is forwarded to the CAS.
+func WithXetToken(token string) Option {
+	return func(h *Handler) {
+		h.xetToken = token
 	}
 }
 
@@ -148,6 +166,10 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces}", h.handleList).Methods(http.MethodGet)
+
+	// Xet token endpoints - used for xet CAS (Content-Addressable Storage) authentication
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token/{rev}", h.handleXetReadToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token/{rev}", h.handleXetWriteToken).Methods(http.MethodGet)
 
 	// File download endpoints - datasets and spaces use a type prefix, models use the root
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)

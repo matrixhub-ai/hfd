@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -812,5 +815,346 @@ func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
+	}
+}
+
+func setupXetTestServer(t *testing.T, xetEndpoint, xetToken string) (*httptest.Server, string) {
+	t.Helper()
+
+	dataDir, err := os.MkdirTemp("", "hf-xet-test-data")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dataDir) })
+
+	st := storage.NewStorage(storage.WithRootDir(dataDir))
+	lfsStorage := lfs.NewLocal(st.LFSDir())
+
+	var handler http.Handler
+
+	handler = NewHandler(
+		WithStorage(st),
+		WithLFSStorage(lfsStorage),
+		WithXetEndpoint(xetEndpoint),
+		WithXetToken(xetToken),
+	)
+
+	handler = backendlfs.NewHandler(
+		backendlfs.WithStorage(st),
+		backendlfs.WithNext(handler),
+		backendlfs.WithLFSStorage(lfsStorage),
+		backendlfs.WithXetEndpoint(xetEndpoint),
+	)
+
+	handler = backendhttp.NewHandler(
+		backendhttp.WithStorage(st),
+		backendhttp.WithNext(handler),
+	)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(func() { server.Close() })
+
+	return server, dataDir
+}
+
+func TestHuggingFaceXetReadToken(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	xetToken := "xet-static-token-123"
+	server, _ := setupXetTestServer(t, xetEndpoint, xetToken)
+	endpoint := server.URL
+
+	// Create repo first
+	createBody := `{"type":"model","name":"xet-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Request xet read token
+	resp, err = http.Get(endpoint + "/api/models/test-user/xet-model/xet-read-token/main")
+	if err != nil {
+		t.Fatalf("Failed to get xet read token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// Verify xet headers
+	if got := resp.Header.Get(headerXetEndpoint); got != xetEndpoint {
+		t.Errorf("Expected X-Xet-Endpoint %q, got %q", xetEndpoint, got)
+	}
+	if got := resp.Header.Get(headerXetAccessToken); got != xetToken {
+		t.Errorf("Expected X-Xet-Access-Token %q, got %q", xetToken, got)
+	}
+	expStr := resp.Header.Get(headerXetExpiration)
+	if expStr == "" {
+		t.Fatal("Expected X-Xet-Expiration header to be set")
+	}
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil {
+		t.Fatalf("Failed to parse X-Xet-Expiration: %v", err)
+	}
+	// Verify expiration is in the future (within ~1 hour)
+	now := time.Now().Unix()
+	if exp <= now {
+		t.Errorf("Expected X-Xet-Expiration to be in the future, got %d (now %d)", exp, now)
+	}
+	if exp > now+3700 {
+		t.Errorf("Expected X-Xet-Expiration within ~1 hour, got %d (now %d)", exp, now)
+	}
+}
+
+func TestHuggingFaceXetWriteToken(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	xetToken := "xet-write-token-456"
+	server, _ := setupXetTestServer(t, xetEndpoint, xetToken)
+	endpoint := server.URL
+
+	// Create repo first
+	createBody := `{"type":"dataset","name":"xet-dataset","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Request xet write token
+	resp, err = http.Get(endpoint + "/api/datasets/test-user/xet-dataset/xet-write-token/main")
+	if err != nil {
+		t.Fatalf("Failed to get xet write token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	if got := resp.Header.Get(headerXetEndpoint); got != xetEndpoint {
+		t.Errorf("Expected X-Xet-Endpoint %q, got %q", xetEndpoint, got)
+	}
+	if got := resp.Header.Get(headerXetAccessToken); got != xetToken {
+		t.Errorf("Expected X-Xet-Access-Token %q, got %q", xetToken, got)
+	}
+}
+
+func TestHuggingFaceXetTokenNotConfigured(t *testing.T) {
+	// Set up server WITHOUT xet configuration
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	// Create repo
+	createBody := `{"type":"model","name":"no-xet-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Request xet read token should fail with 501
+	resp, err = http.Get(endpoint + "/api/models/test-user/no-xet-model/xet-read-token/main")
+	if err != nil {
+		t.Fatalf("Failed to request xet read token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("Expected 501 when xet not configured, got %d", resp.StatusCode)
+	}
+}
+
+func TestHuggingFaceXetTokenForwardsAuth(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	// No xetToken set - should forward client's authorization header
+	server, _ := setupXetTestServer(t, xetEndpoint, "")
+	endpoint := server.URL
+
+	// Create repo
+	createBody := `{"type":"model","name":"xet-fwd-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Request xet read token with Authorization header
+	req, err := http.NewRequest(http.MethodGet, endpoint+"/api/models/test-user/xet-fwd-model/xet-read-token/main", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer my-hf-token")
+
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to request xet read token: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	// When no static xet token is configured, the client's auth header should be forwarded
+	if got := resp.Header.Get(headerXetAccessToken); got != "Bearer my-hf-token" {
+		t.Errorf("Expected forwarded auth header, got %q", got)
+	}
+}
+
+func TestHuggingFacePreuploadWithXetGitAttributes(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	endpoint := server.URL
+
+	// Create repo
+	createBody := `{"type":"model","name":"xet-attrs-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Commit .gitattributes with xet filter patterns
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add xet gitattributes\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"*.bin filter=xet diff=xet merge=xet -text\\n*.safetensors filter=xet diff=xet merge=xet -text\\n*.txt filter=lfs diff=lfs merge=lfs -text\\n\",\"path\":\".gitattributes\",\"encoding\":\"utf-8\"}}\n"
+
+	resp, err = http.Post(endpoint+"/api/models/test-user/xet-attrs-model/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	resp.Body.Close()
+
+	// Test preupload: xet-tracked files should return "lfs" upload mode (same as LFS,
+	// since xet is negotiated at the LFS batch level, not preupload)
+	preuploadBody := `{"files":[{"path":"model.bin","size":100,"sample":""},{"path":"README.md","size":50,"sample":""},{"path":"weights.safetensors","size":200,"sample":""},{"path":"data.txt","size":100,"sample":""}]}`
+	resp, err = http.Post(endpoint+"/api/models/test-user/xet-attrs-model/preupload/main", "application/json", strings.NewReader(preuploadBody))
+	if err != nil {
+		t.Fatalf("Failed to preupload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result preuploadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(result.Files) != 4 {
+		t.Fatalf("Expected 4 files, got %d", len(result.Files))
+	}
+	// model.bin matches *.bin with filter=xet → should return "lfs" upload mode
+	if result.Files[0].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for model.bin (xet-tracked), got %s", result.Files[0].UploadMode)
+	}
+	// README.md doesn't match any filter pattern → regular
+	if result.Files[1].UploadMode != "regular" {
+		t.Errorf("Expected regular mode for README.md, got %s", result.Files[1].UploadMode)
+	}
+	// weights.safetensors matches *.safetensors with filter=xet → should return "lfs"
+	if result.Files[2].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for weights.safetensors (xet-tracked), got %s", result.Files[2].UploadMode)
+	}
+	// data.txt matches *.txt with filter=lfs → should return "lfs"
+	if result.Files[3].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for data.txt (lfs-tracked), got %s", result.Files[3].UploadMode)
+	}
+}
+
+func TestHuggingFaceXetBatchTransfer(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	endpoint := server.URL
+
+	// Create repo
+	createBody := `{"type":"model","name":"xet-batch-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Send LFS batch request with xet transfer offered
+	batchBody := `{"operation":"upload","transfers":["basic","multipart","xet"],"objects":[{"oid":"abc123def456","size":1024}]}`
+	req, err := http.NewRequest(http.MethodPost, endpoint+"/test-user/xet-batch-model.git/info/lfs/objects/batch", strings.NewReader(batchBody))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Accept", "application/vnd.git-lfs+json")
+	req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to send batch request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var batchResp struct {
+		Transfer string `json:"transfer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&batchResp); err != nil {
+		t.Fatalf("Failed to decode batch response: %v", err)
+	}
+
+	if batchResp.Transfer != "xet" {
+		t.Errorf("Expected xet transfer, got %q", batchResp.Transfer)
+	}
+}
+
+func TestHuggingFaceXetBatchTransferNotOffered(t *testing.T) {
+	xetEndpoint := "https://cas.example.com"
+	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	endpoint := server.URL
+
+	// Create repo
+	createBody := `{"type":"model","name":"xet-batch-basic-model","organization":"test-user"}`
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	// Send LFS batch request WITHOUT xet transfer (only basic)
+	batchBody := `{"operation":"upload","transfers":["basic"],"objects":[{"oid":"abc123def456","size":1024}]}`
+	req, err := http.NewRequest(http.MethodPost, endpoint+"/test-user/xet-batch-basic-model.git/info/lfs/objects/batch", strings.NewReader(batchBody))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Accept", "application/vnd.git-lfs+json")
+	req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to send batch request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	var batchResp struct {
+		Transfer string `json:"transfer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&batchResp); err != nil {
+		t.Fatalf("Failed to decode batch response: %v", err)
+	}
+
+	// When client doesn't offer xet, should fall back to basic
+	if batchResp.Transfer != "basic" {
+		t.Errorf("Expected basic transfer when xet not offered, got %q", batchResp.Transfer)
 	}
 }

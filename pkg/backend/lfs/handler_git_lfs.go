@@ -75,8 +75,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
+	transfer := "basic"
+	if h.xetEndpoint != "" && bv.offersXet() {
+		transfer = "xet"
+	}
+
 	respobj := &lfsBatchResponse{
-		Transfer: "basic",
+		Transfer: transfer,
 		Objects:  responseObjects,
 	}
 
@@ -305,6 +310,16 @@ func (bv *lfsBatchVars) repoName() string {
 		return ""
 	}
 	return bv.Objects[0].Repo
+}
+
+// offersXet returns true if the client offers "xet" as one of its supported transfer adapters.
+func (bv *lfsBatchVars) offersXet() bool {
+	for _, t := range bv.Transfers {
+		if t == "xet" {
+			return true
+		}
+	}
+	return false
 }
 
 type lfsBatchResponse struct {

@@ -23,6 +23,7 @@ type Handler struct {
 	permissionHookFunc permission.PermissionHookFunc
 	tokenSignValidator authenticate.TokenSignValidator
 	mirror             *mirror.Mirror
+	xetEndpoint        string
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -68,6 +69,14 @@ func WithLFSStorage(storage lfs.Storage) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithXetEndpoint configures the xet CAS endpoint URL. When set, the LFS batch
+// endpoint will negotiate "xet" as a transfer adapter when the client offers it.
+func WithXetEndpoint(endpoint string) Option {
+	return func(h *Handler) {
+		h.xetEndpoint = endpoint
 	}
 }
 
