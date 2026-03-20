@@ -16,6 +16,13 @@ import (
 	pkgxet "github.com/matrixhub-ai/hfd/pkg/xet"
 )
 
+const (
+	// maxShardUploadSize is the maximum allowed shard upload size (256 MB).
+	maxShardUploadSize = 256 * 1024 * 1024
+	// maxFetchTermRanges is the maximum number of byte ranges in a V2 fetch term.
+	maxFetchTermRanges = 1000
+)
+
 // uploadXorbResponse is the response for POST /v1/xorbs/{prefix}/{hash}.
 type uploadXorbResponse struct {
 	WasInserted bool `json:"was_inserted"`
@@ -178,9 +185,13 @@ func (h *Handler) handleHeadXorb(w http.ResponseWriter, r *http.Request) {
 
 // handlePostShard handles POST /shards - upload a shard.
 func (h *Handler) handlePostShard(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(r.Body)
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxShardUploadSize+1))
 	if err != nil {
 		responseJSON(w, fmt.Sprintf("failed to read shard data: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(data) > maxShardUploadSize {
+		responseJSON(w, "shard data exceeds maximum size", http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -272,6 +283,9 @@ func decodeTerm(term string) (*decodedTerm, error) {
 			r = strings.TrimSpace(r)
 			if r == "" {
 				continue
+			}
+			if len(byteRanges) >= maxFetchTermRanges {
+				return nil, fmt.Errorf("too many ranges in fetch term (limit %d)", maxFetchTermRanges)
 			}
 			parts := strings.SplitN(r, "-", 2)
 			if len(parts) != 2 {

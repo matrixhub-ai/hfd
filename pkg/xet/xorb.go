@@ -15,6 +15,10 @@ var (
 	errBadFooter = errors.New("invalid xorb footer")
 )
 
+// maxXorbChunks is the maximum number of chunks in a xorb (safety limit).
+// Xet-core MAX_XORB_CHUNKS is 8*1024, using 1M as a generous upper bound.
+const maxXorbChunks = 1_000_000
+
 // XorbFooter holds the parsed footer from a xorb file.
 type XorbFooter struct {
 	NumChunks            uint32
@@ -133,6 +137,9 @@ func ParseXorbFooter(rs io.ReadSeeker) (*XorbFooter, error) {
 	var numChunks2 uint32
 	if err := binary.Read(rs, binary.LittleEndian, &numChunks2); err != nil {
 		return nil, fmt.Errorf("read num_chunks_2: %w", err)
+	}
+	if numChunks2 > maxXorbChunks {
+		return nil, fmt.Errorf("%w: num_chunks %d exceeds limit %d", errBadFooter, numChunks2, maxXorbChunks)
 	}
 
 	// Skip chunk_hashes: numChunks2 * 32 bytes

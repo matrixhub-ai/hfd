@@ -17,6 +17,9 @@ const (
 
 	fileFlagVerification = 1
 	fileFlagMetadataExt  = 2
+
+	// maxShardEntries is the maximum number of segment entries per file (safety limit).
+	maxShardEntries = 1_000_000
 )
 
 var (
@@ -100,6 +103,10 @@ func ParseShard(data []byte) ([]FileReconstruction, error) {
 		numEntries := binary.LittleEndian.Uint32(data[offset+36 : offset+40])
 		// _unused := binary.LittleEndian.Uint64(data[offset+40 : offset+48])
 		offset += fileDataSequenceHeaderSize
+
+		if numEntries > maxShardEntries {
+			return nil, fmt.Errorf("%w: file has %d entries (exceeds limit %d)", errShardTruncated, numEntries, maxShardEntries)
+		}
 
 		fileHashHex := hex.EncodeToString(fileHash)
 
