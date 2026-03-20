@@ -171,3 +171,18 @@ func TestCASPutHashMismatch(t *testing.T) {
 		t.Fatalf("Expected 500 for hash mismatch, got %d", resp.StatusCode)
 	}
 }
+
+func TestCASGetInvalidHash(t *testing.T) {
+	server := setupTestServer(t)
+
+	// Path traversal attempt should be rejected by route regex (only hex chars allowed)
+	resp, err := http.Get(server.URL + "/xet/cas/objects/..")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404 for invalid hash, got %d", resp.StatusCode)
+	}
+}

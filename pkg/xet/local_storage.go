@@ -34,8 +34,9 @@ func (s *localStorage) Get(hash string) (io.ReadSeekCloser, os.FileInfo, error) 
 	if err != nil {
 		return nil, nil, err
 	}
-	stat, err := os.Stat(path)
+	stat, err := f.Stat()
 	if err != nil {
+		_ = f.Close()
 		return nil, nil, err
 	}
 	return f, stat, nil

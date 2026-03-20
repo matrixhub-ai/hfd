@@ -53,8 +53,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) register() {
-	h.root.HandleFunc("/xet/cas/objects/{hash}", h.handleGetObject).Methods(http.MethodGet, http.MethodHead)
-	h.root.HandleFunc("/xet/cas/objects/{hash}", h.handlePutObject).Methods(http.MethodPut)
+	h.root.HandleFunc("/xet/cas/objects/{hash:[a-f0-9]+}", h.handleGetObject).Methods(http.MethodGet, http.MethodHead)
+	h.root.HandleFunc("/xet/cas/objects/{hash:[a-f0-9]+}", h.handlePutObject).Methods(http.MethodPut)
 	h.root.HandleFunc("/xet/cas/objects/has", h.handleHas).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
 }
