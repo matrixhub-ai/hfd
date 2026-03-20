@@ -1,6 +1,7 @@
 package xet
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -107,9 +108,8 @@ func (h *Handler) handlePostShard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store shard using a key derived from the content. We use "shard:" prefix
-	// to distinguish shard objects from xorb objects in storage.
-	hash := fmt.Sprintf("shard_%x", len(data))
+	// Derive a unique key from shard content using SHA-256 hash.
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))
 	if err := h.xetStorage.Put(hash, strings.NewReader(string(data)), int64(len(data))); err != nil {
 		responseJSON(w, fmt.Sprintf("failed to store shard: %v", err), http.StatusInternalServerError)
 		return

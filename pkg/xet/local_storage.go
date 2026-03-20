@@ -89,6 +89,9 @@ func (s *localStorage) Exists(hash string) bool {
 	return true
 }
 
+// transformKey converts a hash into a sharded directory path (e.g., "ab/cd/ef01234...")
+// to avoid storing too many files in a single directory. Keys shorter than 5
+// characters are stored as-is since they cannot be meaningfully sharded.
 func transformKey(key string) string {
 	if len(key) < 5 {
 		return key
