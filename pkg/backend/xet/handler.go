@@ -56,7 +56,8 @@ func (h *Handler) register() {
 	// Xet CAS protocol endpoints (per xet-core OpenAPI spec and local_server reference):
 	// POST /v1/xorbs/{prefix}/{hash}       - upload a xorb
 	// HEAD /v1/xorbs/{prefix}/{hash}       - check if a xorb exists
-	// POST /shards                         - upload a shard
+	// POST /v1/shards                      - upload a shard (OpenAPI spec)
+	// POST /shards                         - upload a shard (alias for compatibility)
 	// GET  /v1/chunks/{prefix}/{hash}      - global dedup query
 	// GET  /v1/reconstructions/{file_id}   - file reconstruction (V1)
 	// GET  /v2/reconstructions/{file_id}   - file reconstruction (V2)
@@ -68,6 +69,7 @@ func (h *Handler) register() {
 	// GET  /health                         - health check
 	h.root.HandleFunc("/v1/xorbs/{prefix}/{hash:[a-f0-9]+}", h.handlePostXorb).Methods(http.MethodPost)
 	h.root.HandleFunc("/v1/xorbs/{prefix}/{hash:[a-f0-9]+}", h.handleHeadXorb).Methods(http.MethodHead)
+	h.root.HandleFunc("/v1/shards", h.handlePostShard).Methods(http.MethodPost)
 	h.root.HandleFunc("/shards", h.handlePostShard).Methods(http.MethodPost)
 	h.root.HandleFunc("/v1/chunks/{prefix}/{hash:[a-f0-9]+}", h.handleGetChunk).Methods(http.MethodGet)
 	h.root.HandleFunc("/v1/reconstructions/{file_id:[a-f0-9]+}", h.handleGetReconstruction).Methods(http.MethodGet)
