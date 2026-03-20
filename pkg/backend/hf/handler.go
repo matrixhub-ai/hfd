@@ -25,8 +25,7 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
-	xetEndpoint         string
-	xetToken            string
+	xetEnabled          bool
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -84,19 +83,11 @@ func WithMirror(m *mirror.Mirror) Option {
 	}
 }
 
-// WithXetEndpoint configures the xet CAS endpoint URL. When set, xet backend is enabled
-// and xet token endpoints become available.
-func WithXetEndpoint(endpoint string) Option {
+// WithXetEnabled enables the built-in xet backend. When enabled, the server itself
+// serves as the xet CAS endpoint. The endpoint URL is derived from the request origin.
+func WithXetEnabled(enabled bool) Option {
 	return func(h *Handler) {
-		h.xetEndpoint = endpoint
-	}
-}
-
-// WithXetToken sets a static token for xet CAS authentication. If not set, the
-// client's authorization header is forwarded to the CAS.
-func WithXetToken(token string) Option {
-	return func(h *Handler) {
-		h.xetToken = token
+		h.xetEnabled = enabled
 	}
 }
 

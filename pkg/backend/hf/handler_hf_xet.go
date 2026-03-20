@@ -32,7 +32,7 @@ func (h *Handler) handleXetWriteToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleXetToken(w http.ResponseWriter, r *http.Request, op permission.Operation) {
-	if h.xetEndpoint == "" {
+	if !h.xetEnabled {
 		responseJSON(w, "xet backend not configured", http.StatusNotImplemented)
 		return
 	}
@@ -56,12 +56,9 @@ func (h *Handler) handleXetToken(w http.ResponseWriter, r *http.Request, op perm
 	}
 
 	expiration := time.Now().Add(xetTokenExpiration)
-	token := h.xetToken
-	if token == "" {
-		token = r.Header.Get("Authorization")
-	}
+	token := r.Header.Get("Authorization")
 
-	w.Header().Set(headerXetEndpoint, h.xetEndpoint)
+	w.Header().Set(headerXetEndpoint, requestOrigin(r))
 	w.Header().Set(headerXetAccessToken, token)
 	w.Header().Set(headerXetExpiration, strconv.FormatInt(expiration.Unix(), 10))
 	w.WriteHeader(http.StatusOK)

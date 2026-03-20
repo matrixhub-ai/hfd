@@ -76,7 +76,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", metaMediaType)
 
 	transfer := "basic"
-	if h.xetEndpoint != "" && bv.offersXet() {
+	if h.xetEnabled && bv.offersXet() {
 		transfer = "xet"
 	}
 

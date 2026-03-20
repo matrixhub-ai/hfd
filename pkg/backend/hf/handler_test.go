@@ -818,7 +818,7 @@ func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
 	}
 }
 
-func setupXetTestServer(t *testing.T, xetEndpoint, xetToken string) (*httptest.Server, string) {
+func setupXetTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "hf-xet-test-data")
@@ -835,15 +835,14 @@ func setupXetTestServer(t *testing.T, xetEndpoint, xetToken string) (*httptest.S
 	handler = NewHandler(
 		WithStorage(st),
 		WithLFSStorage(lfsStorage),
-		WithXetEndpoint(xetEndpoint),
-		WithXetToken(xetToken),
+		WithXetEnabled(true),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
 		backendlfs.WithLFSStorage(lfsStorage),
-		backendlfs.WithXetEndpoint(xetEndpoint),
+		backendlfs.WithXetEnabled(true),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -858,9 +857,7 @@ func setupXetTestServer(t *testing.T, xetEndpoint, xetToken string) (*httptest.S
 }
 
 func TestHuggingFaceXetReadToken(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	xetToken := "xet-static-token-123"
-	server, _ := setupXetTestServer(t, xetEndpoint, xetToken)
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo first
@@ -883,12 +880,9 @@ func TestHuggingFaceXetReadToken(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	// Verify xet headers
-	if got := resp.Header.Get(headerXetEndpoint); got != xetEndpoint {
-		t.Errorf("Expected X-Xet-Endpoint %q, got %q", xetEndpoint, got)
-	}
-	if got := resp.Header.Get(headerXetAccessToken); got != xetToken {
-		t.Errorf("Expected X-Xet-Access-Token %q, got %q", xetToken, got)
+	// Verify xet headers - endpoint should be the server's own URL
+	if got := resp.Header.Get(headerXetEndpoint); got != endpoint {
+		t.Errorf("Expected X-Xet-Endpoint %q, got %q", endpoint, got)
 	}
 	expStr := resp.Header.Get(headerXetExpiration)
 	if expStr == "" {
@@ -909,9 +903,7 @@ func TestHuggingFaceXetReadToken(t *testing.T) {
 }
 
 func TestHuggingFaceXetWriteToken(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	xetToken := "xet-write-token-456"
-	server, _ := setupXetTestServer(t, xetEndpoint, xetToken)
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo first
@@ -934,11 +926,9 @@ func TestHuggingFaceXetWriteToken(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	if got := resp.Header.Get(headerXetEndpoint); got != xetEndpoint {
-		t.Errorf("Expected X-Xet-Endpoint %q, got %q", xetEndpoint, got)
-	}
-	if got := resp.Header.Get(headerXetAccessToken); got != xetToken {
-		t.Errorf("Expected X-Xet-Access-Token %q, got %q", xetToken, got)
+	// Verify endpoint is the server's own URL
+	if got := resp.Header.Get(headerXetEndpoint); got != endpoint {
+		t.Errorf("Expected X-Xet-Endpoint %q, got %q", endpoint, got)
 	}
 }
 
@@ -968,9 +958,7 @@ func TestHuggingFaceXetTokenNotConfigured(t *testing.T) {
 }
 
 func TestHuggingFaceXetTokenForwardsAuth(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	// No xetToken set - should forward client's authorization header
-	server, _ := setupXetTestServer(t, xetEndpoint, "")
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo
@@ -999,15 +987,18 @@ func TestHuggingFaceXetTokenForwardsAuth(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
 	}
 
-	// When no static xet token is configured, the client's auth header should be forwarded
+	// The client's auth header should be forwarded as the xet access token
 	if got := resp.Header.Get(headerXetAccessToken); got != "Bearer my-hf-token" {
 		t.Errorf("Expected forwarded auth header, got %q", got)
+	}
+	// Endpoint should be the server's own URL
+	if got := resp.Header.Get(headerXetEndpoint); got != endpoint {
+		t.Errorf("Expected X-Xet-Endpoint %q, got %q", endpoint, got)
 	}
 }
 
 func TestHuggingFacePreuploadWithXetGitAttributes(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo
@@ -1069,8 +1060,7 @@ func TestHuggingFacePreuploadWithXetGitAttributes(t *testing.T) {
 }
 
 func TestHuggingFaceXetBatchTransfer(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo
@@ -1114,8 +1104,7 @@ func TestHuggingFaceXetBatchTransfer(t *testing.T) {
 }
 
 func TestHuggingFaceXetBatchTransferNotOffered(t *testing.T) {
-	xetEndpoint := "https://cas.example.com"
-	server, _ := setupXetTestServer(t, xetEndpoint, "test-token")
+	server, _ := setupXetTestServer(t)
 	endpoint := server.URL
 
 	// Create repo

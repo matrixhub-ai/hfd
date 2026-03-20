@@ -52,8 +52,7 @@ var (
 
 	mirrorTTL = time.Hour
 
-	xetEndpoint = ""
-	xetToken    = ""
+	xetEnabled = false
 )
 
 func init() {
@@ -79,8 +78,7 @@ func init() {
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
 
-	flag.StringVar(&xetEndpoint, "xet-endpoint", xetEndpoint, "Xet CAS endpoint URL; enables xet backend when set")
-	flag.StringVar(&xetToken, "xet-token", xetToken, "Static token for xet CAS authentication; if not set, the client's authorization header is forwarded")
+	flag.BoolVar(&xetEnabled, "xet", xetEnabled, "Enable built-in xet backend; the server itself serves as the xet CAS endpoint")
 
 	flag.Parse()
 
@@ -252,8 +250,7 @@ func main() {
 		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
 		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
 		backendhf.WithLFSStorage(lfsStorage),
-		backendhf.WithXetEndpoint(xetEndpoint),
-		backendhf.WithXetToken(xetToken),
+		backendhf.WithXetEnabled(xetEnabled),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -264,7 +261,7 @@ func main() {
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
 		backendlfs.WithLFSStorage(lfsStorage),
 		backendlfs.WithMirror(sharedMirror),
-		backendlfs.WithXetEndpoint(xetEndpoint),
+		backendlfs.WithXetEnabled(xetEnabled),
 	)
 
 	handler = backendhttp.NewHandler(
