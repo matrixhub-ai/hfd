@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+
+	pkgxet "github.com/matrixhub-ai/hfd/pkg/xet"
 )
 
 // uploadXorbResponse is the response for POST /v1/xorbs/{prefix}/{hash}.
@@ -188,6 +190,13 @@ func (h *Handler) handlePostShard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse and index file reconstruction data from the shard.
+	if err := h.xetStorage.RegisterShard(data); err != nil {
+		// Log but don't fail - shard is stored, reconstruction index is best-effort.
+		// Non-conforming shards (e.g. test payloads) are allowed.
+		_ = err
+	}
+
 	responseJSON(w, uploadShardResponse{Result: 1}, http.StatusOK)
 }
 
@@ -291,6 +300,16 @@ func (h *Handler) handleGetReconstruction(w http.ResponseWriter, r *http.Request
 	fileID := mux.Vars(r)["file_id"]
 	baseURL := requestOrigin(r)
 
+	// Try shard-based reconstruction first.
+	if recon, _ := h.xetStorage.GetFileReconstruction(fileID); recon != nil {
+		resp := h.buildV1Reconstruction(recon, baseURL)
+		if resp != nil {
+			responseJSON(w, resp, http.StatusOK)
+			return
+		}
+	}
+
+	// Fallback: treat fileID as a xorb hash directly.
 	info, err := h.xetStorage.Info(fileID)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -328,11 +347,64 @@ func (h *Handler) handleGetReconstruction(w http.ResponseWriter, r *http.Request
 	responseJSON(w, resp, http.StatusOK)
 }
 
+// buildV1Reconstruction builds a V1 reconstruction response from shard data.
+func (h *Handler) buildV1Reconstruction(recon *pkgxet.FileReconstruction, baseURL string) *queryReconstructionResponse {
+	var terms []reconstructionTerm
+	fetchInfoMap := map[string][]fetchInfo{}
+
+	for _, seg := range recon.Segments {
+		footer, err := h.xetStorage.GetXorbFooter(seg.XorbHash)
+		if err != nil {
+			return nil
+		}
+
+		byteStart, byteEnd, err := footer.GetByteOffset(seg.ChunkIndexStart, seg.ChunkIndexEnd)
+		if err != nil {
+			return nil
+		}
+
+		unpackedSize, err := footer.TotalUnpackedSize(seg.ChunkIndexStart, seg.ChunkIndexEnd)
+		if err != nil {
+			return nil
+		}
+
+		terms = append(terms, reconstructionTerm{
+			Hash:           seg.XorbHash,
+			UnpackedLength: int64(unpackedSize),
+			Range:          indexRange{Start: int(seg.ChunkIndexStart), End: int(seg.ChunkIndexEnd)},
+		})
+
+		encodedTerm := encodeTerm(seg.XorbHash)
+		fetchURL := fmt.Sprintf("%s/v1/fetch_term?term=%s", baseURL, encodedTerm)
+		fetchInfoMap[seg.XorbHash] = append(fetchInfoMap[seg.XorbHash], fetchInfo{
+			Range:    indexRange{Start: int(seg.ChunkIndexStart), End: int(seg.ChunkIndexEnd)},
+			URL:      fetchURL,
+			URLRange: byteRange{Start: int64(byteStart), End: int64(byteEnd) - 1},
+		})
+	}
+
+	return &queryReconstructionResponse{
+		OffsetIntoFirstRange: 0,
+		Terms:                terms,
+		FetchInfo:            fetchInfoMap,
+	}
+}
+
 // handleGetReconstructionV2 handles GET /v2/reconstructions/{file_id} - V2 file reconstruction.
 func (h *Handler) handleGetReconstructionV2(w http.ResponseWriter, r *http.Request) {
 	fileID := mux.Vars(r)["file_id"]
 	baseURL := requestOrigin(r)
 
+	// Try shard-based reconstruction first.
+	if recon, _ := h.xetStorage.GetFileReconstruction(fileID); recon != nil {
+		resp := h.buildV2Reconstruction(recon, baseURL)
+		if resp != nil {
+			responseJSON(w, resp, http.StatusOK)
+			return
+		}
+	}
+
+	// Fallback: treat fileID as a xorb hash directly.
 	info, err := h.xetStorage.Info(fileID)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -374,6 +446,53 @@ func (h *Handler) handleGetReconstructionV2(w http.ResponseWriter, r *http.Reque
 	responseJSON(w, resp, http.StatusOK)
 }
 
+// buildV2Reconstruction builds a V2 reconstruction response from shard data.
+func (h *Handler) buildV2Reconstruction(recon *pkgxet.FileReconstruction, baseURL string) *queryReconstructionResponseV2 {
+	var terms []reconstructionTerm
+	xorbsMap := map[string][]xorbMultiRangeFetch{}
+
+	for _, seg := range recon.Segments {
+		footer, err := h.xetStorage.GetXorbFooter(seg.XorbHash)
+		if err != nil {
+			return nil
+		}
+
+		byteStart, byteEnd, err := footer.GetByteOffset(seg.ChunkIndexStart, seg.ChunkIndexEnd)
+		if err != nil {
+			return nil
+		}
+
+		unpackedSize, err := footer.TotalUnpackedSize(seg.ChunkIndexStart, seg.ChunkIndexEnd)
+		if err != nil {
+			return nil
+		}
+
+		rangeDesc := xorbRangeDescriptor{
+			Chunks: indexRange{Start: int(seg.ChunkIndexStart), End: int(seg.ChunkIndexEnd)},
+			Bytes:  byteRange{Start: int64(byteStart), End: int64(byteEnd) - 1},
+		}
+
+		terms = append(terms, reconstructionTerm{
+			Hash:           seg.XorbHash,
+			UnpackedLength: int64(unpackedSize),
+			Range:          indexRange{Start: int(seg.ChunkIndexStart), End: int(seg.ChunkIndexEnd)},
+		})
+
+		encodedTerm := encodeTermWithRanges(seg.XorbHash, []xorbRangeDescriptor{rangeDesc})
+		fetchURL := fmt.Sprintf("%s/v1/fetch_term?term=%s", baseURL, encodedTerm)
+		xorbsMap[seg.XorbHash] = append(xorbsMap[seg.XorbHash], xorbMultiRangeFetch{
+			URL:    fetchURL,
+			Ranges: []xorbRangeDescriptor{rangeDesc},
+		})
+	}
+
+	return &queryReconstructionResponseV2{
+		OffsetIntoFirstRange: 0,
+		Terms:                terms,
+		Xorbs:                xorbsMap,
+	}
+}
+
 // handleBatchGetReconstruction handles GET /v1/reconstructions?file_id=...&file_id=...
 // Batch query for reconstruction information for multiple files.
 func (h *Handler) handleBatchGetReconstruction(w http.ResponseWriter, r *http.Request) {
@@ -392,6 +511,19 @@ func (h *Handler) handleBatchGetReconstruction(w http.ResponseWriter, r *http.Re
 	allFetchInfo := map[string][]fetchInfo{}
 
 	for _, fileID := range fileIDs {
+		// Try shard-based reconstruction first.
+		if recon, _ := h.xetStorage.GetFileReconstruction(fileID); recon != nil {
+			resp := h.buildV1Reconstruction(recon, baseURL)
+			if resp != nil {
+				allTerms = append(allTerms, resp.Terms...)
+				for k, v := range resp.FetchInfo {
+					allFetchInfo[k] = append(allFetchInfo[k], v...)
+				}
+				continue
+			}
+		}
+
+		// Fallback: treat fileID as a xorb hash directly.
 		info, err := h.xetStorage.Info(fileID)
 		if err != nil {
 			continue // skip missing files in batch
@@ -580,6 +712,17 @@ func (h *Handler) handleGetXorb(w http.ResponseWriter, r *http.Request) {
 // handleHeadFile handles HEAD /v1/files/{file_id} - get file size.
 func (h *Handler) handleHeadFile(w http.ResponseWriter, r *http.Request) {
 	fileID := mux.Vars(r)["file_id"]
+
+	// Try shard-based reconstruction for file size.
+	if recon, _ := h.xetStorage.GetFileReconstruction(fileID); recon != nil {
+		var totalSize uint64
+		for _, seg := range recon.Segments {
+			totalSize += uint64(seg.UnpackedSegmentBytes)
+		}
+		w.Header().Set("Content-Length", strconv.FormatUint(totalSize, 10))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	info, err := h.xetStorage.Info(fileID)
 	if err != nil {

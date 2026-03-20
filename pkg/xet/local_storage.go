@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 var (
@@ -15,12 +16,18 @@ var (
 // localStorage provides a simple file system based CAS storage.
 type localStorage struct {
 	basePath string
+
+	mu                   sync.RWMutex
+	fileReconstructions  map[string]*FileReconstruction
 }
 
 // NewLocal creates a new local file system based CAS storage.
 // The basePath is the root directory where objects will be stored.
 func NewLocal(basePath string) Storage {
-	return &localStorage{basePath: basePath}
+	return &localStorage{
+		basePath:            basePath,
+		fileReconstructions: make(map[string]*FileReconstruction),
+	}
 }
 
 // Get retrieves the content of a CAS object by its hash.
@@ -97,4 +104,40 @@ func transformKey(key string) string {
 		return key
 	}
 	return filepath.Join(key[0:2], key[2:4], key[4:])
+}
+
+// RegisterShard parses shard data and indexes the file reconstruction info.
+func (s *localStorage) RegisterShard(data []byte) error {
+	files, err := ParseShard(data)
+	if err != nil {
+		return fmt.Errorf("parse shard: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range files {
+		f := &files[i]
+		s.fileReconstructions[f.FileHash] = f
+	}
+	return nil
+}
+
+// GetFileReconstruction returns the reconstruction info for the given file hash.
+func (s *localStorage) GetFileReconstruction(fileHash string) (*FileReconstruction, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fr, ok := s.fileReconstructions[fileHash]; ok {
+		return fr, nil
+	}
+	return nil, nil
+}
+
+// GetXorbFooter opens the stored xorb file and parses its binary footer.
+func (s *localStorage) GetXorbFooter(hash string) (*XorbFooter, error) {
+	rc, _, err := s.Get(hash)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }()
+	return ParseXorbFooter(rc)
 }
