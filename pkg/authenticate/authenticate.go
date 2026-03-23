@@ -351,13 +351,15 @@ func parseBearerToken(r *http.Request) (string, bool) {
 
 // tokenPayload is the JSON structure for the token claims.
 type tokenPayload struct {
-	Sub string `json:"sub"`
-	Exp int64  `json:"exp"`
+	Sub    string `json:"sub"`
+	Exp    int64  `json:"exp"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
 }
 
 // signToken creates an HMAC-SHA256 signed token with the given claims and expiration.
-func signToken(key []byte, subject string, exp time.Time, extras ...string) (string, error) {
-	payload, err := json.Marshal(tokenPayload{Sub: subject, Exp: exp.Unix()})
+func signToken(key []byte, subject string, exp time.Time, method, path string) (string, error) {
+	payload, err := json.Marshal(tokenPayload{Sub: subject, Exp: exp.Unix(), Method: method, Path: path})
 	if err != nil {
 		return "", err
 	}
@@ -369,15 +371,12 @@ func signToken(key []byte, subject string, exp time.Time, extras ...string) (str
 	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + encodedPayload
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(signingInput))
-	for _, extra := range extras {
-		mac.Write([]byte(extra))
-	}
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return signingInput + "." + sig, nil
 }
 
 // verifyToken verifies an HMAC-SHA256 signed token and returns the claims.
-func verifyToken(key []byte, token string, extras ...string) (string, bool) {
+func verifyToken(key []byte, token string, method, path string) (string, bool) {
 	parts := strings.SplitN(token, ".", 3)
 	if len(parts) != 3 {
 		return "", false
@@ -389,9 +388,6 @@ func verifyToken(key []byte, token string, extras ...string) (string, bool) {
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(signingInput))
-	for _, extra := range extras {
-		mac.Write([]byte(extra))
-	}
 	if !hmac.Equal(sig, mac.Sum(nil)) {
 		return "", false
 	}
@@ -409,5 +405,34 @@ func verifyToken(key []byte, token string, extras ...string) (string, bool) {
 	if claims.Sub == "" {
 		return "", false
 	}
+	if !methodMatchesPattern(method, claims.Method) {
+		return "", false
+	}
+	if !pathMatchesPattern(path, claims.Path) {
+		return "", false
+	}
 	return claims.Sub, true
+}
+
+func methodMatchesPattern(method, pattern string) bool {
+	if pattern == "*" {
+		return true
+	}
+	return method == pattern
+}
+
+func pathMatchesPattern(path, pattern string) bool {
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return strings.HasPrefix(path, prefix)
+	}
+	if strings.HasSuffix(pattern, "/*") {
+		prefix := strings.TrimSuffix(pattern, "/*")
+		if !strings.HasPrefix(path, prefix) {
+			return false
+		}
+		suffix := path[len(prefix):]
+		return suffix == "" || !strings.Contains(suffix, "/")
+	}
+	return path == pattern
 }

@@ -104,7 +104,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 		var xetAccessToken string
 		if h.tokenSignValidator != nil {
-			token, err := h.tokenSignValidator.Sign(r.Context(), http.MethodGet, "/v1/", user.User, tokenExpiration)
+			token, err := h.tokenSignValidator.Sign(r.Context(), "*", "/**", user.User, tokenExpiration)
 			if err != nil {
 				slog.WarnContext(r.Context(), "failed to sign xet CAS token", "error", err)
 			} else {
@@ -121,6 +121,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 			if action, ok := obj.Actions["upload"]; ok {
 				action.Header["X-Xet-Cas-Url"] = origin
 				action.Header["X-Xet-Access-Token"] = xetAccessToken
+				action.Header["Authorization"] = "Bearer " + xetAccessToken
 				action.Header["X-Xet-Token-Expiration"] = fmt.Sprintf("%d", expiration.Unix())
 			}
 		}

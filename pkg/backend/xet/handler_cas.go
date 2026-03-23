@@ -104,9 +104,9 @@ func (h *Handler) handleGetChunk(w http.ResponseWriter, r *http.Request) {
 	prefix := vars["prefix"]
 	hash := vars["hash"]
 
-	// Validate prefix: only "default-merkledb" is acceptable for deduplication
-	if prefix != "default-merkledb" {
-		responseJSON(w, fmt.Sprintf("invalid prefix %q, expected \"default-merkledb\"", prefix), http.StatusBadRequest)
+	// Validate prefix: only "default" is acceptable for deduplication
+	if prefix != "default" {
+		responseJSON(w, fmt.Sprintf("invalid prefix %q, expected \"default\"", prefix), http.StatusBadRequest)
 		return
 	}
 
@@ -144,9 +144,9 @@ type casReconstructionFetchInfo struct {
 
 // queryReconstructionResponse matches the CAS OpenAPI QueryReconstructionResponse (V1).
 type queryReconstructionResponse struct {
-	OffsetIntoFirstRange int                                       `json:"offset_into_first_range"`
-	Terms                []casReconstructionTerm                   `json:"terms"`
-	FetchInfo            map[string][]casReconstructionFetchInfo   `json:"fetch_info"`
+	OffsetIntoFirstRange int                                     `json:"offset_into_first_range"`
+	Terms                []casReconstructionTerm                 `json:"terms"`
+	FetchInfo            map[string][]casReconstructionFetchInfo `json:"fetch_info"`
 }
 
 // handleGetReconstructionV1 handles GET /v1/reconstructions/{file_id}
@@ -188,7 +188,7 @@ func (h *Handler) handleGetReconstructionV1(w http.ResponseWriter, r *http.Reque
 // xorbRangeDescriptor matches the CAS OpenAPI XorbRangeDescriptor schema.
 type xorbRangeDescriptor struct {
 	Chunks indexRange `json:"chunks"`
-	Bytes  byteRange `json:"bytes"`
+	Bytes  byteRange  `json:"bytes"`
 }
 
 // xorbMultiRangeFetch matches the CAS OpenAPI XorbMultiRangeFetch schema.
@@ -199,9 +199,9 @@ type xorbMultiRangeFetch struct {
 
 // queryReconstructionResponseV2 matches the CAS OpenAPI QueryReconstructionResponseV2.
 type queryReconstructionResponseV2 struct {
-	OffsetIntoFirstRange int                                `json:"offset_into_first_range"`
-	Terms                []casReconstructionTerm            `json:"terms"`
-	Xorbs                map[string][]xorbMultiRangeFetch   `json:"xorbs"`
+	OffsetIntoFirstRange int                              `json:"offset_into_first_range"`
+	Terms                []casReconstructionTerm          `json:"terms"`
+	Xorbs                map[string][]xorbMultiRangeFetch `json:"xorbs"`
 }
 
 // handleGetReconstructionV2 handles GET /v2/reconstructions/{file_id}
