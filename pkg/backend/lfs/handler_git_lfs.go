@@ -90,6 +90,42 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// When xet transfer is negotiated, inject CAS headers into each upload action.
+	// The xet custom transfer agent (git-xet) reads these from the LFS batch response
+	// to know how to connect to the CAS service.
+	// Reference: xet-core git_xet/src/constants.rs
+	if transfer == "xet" {
+		origin := ""
+		if len(bv.Objects) > 0 {
+			origin = bv.Objects[0].Origin
+		}
+		expiration := time.Now().Add(tokenExpiration)
+		user, _ := authenticate.GetUserInfo(r.Context())
+
+		var xetAccessToken string
+		if h.tokenSignValidator != nil {
+			token, err := h.tokenSignValidator.Sign(r.Context(), http.MethodGet, "/v1/", user.User, tokenExpiration)
+			if err != nil {
+				slog.WarnContext(r.Context(), "failed to sign xet CAS token", "error", err)
+			} else {
+				xetAccessToken = token
+			}
+		} else {
+			xetAccessToken = r.Header.Get("Authorization")
+			if len(xetAccessToken) > 7 && xetAccessToken[:7] == "Bearer " {
+				xetAccessToken = xetAccessToken[7:]
+			}
+		}
+
+		for _, obj := range responseObjects {
+			if action, ok := obj.Actions["upload"]; ok {
+				action.Header["X-Xet-Cas-Url"] = origin
+				action.Header["X-Xet-Access-Token"] = xetAccessToken
+				action.Header["X-Xet-Token-Expiration"] = fmt.Sprintf("%d", expiration.Unix())
+			}
+		}
+	}
+
 	respobj := &lfsBatchResponse{
 		Transfer: transfer,
 		Objects:  responseObjects,
