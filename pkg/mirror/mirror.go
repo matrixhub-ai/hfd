@@ -133,7 +133,16 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		}
 		_, err, _ := m.group.Do(repoPath, func() (any, error) {
 			defer m.markSynced(repoPath)
-			return nil, m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+			err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+			if err != nil {
+				return nil, err
+			}
+
+			err = m.syncMirrorLFS(ctx, repo, repoName, opt.SourceURL)
+			if err != nil {
+				return nil, err
+			}
+			return repo, nil
 		})
 		if err != nil {
 			return nil, err
@@ -153,6 +162,10 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		}
 		defer m.markSynced(repoPath)
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+		if err != nil {
+			return nil, err
+		}
+		err = m.syncMirrorLFS(ctx, repo, repoName, opt.SourceURL)
 		if err != nil {
 			return nil, err
 		}
@@ -191,6 +204,10 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 	_, err, _ = m.group.Do(repoPath, func() (any, error) {
 		defer m.markSynced(repoPath)
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+		if err != nil {
+			return nil, err
+		}
+		err = m.syncMirrorLFS(ctx, repo, repoName, opt.SourceURL)
 		if err != nil {
 			return nil, err
 		}
