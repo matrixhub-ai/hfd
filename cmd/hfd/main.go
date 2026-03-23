@@ -18,6 +18,7 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	backendxet "github.com/matrixhub-ai/hfd/pkg/backend/xet"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +26,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
+	pkgxet "github.com/matrixhub-ai/hfd/pkg/xet"
 )
 
 var (
@@ -51,6 +53,8 @@ var (
 	HostURL  = ""
 
 	mirrorTTL = time.Hour
+
+	xetEnabled = false
 )
 
 func init() {
@@ -75,6 +79,8 @@ func init() {
 	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
+
+	flag.BoolVar(&xetEnabled, "xet", xetEnabled, "Enable xet CAS backend for content-addressable storage")
 
 	flag.Parse()
 
@@ -246,6 +252,8 @@ func main() {
 		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
 		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
 		backendhf.WithLFSStorage(lfsStorage),
+		backendhf.WithXetEnabled(xetEnabled),
+		backendhf.WithTokenSignValidator(tokenSignValidator),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -256,7 +264,20 @@ func main() {
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
 		backendlfs.WithLFSStorage(lfsStorage),
 		backendlfs.WithMirror(sharedMirror),
+		backendlfs.WithXetEnabled(xetEnabled),
 	)
+
+	if xetEnabled {
+		xetStorageDir := filepath.Join(absRootDir, "xet")
+		xetStorage := pkgxet.NewStorage(xetStorageDir)
+		slog.InfoContext(ctx, "Xet CAS backend enabled", "dir", xetStorageDir)
+
+		handler = backendxet.NewHandler(
+			backendxet.WithStorage(xetStorage),
+			backendxet.WithNext(handler),
+			backendxet.WithTokenSignValidator(tokenSignValidator),
+		)
+	}
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),

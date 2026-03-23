@@ -75,8 +75,19 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
+	// Determine transfer adapter. If xet is enabled and client offers it, use xet.
+	transfer := "basic"
+	if h.xetEnabled {
+		for _, t := range bv.Transfers {
+			if t == "xet" {
+				transfer = "xet"
+				break
+			}
+		}
+	}
+
 	respobj := &lfsBatchResponse{
-		Transfer: "basic",
+		Transfer: transfer,
 		Objects:  responseObjects,
 	}
 

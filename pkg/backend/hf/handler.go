@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +26,8 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	xetEnabled          bool
+	tokenSignValidator  authenticate.TokenSignValidator
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -79,6 +82,20 @@ func WithLFSStorage(storage lfs.Storage) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithXetEnabled enables the xet token endpoints.
+func WithXetEnabled(enabled bool) Option {
+	return func(h *Handler) {
+		h.xetEnabled = enabled
+	}
+}
+
+// WithTokenSignValidator sets the token signer for signing xet CAS access tokens.
+func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
+	return func(h *Handler) {
+		h.tokenSignValidator = signer
 	}
 }
 
@@ -153,6 +170,12 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+
+	// Xet CAS token endpoints - used by xet-core client to obtain CAS access tokens
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token/{rev}", h.handleXetReadToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token/{rev}", h.handleXetWriteToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token", h.handleXetReadToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token", h.handleXetWriteToken).Methods(http.MethodGet)
 }
 
 type repoInformation struct {
