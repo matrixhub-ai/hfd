@@ -2,7 +2,6 @@ package xet
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
 )
@@ -107,13 +106,4 @@ func XorbContentRange(boundaries []XorbChunkBoundary, startChunk, endChunk uint3
 
 	endByte = boundaries[endChunk-1].Offset
 	return startByte, endByte, nil
-}
-
-// XorbHash computes a hash identifier from the xorb content.
-// This is a convenience for testing; the actual Merkle hash is computed by xet-core.
-func XorbHash(data []byte) string {
-	// Use SHA-256 as a simple content hash for local storage identification.
-	h := [32]byte{}
-	copy(h[:], data)
-	return hex.EncodeToString(h[:])
 }

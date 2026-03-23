@@ -2,13 +2,12 @@ package xet
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/gorilla/mux"
 
@@ -273,14 +272,7 @@ func (h *Handler) buildReconstruction(r *http.Request, fileID string) ([]casReco
 		return nil, nil, os.ErrNotExist
 	}
 
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
-		scheme = fwdProto
-	}
-	origin := fmt.Sprintf("%s://%s", scheme, r.Host)
+	origin := requestOrigin(r)
 
 	var terms []casReconstructionTerm
 	fetchInfo := make(map[string][]casReconstructionFetchInfo)
@@ -396,7 +388,7 @@ func walkFiles(dir string, fn func(path string) error) error {
 	}
 
 	for _, entry := range entries {
-		path := dir + "/" + entry.Name()
+		path := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
 			if err := walkFiles(path, fn); err != nil {
 				return err
@@ -447,10 +439,4 @@ func (h *Handler) handleGetXorb(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", hash))
 	http.ServeContent(w, r, hash, stat.ModTime(), content)
-}
-
-// hashToFileID converts a raw hash string to a file_id for reconstruction lookups.
-func hashToFileID(hash string) string {
-	h := sha256.Sum256([]byte(hash))
-	return hex.EncodeToString(h[:])
 }
