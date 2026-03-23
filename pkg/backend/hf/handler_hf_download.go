@@ -215,6 +215,15 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Repo-Commit", commitHash)
 		w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
+		// When xet is enabled, add xet storage headers so that clients with
+		// hf_xet installed can download the file via xet CAS reconstruction.
+		if h.xetEnabled {
+			w.Header().Set("X-Xet-Hash", ptr.OID())
+			refreshRoute := fmt.Sprintf("%s/api/%s/%s/xet-read-token/%s",
+				requestOrigin(r), ri.RepoType, ri.FullName, rev)
+			w.Header().Set("X-Xet-Refresh-Route", refreshRoute)
+		}
+
 		if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
 			if pf := h.mirror.Get(ptr.OID()); pf != nil {
 				rs := pf.NewReadSeeker()
@@ -222,8 +231,10 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
 				return
 			}
-			responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
-			return
+			if !h.xetEnabled {
+				responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
+				return
+			}
 		}
 		if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
 			url, err := signer.SignGet(ptr.OID())
@@ -238,6 +249,12 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			content, stat, err := getter.Get(ptr.OID())
 			if err != nil {
 				if os.IsNotExist(err) {
+					if h.xetEnabled {
+						// Content is not in LFS but xet is enabled; return
+						// headers so the client can download via xet CAS.
+						w.Header().Set("Content-Length", strconv.FormatInt(ptr.Size(), 10))
+						return
+					}
 					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 					return
 				}
@@ -249,6 +266,12 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			}()
 
 			http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
+			return
+		}
+		if h.xetEnabled {
+			// No LFS getter available but xet is enabled; return headers
+			// so the client can download via xet CAS.
+			w.Header().Set("Content-Length", strconv.FormatInt(ptr.Size(), 10))
 			return
 		}
 		responseJSON(w, fmt.Errorf("LFS storage does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
