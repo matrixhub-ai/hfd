@@ -75,9 +75,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
-	// Determine transfer adapter. If xet is enabled and client offers it, use xet.
+	// Determine transfer adapter. If xet is enabled and client offers it, use xet
+	// for uploads only. Downloads must use "basic" because the xet custom transfer
+	// agent (git-xet) does not support download — clients download via standard
+	// git-lfs basic transfer protocol.
+	// https://github.com/huggingface/xet-core/blob/ffee6a978caf15e498efec7bb01fb4644a62f21b/git_xet/src/app/xet_agent.rs#L63-L68
 	transfer := "basic"
-	if h.xetEnabled {
+	if h.xetEnabled && bv.Operation == "upload" {
 		for _, t := range bv.Transfers {
 			if t == "xet" {
 				transfer = "xet"
