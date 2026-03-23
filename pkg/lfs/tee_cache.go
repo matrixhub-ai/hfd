@@ -194,10 +194,12 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64
 		// Also store in xet CAS storage when available, so the object
 		// is accessible through both LFS and xet reconstruction paths.
 		if m.xetStorage != nil {
-			if xetReader, _, err := m.storage.(Getter).Get(oid); err == nil {
-				defer xetReader.Close()
-				if putErr := m.xetStorage.Put(oid, xetReader, size); putErr != nil {
-					slog.ErrorContext(ctx, "LFS tee cache: failed to store object in xet storage", "oid", oid, "error", putErr)
+			if getter, ok := m.storage.(Getter); ok {
+				if xetReader, _, err := getter.Get(oid); err == nil {
+					defer xetReader.Close()
+					if putErr := m.xetStorage.Put(oid, xetReader, size); putErr != nil {
+						slog.ErrorContext(ctx, "LFS tee cache: failed to store object in xet storage", "oid", oid, "error", putErr)
+					}
 				}
 			}
 		}

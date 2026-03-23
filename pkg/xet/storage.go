@@ -6,16 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Storage provides local filesystem storage for XET CAS objects (xorbs and shards).
 type Storage struct {
-	basePath  string
-	xorbDir   string
-	shardDir  string
-	shardsMu  sync.Mutex
-	shardList []string // ordered list of shard file paths
+	basePath     string
+	xorbDir      string
+	shardDir     string
+	shardsMu     sync.Mutex
+	shardList    []string // ordered list of shard file paths
+	shardCounter atomic.Int64
 }
 
 // NewStorage creates a new XET CAS storage rooted at basePath.
@@ -93,7 +95,7 @@ func (s *Storage) PutShard(r io.Reader) (string, error) {
 	s.shardsMu.Lock()
 	defer s.shardsMu.Unlock()
 
-	name := fmt.Sprintf("shard_%d", time.Now().UnixNano())
+	name := fmt.Sprintf("shard_%d_%d", time.Now().UnixNano(), s.shardCounter.Add(1))
 	path := filepath.Join(s.shardDir, name)
 
 	file, err := os.CreateTemp(s.shardDir, "shard_tmp_")
