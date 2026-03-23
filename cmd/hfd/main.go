@@ -18,6 +18,7 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	backendxet "github.com/matrixhub-ai/hfd/pkg/backend/xet"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +26,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/pkg/xet"
 )
 
 var (
@@ -51,6 +53,8 @@ var (
 	HostURL  = ""
 
 	mirrorTTL = time.Hour
+
+	xetEnabled = false
 )
 
 func init() {
@@ -75,6 +79,7 @@ func init() {
 	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
+	flag.BoolVar(&xetEnabled, "xet", xetEnabled, "Enable xet transfer support for CAS-based content-addressed storage")
 
 	flag.Parse()
 
@@ -147,6 +152,13 @@ func main() {
 			s3UsePathStyle,
 			s3SignEndpoint,
 		)
+	}
+
+	// Initialize xet CAS storage when xet is enabled
+	var xetStorage *xet.Storage
+	if xetEnabled {
+		xetStorage = xet.NewStorage(storage.XetDir())
+		slog.InfoContext(ctx, "XET support enabled", "xetDir", storage.XetDir())
 	}
 
 	permissionHookFunc := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
@@ -238,7 +250,7 @@ func main() {
 
 	var handler http.Handler
 
-	handler = backendhf.NewHandler(
+	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(storage),
 		backendhf.WithNext(handler),
 		backendhf.WithMirror(sharedMirror),
@@ -246,9 +258,16 @@ func main() {
 		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
 		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
 		backendhf.WithLFSStorage(lfsStorage),
-	)
+	}
+	if xetEnabled {
+		hfOpts = append(hfOpts,
+			backendhf.WithXetEnabled(true),
+			backendhf.WithTokenSignValidator(tokenSignValidator),
+		)
+	}
+	handler = backendhf.NewHandler(hfOpts...)
 
-	handler = backendlfs.NewHandler(
+	lfsOpts := []backendlfs.Option{
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
 		backendlfs.WithMirror(sharedMirror),
@@ -256,7 +275,19 @@ func main() {
 		backendlfs.WithTokenSignValidator(tokenSignValidator),
 		backendlfs.WithLFSStorage(lfsStorage),
 		backendlfs.WithMirror(sharedMirror),
-	)
+	}
+	if xetEnabled {
+		lfsOpts = append(lfsOpts, backendlfs.WithXetEnabled(true))
+	}
+	handler = backendlfs.NewHandler(lfsOpts...)
+
+	// XET CAS backend handler - handles xorb/shard/chunk/reconstruction endpoints
+	if xetEnabled && xetStorage != nil {
+		handler = backendxet.NewHandler(
+			backendxet.WithNext(handler),
+			backendxet.WithStorage(xetStorage),
+		)
+	}
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),

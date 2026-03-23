@@ -194,7 +194,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	var respFiles []preuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
-		if gitAttrs.IsLFS(file.Path) {
+		if gitAttrs.IsLFS(file.Path) || gitAttrs.IsXet(file.Path) {
 			uploadMode = "lfs"
 		}
 

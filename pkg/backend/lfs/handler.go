@@ -23,6 +23,7 @@ type Handler struct {
 	permissionHookFunc permission.PermissionHookFunc
 	tokenSignValidator authenticate.TokenSignValidator
 	mirror             *mirror.Mirror
+	xetEnabled         bool
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -68,6 +69,13 @@ func WithLFSStorage(storage lfs.Storage) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithXetEnabled enables xet transfer negotiation in LFS batch responses.
+func WithXetEnabled(enabled bool) Option {
+	return func(h *Handler) {
+		h.xetEnabled = enabled
 	}
 }
 

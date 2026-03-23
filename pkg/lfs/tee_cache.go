@@ -47,11 +47,21 @@ type TeeCache struct {
 	httpClient *http.Client
 	cache      sync.Map
 	storage    Storage
+	xetStorage Storage // optional xet CAS storage for caching xorbs
 	mut        sync.Mutex
 }
 
 // TeeCacheOption configures a TeeCache.
 type TeeCacheOption func(*TeeCache)
+
+// WithXetStorage sets an additional storage backend for caching XET CAS objects (xorbs).
+// When set, objects fetched from upstream will be stored in both the primary LFS storage
+// and the xet storage.
+func WithXetStorage(storage Storage) TeeCacheOption {
+	return func(t *TeeCache) {
+		t.xetStorage = storage
+	}
+}
 
 // NewTeeCache creates a new TeeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
@@ -180,6 +190,16 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64
 		if err := m.storage.Put(oid, reader, size); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: failed to storage object", "oid", oid, "error", err)
 			return
+		}
+		// Also store in xet CAS storage when available, so the object
+		// is accessible through both LFS and xet reconstruction paths.
+		if m.xetStorage != nil {
+			if xetReader, _, err := m.storage.(Getter).Get(oid); err == nil {
+				defer xetReader.Close()
+				if putErr := m.xetStorage.Put(oid, xetReader, size); putErr != nil {
+					slog.ErrorContext(ctx, "LFS tee cache: failed to store object in xet storage", "oid", oid, "error", putErr)
+				}
+			}
 		}
 	}()
 }

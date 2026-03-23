@@ -41,6 +41,17 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check if client supports xet transfer and server has xet enabled
+	useXet := false
+	if h.xetEnabled {
+		for _, t := range bv.Transfers {
+			if t == "xet" {
+				useXet = true
+				break
+			}
+		}
+	}
+
 	var responseObjects []*lfsRepresentation
 
 	// Create a response object
@@ -75,8 +86,13 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
+	transfer := "basic"
+	if useXet {
+		transfer = "xet"
+	}
+
 	respobj := &lfsBatchResponse{
-		Transfer: "basic",
+		Transfer: transfer,
 		Objects:  responseObjects,
 	}
 

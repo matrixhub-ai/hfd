@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +26,8 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	xetEnabled          bool
+	tokenSignValidator  authenticate.TokenSignValidator
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -79,6 +82,20 @@ func WithLFSStorage(storage lfs.Storage) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithXetEnabled enables xet transfer support for the HuggingFace API endpoints.
+func WithXetEnabled(enabled bool) Option {
+	return func(h *Handler) {
+		h.xetEnabled = enabled
+	}
+}
+
+// WithTokenSignValidator sets the token signer for signing xet access tokens.
+func WithTokenSignValidator(signer authenticate.TokenSignValidator) Option {
+	return func(h *Handler) {
+		h.tokenSignValidator = signer
 	}
 }
 
@@ -153,6 +170,12 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+
+	// XET token endpoints - used by xet-core for CAS authentication
+	if h.xetEnabled {
+		r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token/{rev}", h.handleXetReadToken).Methods(http.MethodPost, http.MethodGet)
+		r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token/{rev}", h.handleXetWriteToken).Methods(http.MethodPost, http.MethodGet)
+	}
 }
 
 type repoInformation struct {

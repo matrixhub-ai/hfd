@@ -26,6 +26,17 @@ type GitAttributes struct {
 // IsLFS returns true if the given file path matches an LFS filter pattern
 // defined in the .gitattributes file.
 func (g *GitAttributes) IsLFS(filePath string) bool {
+	return g.filterIs(filePath, "lfs")
+}
+
+// IsXet returns true if the given file path matches an xet filter pattern
+// defined in the .gitattributes file.
+func (g *GitAttributes) IsXet(filePath string) bool {
+	return g.filterIs(filePath, "xet")
+}
+
+// filterIs checks if the filter attribute for the given file path matches the given value.
+func (g *GitAttributes) filterIs(filePath, value string) bool {
 	if g == nil || g.matcher == nil {
 		return false
 	}
@@ -35,7 +46,7 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 		return false
 	}
 	attr, ok := results["filter"]
-	return ok && attr.IsValueSet() && attr.Value() == "lfs"
+	return ok && attr.IsValueSet() && attr.Value() == value
 }
 
 var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
