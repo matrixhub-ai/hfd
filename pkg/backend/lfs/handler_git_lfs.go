@@ -46,20 +46,20 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	// Create a response object
 	for _, object := range bv.Objects {
 		if h.lfsStorage.Exists(object.Oid) {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, true, false))
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false))
 			continue
 		}
 
 		if h.mirror != nil {
 			if pf := h.mirror.Get(object.Oid); pf != nil {
-				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, true, false))
+				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false))
 				continue
 			}
 		}
 
 		// Object is not found
 		if bv.Operation == "upload" {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), object, false, true))
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, false, true))
 		} else {
 			rep := &lfsRepresentation{
 				Oid:  object.Oid,
@@ -169,7 +169,7 @@ const tokenExpiration = time.Hour
 
 // lfsRepresent takes a RequestVars and Meta and turns it into a Representation suitable
 // for json encoding
-func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
+func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
 	rep := &lfsRepresentation{
 		Oid:     rv.Oid,
 		Size:    rv.Size,
@@ -178,7 +178,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 
 	user, _ := authenticate.GetUserInfo(ctx)
 
-	if download {
+	if download && op == "download" {
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
@@ -193,7 +193,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 		rep.Actions["download"] = &lfsLink{Href: link, Header: header}
 	}
 
-	if upload {
+	if upload && op == "upload" {
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
@@ -220,6 +220,11 @@ func (h *Handler) lfsRepresent(ctx context.Context, rv *lfsRequestVars, download
 		}
 		rep.Actions["verify"] = &lfsLink{Href: verifyLink, Header: verifyHeader}
 	}
+
+	if len(rep.Actions) == 0 {
+		rep.Actions = nil
+	}
+
 	return rep
 }
 
@@ -316,7 +321,7 @@ type lfsBatchResponse struct {
 type lfsRepresentation struct {
 	Oid     string              `json:"oid"`
 	Size    int64               `json:"size"`
-	Actions map[string]*lfsLink `json:"actions"`
+	Actions map[string]*lfsLink `json:"actions,omitempty"`
 	Error   *lfsObjectError     `json:"error,omitempty"`
 }
 
