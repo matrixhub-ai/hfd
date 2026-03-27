@@ -613,6 +613,9 @@ func TestHuggingFaceUploadLFSFile(t *testing.T) {
 
 	runHFCmd(t, endpoint, "upload", "lfs-user/hf-lfs-model", uploadDir, ".", "--commit-message", "Upload LFS file")
 
+	// repeatedly upload to ensure the same LFS object is reused and not duplicated
+	runHFCmd(t, endpoint, "upload", "lfs-user/hf-lfs-model", uploadDir, ".", "--commit-message", "Upload LFS file")
+
 	// Download via resolve to ensure the content is served through LFS
 	resp, err := http.Get(endpoint + "/lfs-user/hf-lfs-model/resolve/main/model.bin")
 	if err != nil {
