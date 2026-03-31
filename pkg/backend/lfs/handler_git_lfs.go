@@ -20,7 +20,33 @@ import (
 const (
 	contentMediaType = "application/vnd.git-lfs"
 	metaMediaType    = contentMediaType + "+json"
+
+	// Multipart upload configuration
+	defaultPartSize          = 100 * 1024 * 1024 // 100MB
+	multipartThreshold       = 100 * 1024 * 1024 // Use multipart for files >= 100MB
 )
+
+// negotiateTransfer selects the best transfer protocol from client's requested transfers.
+// Returns the selected transfer and whether multipart is supported.
+func negotiateTransfer(requestedTransfers []string, storage lfs.Storage, fileSize int64) (string, bool) {
+	// Check if storage supports multipart
+	_, supportsMultipart := storage.(lfs.SignMultipartPutter)
+
+	// If file is too small or storage doesn't support multipart, use basic
+	if fileSize < multipartThreshold || !supportsMultipart {
+		return "basic", false
+	}
+
+	// Check if client supports multipart-basic
+	for _, t := range requestedTransfers {
+		if t == "multipart-basic" {
+			return "multipart-basic", true
+		}
+	}
+
+	// Default to basic transfer
+	return "basic", false
+}
 
 // handleBatch provides the batch api
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
@@ -43,23 +69,42 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	var responseObjects []*lfsRepresentation
 
+	// Determine the transfer protocol to use for this batch
+	// For simplicity, we'll negotiate per-object based on size
+	selectedTransfer := "basic"
+	useMultipart := false
+
+	// If any object is large enough and client/storage supports multipart, use it
+	if bv.Operation == "upload" && len(bv.Transfers) > 0 {
+		for _, object := range bv.Objects {
+			transfer, multipart := negotiateTransfer(bv.Transfers, h.lfsStorage, object.Size)
+			if multipart {
+				selectedTransfer = transfer
+				useMultipart = true
+				break
+			}
+		}
+	}
+
 	// Create a response object
 	for _, object := range bv.Objects {
 		if h.lfsStorage.Exists(object.Oid) {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false))
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false, useMultipart))
 			continue
 		}
 
 		if h.mirror != nil {
 			if pf := h.mirror.Get(object.Oid); pf != nil {
-				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false))
+				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false, useMultipart))
 				continue
 			}
 		}
 
 		// Object is not found
 		if bv.Operation == "upload" {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, false, true))
+			// For uploads, determine if this specific object should use multipart
+			objUseMultipart := useMultipart && object.Size >= multipartThreshold
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, false, true, objUseMultipart))
 		} else {
 			rep := &lfsRepresentation{
 				Oid:  object.Oid,
@@ -76,7 +121,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", metaMediaType)
 
 	respobj := &lfsBatchResponse{
-		Transfer: "basic",
+		Transfer: selectedTransfer,
 		Objects:  responseObjects,
 	}
 
@@ -169,7 +214,7 @@ const tokenExpiration = time.Hour
 
 // lfsRepresent takes a RequestVars and Meta and turns it into a Representation suitable
 // for json encoding
-func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
+func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVars, download, upload, useMultipart bool) *lfsRepresentation {
 	rep := &lfsRepresentation{
 		Oid:     rv.Oid,
 		Size:    rv.Size,
@@ -194,6 +239,45 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 	}
 
 	if upload && op == "upload" {
+		// Check if we should use multipart upload
+		if useMultipart {
+			if multipartStorage, ok := h.lfsStorage.(lfs.SignMultipartPutter); ok {
+				multipartUpload, err := multipartStorage.SignMultipartPut(rv.Oid, defaultPartSize, rv.Size)
+				if err != nil {
+					slog.WarnContext(ctx, "failed to create multipart upload", "oid", rv.Oid, "error", err)
+					// Fall back to basic upload
+					useMultipart = false
+				} else {
+					// Create multipart upload action with parts
+					rep.Actions["upload"] = &lfsLink{
+						Href:  rv.objectsLink(), // Base URL (not used by client but required by spec)
+						Header: map[string]string{
+							"Accept": contentMediaType,
+						},
+						Parts: multipartUpload.Parts,
+					}
+
+					// Add verify action
+					verifyHeader := make(map[string]string)
+					verifyLink := rv.verifyLink()
+					if h.tokenSignValidator != nil {
+						if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, user.User, tokenExpiration); err != nil {
+							slog.WarnContext(ctx, "failed to sign token for LFS verify link", "oid", rv.Oid, "error", err)
+						} else if token != "" {
+							verifyHeader["Authorization"] = "Bearer " + token
+						}
+					} else if len(rv.Authorization) > 0 {
+						verifyHeader["Authorization"] = rv.Authorization
+					}
+					rep.Actions["verify"] = &lfsLink{Href: verifyLink, Header: verifyHeader}
+
+					// Return early since we've set up multipart
+					return rep
+				}
+			}
+		}
+
+		// Basic upload (either requested or fallback from multipart failure)
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
@@ -332,9 +416,10 @@ type lfsObjectError struct {
 
 // lfsLink provides a structure used to build a hypermedia representation of an HTTP lfsLink.
 type lfsLink struct {
-	Href      string            `json:"href"`
-	Header    map[string]string `json:"header,omitempty"`
-	ExpiresAt time.Time         `json:"expires_at"`
+	Href      string              `json:"href"`
+	Header    map[string]string   `json:"header,omitempty"`
+	ExpiresAt time.Time           `json:"expires_at,omitempty"`
+	Parts     []lfs.MultipartPart `json:"parts,omitempty"` // For multipart-basic transfer
 }
 
 // metaMatcher provides a mux.MatcherFunc that only allows requests that contain

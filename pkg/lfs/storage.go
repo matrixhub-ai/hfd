@@ -28,3 +28,22 @@ type SignGetter interface {
 type SignPutter interface {
 	SignPut(oid string) (string, error)
 }
+
+// MultipartPart represents a single part in a multipart upload.
+type MultipartPart struct {
+	PartNumber int    `json:"part_number"`
+	URL        string `json:"href"`
+}
+
+// MultipartUpload represents a multipart upload session.
+type MultipartUpload struct {
+	UploadID string           `json:"upload_id"`
+	Parts    []MultipartPart  `json:"parts"`
+}
+
+// SignMultipartPutter is implemented by stores that support multipart uploads with presigned URLs.
+type SignMultipartPutter interface {
+	// SignMultipartPut creates a multipart upload and returns presigned URLs for each part.
+	// partSize is the size of each part in bytes, totalSize is the total file size.
+	SignMultipartPut(oid string, partSize int64, totalSize int64) (*MultipartUpload, error)
+}

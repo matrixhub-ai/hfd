@@ -23,6 +23,8 @@ type s3Storage struct {
 	bucket            string
 	expire            time.Duration
 	checksumAlgorithm string
+	partSize          int64 // Size of each part in multipart upload (default 100MB)
+	multipartThreshold int64 // Minimum file size to use multipart (default 100MB)
 }
 
 // NewS3 creates a new S3-backed Store. The basePath is a prefix for all object keys in the bucket.
@@ -52,6 +54,8 @@ func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathSty
 		bucket:            bucket,
 		expire:            60 * time.Minute,
 		checksumAlgorithm: "SHA256",
+		partSize:          100 * 1024 * 1024, // 100MB default part size
+		multipartThreshold: 100 * 1024 * 1024, // 100MB threshold for multipart
 	}
 }
 
@@ -93,6 +97,66 @@ func (s *s3Storage) SignPut(oid string) (string, error) {
 		return "", err
 	}
 	return urlStr, nil
+}
+
+// SignMultipartPut creates a multipart upload and returns presigned URLs for each part.
+func (s *s3Storage) SignMultipartPut(oid string, partSize int64, totalSize int64) (*MultipartUpload, error) {
+	if partSize <= 0 {
+		partSize = s.partSize
+	}
+
+	key := path.Join(s.basePath, transformKey(oid))
+
+	// Create multipart upload
+	createOutput, err := s.signS3.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create multipart upload: %w", err)
+	}
+
+	uploadID := *createOutput.UploadId
+
+	// Calculate number of parts
+	numParts := (totalSize + partSize - 1) / partSize
+	if numParts > 10000 {
+		// S3 has a limit of 10,000 parts
+		return nil, fmt.Errorf("file too large: would require %d parts (max 10000)", numParts)
+	}
+
+	// Generate presigned URLs for each part
+	parts := make([]MultipartPart, numParts)
+	for i := int64(0); i < numParts; i++ {
+		partNumber := i + 1
+		req, _ := s.signS3.UploadPartRequest(&s3.UploadPartInput{
+			Bucket:     &s.bucket,
+			Key:        &key,
+			PartNumber: aws.Int64(partNumber),
+			UploadId:   &uploadID,
+		})
+
+		urlStr, err := req.Presign(s.expire)
+		if err != nil {
+			// If we fail to generate URLs, abort the multipart upload
+			_, _ = s.signS3.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
+				Bucket:   &s.bucket,
+				Key:      &key,
+				UploadId: &uploadID,
+			})
+			return nil, fmt.Errorf("failed to presign part %d: %w", partNumber, err)
+		}
+
+		parts[i] = MultipartPart{
+			PartNumber: int(partNumber),
+			URL:        urlStr,
+		}
+	}
+
+	return &MultipartUpload{
+		UploadID: uploadID,
+		Parts:    parts,
+	}, nil
 }
 
 func (s *s3Storage) Put(oid string, r io.Reader, size int64) error {
