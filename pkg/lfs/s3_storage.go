@@ -195,3 +195,132 @@ func isNotFoundError(err error) bool {
 	}
 	return false
 }
+
+// SignMultipartPut initiates a multipart upload and returns presigned URLs for each part.
+func (s *s3Storage) SignMultipartPut(oid string, size int64) (*MultipartUpload, error) {
+	const minPartSize = int64(100 * 1024 * 1024) // 100MB per part (per spec)
+	const maxParts = 10000                        // S3 limit
+
+	key := path.Join(s.basePath, transformKey(oid))
+
+	// Initiate multipart upload
+	createInput := &s3.CreateMultipartUploadInput{
+		Bucket:            &s.bucket,
+		Key:               &key,
+		ChecksumAlgorithm: &s.checksumAlgorithm,
+	}
+
+	result, err := s.s3.CreateMultipartUpload(createInput)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate multipart upload: %w", err)
+	}
+
+	uploadID := *result.UploadId
+
+	// Calculate number of parts
+	partSize := minPartSize
+	numParts := int((size + partSize - 1) / partSize)
+
+	// Ensure we don't exceed S3's max parts limit
+	if numParts > maxParts {
+		partSize = (size + maxParts - 1) / maxParts
+		numParts = maxParts
+	}
+
+	// Generate presigned URLs for each part
+	parts := make([]MultipartPart, numParts)
+	for i := 0; i < numParts; i++ {
+		partNum := i + 1
+		pos := int64(i) * partSize
+		partSizeForThisPart := partSize
+
+		// Last part might be smaller
+		if i == numParts-1 {
+			partSizeForThisPart = size - pos
+		}
+
+		req, _ := s.signS3.UploadPartRequest(&s3.UploadPartInput{
+			Bucket:     &s.bucket,
+			Key:        &key,
+			PartNumber: aws.Int64(int64(partNum)),
+			UploadId:   &uploadID,
+		})
+
+		urlStr, err := req.Presign(s.expire)
+		if err != nil {
+			// Abort the upload since we can't generate all URLs
+			_ = s.AbortMultipartUpload(oid, uploadID)
+			return nil, fmt.Errorf("failed to presign part %d: %w", partNum, err)
+		}
+
+		parts[i] = MultipartPart{
+			PartNumber: partNum,
+			URL:        urlStr,
+			Pos:        pos,
+			Size:       partSizeForThisPart,
+		}
+	}
+
+	return &MultipartUpload{
+		UploadID: uploadID,
+		Parts:    parts,
+	}, nil
+}
+
+// CompleteMultipartUpload completes a multipart upload.
+func (s *s3Storage) CompleteMultipartUpload(oid string, uploadID string, partETags map[int]string) error {
+	key := path.Join(s.basePath, transformKey(oid))
+
+	// Build the list of completed parts
+	completedParts := make([]*s3.CompletedPart, 0, len(partETags))
+	for partNum, etag := range partETags {
+		completedParts = append(completedParts, &s3.CompletedPart{
+			ETag:       aws.String(etag),
+			PartNumber: aws.Int64(int64(partNum)),
+		})
+	}
+
+	// Sort by part number (S3 requires this)
+	// Using a simple bubble sort since parts are usually small
+	for i := 0; i < len(completedParts); i++ {
+		for j := i + 1; j < len(completedParts); j++ {
+			if *completedParts[i].PartNumber > *completedParts[j].PartNumber {
+				completedParts[i], completedParts[j] = completedParts[j], completedParts[i]
+			}
+		}
+	}
+
+	completeInput := &s3.CompleteMultipartUploadInput{
+		Bucket:   &s.bucket,
+		Key:      &key,
+		UploadId: &uploadID,
+		MultipartUpload: &s3.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	}
+
+	_, err := s.s3.CompleteMultipartUpload(completeInput)
+	if err != nil {
+		return fmt.Errorf("failed to complete multipart upload: %w", err)
+	}
+
+	return nil
+}
+
+// AbortMultipartUpload aborts a multipart upload and cleans up any uploaded parts.
+func (s *s3Storage) AbortMultipartUpload(oid string, uploadID string) error {
+	key := path.Join(s.basePath, transformKey(oid))
+
+	abortInput := &s3.AbortMultipartUploadInput{
+		Bucket:   &s.bucket,
+		Key:      &key,
+		UploadId: &uploadID,
+	}
+
+	_, err := s.s3.AbortMultipartUpload(abortInput)
+	if err != nil {
+		return fmt.Errorf("failed to abort multipart upload: %w", err)
+	}
+
+	return nil
+}
