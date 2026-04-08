@@ -104,6 +104,8 @@ func (h *Handler) registryLFS(r *mux.Router) {
 	r.HandleFunc("/objects/{oid}", h.handleGetContent).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/objects/{oid}", h.handlePutContent).Methods(http.MethodPut)
 	r.HandleFunc("/objects/{oid}/verify", h.handleVerifyObject).Methods(http.MethodPost)
+	r.HandleFunc("/objects/{oid}/multipart/verify", h.handleMultipartVerify).Methods(http.MethodPost)
+	r.HandleFunc("/objects/{oid}/multipart/abort", h.handleMultipartAbort).Methods(http.MethodPost)
 }
 
 func (h *Handler) registryLFSLock(r *mux.Router) {
