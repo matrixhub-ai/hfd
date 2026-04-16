@@ -217,6 +217,13 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 		if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
 			if pf := h.mirror.Get(ptr.OID()); pf != nil {
+				// Prevent concurrent downloads.
+				if r.Method == http.MethodHead {
+					w.Header().Set("Content-Length", strconv.FormatInt(pf.Total(), 10))
+					w.Header().Set("Last-Modified", pf.ModTime().UTC().Format(http.TimeFormat))
+					return
+				}
+
 				rs := pf.NewReadSeeker()
 				defer rs.Close()
 				http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
