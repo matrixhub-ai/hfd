@@ -99,12 +99,23 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `GET` | `/api/spaces/{namespace}/{repo}/treesize/{rev}/{path}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/treesize/{rev}/{path}) | Get folder size |
 | ❌ | `POST` | `/api/spaces/{namespace}/{repo}/variables` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/POST/api/spaces/{namespace}/{repo}/variables) | Upsert variable |
 | ❌ | `DELETE` | `/api/spaces/{namespace}/{repo}/variables` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/DELETE/api/spaces/{namespace}/{repo}/variables) | Delete variable |
+| ❌ | `PUT` | `/api/spaces/{namespace}/{repo}/volumes` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/PUT/api/spaces/{namespace}/{repo}/volumes) | Set Space volumes |
+| ❌ | `DELETE` | `/api/spaces/{namespace}/{repo}/volumes` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/DELETE/api/spaces/{namespace}/{repo}/volumes) | Delete Space volumes |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/xet-read-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/xet-write-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
 | ✅ | `GET` | `/spaces/{namespace}/{repo}/resolve/{rev}/{path}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/spaces/{namespace}/{repo}/resolve/{rev}/{path}) | Resolve a file |
 | ✅ | `POST` | `/api/repos/create` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/create) | Create a new repository |
 | ✅ | `POST` | `/api/repos/move` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/move) | Move repo |
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
+| ❌ | `POST` | `/api/agentic/provisioning/account_requests` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/account_requests) | Create an Agentic Provisioning account request |
+| ❌ | `POST` | `/api/agentic/provisioning/deep_links` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/deep_links) | Create a self-authenticated deep link to the user's billing dashboard |
+| ❌ | `GET` | `/api/agentic/provisioning/health` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/health) | Get Agentic Provisioning health |
+| ❌ | `POST` | `/api/agentic/provisioning/resources` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources) | Provision a resource |
+| ❌ | `GET` | `/api/agentic/provisioning/resources/{id}` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/resources/{id}) | Get a resource by ID |
+| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/remove` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/remove) | Remove / de-provision a resource |
+| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/rotate_credentials` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/rotate_credentials) | Rotate the credentials for a resource |
+| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/update_service` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/update_service) | Update a resource's service (e.g. plan upgrade) |
+| ❌ | `GET` | `/api/agentic/provisioning/services` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/services) | Get Agentic Provisioning services |
 | ❌ | `GET` | `/api/avatars/{namespace}` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/avatars/{namespace}), [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/avatars/{namespace}) | Get avatar |
 | ❌ | `POST` | `/api/blog/{namespace}/{slug}/comment` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/blog/{namespace}/{slug}/comment) | Create a new comment |
 | ❌ | `POST` | `/api/blog/{namespace}/{slug}/comment/{commentId}/reply` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/blog/{namespace}/{slug}/comment/{commentId}/reply) | Create a new comment |
@@ -125,7 +136,6 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/collections/{namespace}/{slug}/items/batch` | [collections](https://huggingface.co/spaces/huggingface/openapi#tag/collections/POST/api/collections/{namespace}/{slug}/items/batch) | Batch update items |
 | ❌ | `DELETE` | `/api/collections/{namespace}/{slug}/items/{slug}` | [collections](https://huggingface.co/spaces/huggingface/openapi#tag/collections/DELETE/api/collections/{namespace}/{slug}/items/{slug}) | Delete item |
 | ❌ | `GET` | `/api/daily_papers` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/GET/api/daily_papers) | Get Daily Papers |
-| ❌ | `POST` | `/api/discussions/mark-as-read` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/POST/api/discussions/mark-as-read) | Change read status |
 | ❌ | `GET` | `/api/docs` | [docs](https://huggingface.co/spaces/huggingface/openapi#tag/docs/GET/api/docs) | List docs |
 | ❌ | `GET` | `/api/docs/search` | [docs](https://huggingface.co/spaces/huggingface/openapi#tag/docs/GET/api/docs/search) | Search docs |
 | ❌ | `GET` | `/api/docs/search/full-text` | [docs](https://huggingface.co/spaces/huggingface/openapi#tag/docs/GET/api/docs/search/full-text) | Full-text search docs |
@@ -141,8 +151,11 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `GET` | `/api/jobs/{namespace}/{jobId}/events` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/jobs/{namespace}/{jobId}/events) | Stream job events |
 | ❌ | `GET` | `/api/jobs/{namespace}/{jobId}/logs` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/jobs/{namespace}/{jobId}/logs) | Stream job logs |
 | ❌ | `GET` | `/api/jobs/{namespace}/{jobId}/metrics` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/jobs/{namespace}/{jobId}/metrics) | Stream job metrics |
+| ❌ | `GET` | `/api/kernels/{namespace}/{repo}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}) | Get kernel |
+| ❌ | `GET` | `/api/kernels/{namespace}/{repo}/revision/{rev}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/revision/{rev}) | Get kernel |
 | ❌ | `GET` | `/api/notifications` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/GET/api/notifications) | List notifications |
 | ❌ | `DELETE` | `/api/notifications` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/DELETE/api/notifications) | Delete notifications |
+| ❌ | `POST` | `/api/notifications/mark-as-read` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/POST/api/notifications/mark-as-read) | Change read status |
 | ❌ | `GET` | `/api/organizations/{name}/audit-log/export` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/audit-log/export) | Export the audit log |
 | ❌ | `GET` | `/api/organizations/{name}/avatar` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/avatar) | Get avatar |
 | ❌ | `GET` | `/api/organizations/{name}/billing/usage` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage) | Get org usage |
@@ -180,7 +193,9 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `PUT` | `/api/organizations/{name}/scim/v2/Users/{userId}` | [scim](https://huggingface.co/spaces/huggingface/openapi#tag/scim/PUT/api/organizations/{name}/scim/v2/Users/{userId}) | Update a SCIM user |
 | ❌ | `PATCH` | `/api/organizations/{name}/scim/v2/Users/{userId}` | [scim](https://huggingface.co/spaces/huggingface/openapi#tag/scim/PATCH/api/organizations/{name}/scim/v2/Users/{userId}) | Update SCIM user |
 | ❌ | `DELETE` | `/api/organizations/{name}/scim/v2/Users/{userId}` | [scim](https://huggingface.co/spaces/huggingface/openapi#tag/scim/DELETE/api/organizations/{name}/scim/v2/Users/{userId}) | Delete a SCIM user |
+| ❌ | `POST` | `/api/organizations/{name}/settings/tokens/revoke` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/POST/api/organizations/{name}/settings/tokens/revoke) | Revoke a member's access token from the organization |
 | ❌ | `GET` | `/api/organizations/{name}/socials` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/socials) | Get social handles |
+| ❌ | `GET` | `/api/papers` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/GET/api/papers) | List papers |
 | ❌ | `POST` | `/api/papers/index` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/POST/api/papers/index) | Index a paper |
 | ❌ | `GET` | `/api/papers/search` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/GET/api/papers/search) | Search papers |
 | ❌ | `POST` | `/api/papers/{paperId}/comment` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/papers/{paperId}/comment) | Create a new comment |
