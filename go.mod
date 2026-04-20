@@ -5,7 +5,7 @@ go 1.25
 require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/git-lfs/git-lfs/v3 v3.7.1
-	github.com/go-git/go-git/v5 v5.17.1
+	github.com/go-git/go-git/v5 v5.18.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/wzshiming/httpseek v0.5.0
