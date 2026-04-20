@@ -340,7 +340,7 @@ func TestHuggingFaceRepoCreateAndDeleteE2E(t *testing.T) {
 	endpoint := server.URL
 
 	// Create a repo via hf CLI
-	runHFCmd(t, endpoint, "repo", "create", "test-user/cli-model", "--exist-ok")
+	runHFCmd(t, endpoint, "repos", "create", "test-user/cli-model", "--exist-ok")
 
 	// Upload a file to verify it works
 	uploadDir, err := os.MkdirTemp("", "hf-repo-test")
@@ -366,7 +366,7 @@ func TestHuggingFaceRepoCreateAndDeleteE2E(t *testing.T) {
 	}
 
 	// Delete the repo via hf CLI
-	runHFCmd(t, endpoint, "repo", "delete", "test-user/cli-model")
+	runHFCmd(t, endpoint, "repos", "delete", "test-user/cli-model")
 
 	// Verify the repo is gone
 	resp, err = http.Get(endpoint + "/api/models/test-user/cli-model")
@@ -401,7 +401,7 @@ func TestHuggingFaceRepoMoveE2E(t *testing.T) {
 	runHFCmd(t, endpoint, "upload", "old-user/move-model", uploadDir, ".", "--commit-message", "Before move")
 
 	// Move the repo
-	runHFCmd(t, endpoint, "repo", "move", "old-user/move-model", "new-user/move-model")
+	runHFCmd(t, endpoint, "repos", "move", "old-user/move-model", "new-user/move-model")
 
 	// Verify old location is gone
 	resp, err := http.Get(endpoint + "/api/models/old-user/move-model")
@@ -438,11 +438,11 @@ func TestHuggingFaceRepoSettingsE2E(t *testing.T) {
 	endpoint := server.URL
 
 	// Create a repo
-	runHFCmd(t, endpoint, "repo", "create", "test-user/settings-model", "--exist-ok")
+	runHFCmd(t, endpoint, "repos", "create", "test-user/settings-model", "--exist-ok")
 
 	// Update settings via CLI
-	runHFCmd(t, endpoint, "repo", "settings", "test-user/settings-model", "--private")
-	runHFCmd(t, endpoint, "repo", "settings", "test-user/settings-model", "--gated", "auto")
+	runHFCmd(t, endpoint, "repos", "settings", "test-user/settings-model", "--private")
+	runHFCmd(t, endpoint, "repos", "settings", "test-user/settings-model", "--gated", "auto")
 }
 
 func TestHuggingFaceRepoBranchE2E(t *testing.T) {
@@ -467,10 +467,10 @@ func TestHuggingFaceRepoBranchE2E(t *testing.T) {
 	runHFCmd(t, endpoint, "upload", "test-user/branch-model", uploadDir, ".", "--commit-message", "Initial commit")
 
 	// Create a branch
-	runHFCmd(t, endpoint, "repo", "branch", "create", "test-user/branch-model", "dev")
+	runHFCmd(t, endpoint, "repos", "branch", "create", "test-user/branch-model", "dev")
 
 	// Delete the branch
-	runHFCmd(t, endpoint, "repo", "branch", "delete", "test-user/branch-model", "dev")
+	runHFCmd(t, endpoint, "repos", "branch", "delete", "test-user/branch-model", "dev")
 }
 
 func TestHuggingFaceRepoTagE2E(t *testing.T) {
@@ -495,19 +495,19 @@ func TestHuggingFaceRepoTagE2E(t *testing.T) {
 	runHFCmd(t, endpoint, "upload", "test-user/tag-model", uploadDir, ".", "--commit-message", "Initial commit")
 
 	// Create a tag
-	runHFCmd(t, endpoint, "repo", "tag", "create", "test-user/tag-model", "v1.0", "-m", "First release")
+	runHFCmd(t, endpoint, "repos", "tag", "create", "test-user/tag-model", "v1.0", "-m", "First release")
 
 	// List tags
-	output := runHFCmd(t, endpoint, "repo", "tag", "list", "test-user/tag-model")
+	output := runHFCmd(t, endpoint, "repos", "tag", "list", "test-user/tag-model")
 	if !strings.Contains(output, "v1.0") {
 		t.Errorf("Expected tag 'v1.0' in output, got: %s", output)
 	}
 
 	// Delete the tag
-	runHFCmd(t, endpoint, "repo", "tag", "delete", "test-user/tag-model", "v1.0", "--yes")
+	runHFCmd(t, endpoint, "repos", "tag", "delete", "test-user/tag-model", "v1.0", "--yes")
 
 	// Verify tag is gone
-	output = runHFCmd(t, endpoint, "repo", "tag", "list", "test-user/tag-model")
+	output = runHFCmd(t, endpoint, "repos", "tag", "list", "test-user/tag-model")
 	if strings.Contains(output, "v1.0") {
 		t.Errorf("Tag 'v1.0' should have been deleted, but still found in output: %s", output)
 	}
@@ -535,20 +535,20 @@ func TestHuggingFaceRepoDatasetBranchTagE2E(t *testing.T) {
 	runHFCmd(t, endpoint, "upload", "test-user/bt-dataset", uploadDir, ".", "--repo-type", "dataset", "--commit-message", "Initial commit")
 
 	// Create branch on dataset
-	runHFCmd(t, endpoint, "repo", "branch", "create", "test-user/bt-dataset", "dev", "--repo-type", "dataset")
+	runHFCmd(t, endpoint, "repos", "branch", "create", "test-user/bt-dataset", "dev", "--repo-type", "dataset")
 
 	// Create tag on dataset
-	runHFCmd(t, endpoint, "repo", "tag", "create", "test-user/bt-dataset", "v1.0", "--repo-type", "dataset")
+	runHFCmd(t, endpoint, "repos", "tag", "create", "test-user/bt-dataset", "v1.0", "--repo-type", "dataset")
 
 	// List tags on dataset
-	output := runHFCmd(t, endpoint, "repo", "tag", "list", "test-user/bt-dataset", "--repo-type", "dataset")
+	output := runHFCmd(t, endpoint, "repos", "tag", "list", "test-user/bt-dataset", "--repo-type", "dataset")
 	if !strings.Contains(output, "v1.0") {
 		t.Errorf("Expected tag 'v1.0' in dataset tags, got: %s", output)
 	}
 
 	// Delete branch and tag
-	runHFCmd(t, endpoint, "repo", "branch", "delete", "test-user/bt-dataset", "dev", "--repo-type", "dataset")
-	runHFCmd(t, endpoint, "repo", "tag", "delete", "test-user/bt-dataset", "v1.0", "--repo-type", "dataset", "--yes")
+	runHFCmd(t, endpoint, "repos", "branch", "delete", "test-user/bt-dataset", "dev", "--repo-type", "dataset")
+	runHFCmd(t, endpoint, "repos", "tag", "delete", "test-user/bt-dataset", "v1.0", "--repo-type", "dataset", "--yes")
 }
 
 func TestCreateRepoHasDefaultGitAttributes(t *testing.T) {
