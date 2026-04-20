@@ -365,8 +365,8 @@ func TestHuggingFaceRepoCreateAndDeleteE2E(t *testing.T) {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
 
-	// Delete the repo via hf CLI
-	runHFCmd(t, endpoint, "repos", "delete", "test-user/cli-model")
+	// Delete the repo via hf CLI (--yes skips the interactive confirmation prompt)
+	runHFCmd(t, endpoint, "repos", "delete", "test-user/cli-model", "--yes")
 
 	// Verify the repo is gone
 	resp, err = http.Get(endpoint + "/api/models/test-user/cli-model")
