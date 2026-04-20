@@ -9,7 +9,8 @@ require (
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/wzshiming/httpseek v0.5.0
-	github.com/wzshiming/ioswmr v0.1.0
+	github.com/wzshiming/ioswmr v0.1.1
+	github.com/wzshiming/xet v0.0.0-20260420022919-7da80814e8b0
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -44,9 +45,11 @@ require (
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jmhodges/clock v1.2.0 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/leonelquinteros/gotext v1.5.0 // indirect
 	github.com/mattn/go-isatty v0.0.4 // indirect
 	github.com/olekukonko/ts v0.0.0-20171002115256-78ecb04241c0 // indirect
+	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rubyist/tracerx v0.0.0-20170927163412-787959303086 // indirect
@@ -54,6 +57,7 @@ require (
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/ssgelm/cookiejarparser v1.0.1 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
+	github.com/zeebo/blake3 v0.2.4 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.31.0 // indirect

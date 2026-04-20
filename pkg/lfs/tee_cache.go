@@ -2,15 +2,26 @@ package lfs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/wzshiming/ioswmr"
+	"github.com/wzshiming/xet"
+	xetclient "github.com/wzshiming/xet/client"
+	xethf "github.com/wzshiming/xet/hf"
 )
+
+var errSkipXET = errors.New("skip xet")
 
 // Blob tracks the state of an in-flight LFS object fetch, allowing concurrent readers to access
 // the data as it is being downloaded and written to the local store.
@@ -50,19 +61,14 @@ type TeeCache struct {
 	mut        sync.Mutex
 }
 
-// TeeCacheOption configures a TeeCache.
-type TeeCacheOption func(*TeeCache)
-
 // NewTeeCache creates a new TeeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func NewTeeCache(storage Storage, opts ...TeeCacheOption) *TeeCache {
+func NewTeeCache(storage Storage) *TeeCache {
 	p := &TeeCache{
 		httpClient: utils.HTTPClient,
 		storage:    storage,
 	}
-	for _, opt := range opts {
-		opt(p)
-	}
+
 	return p
 }
 
@@ -72,17 +78,51 @@ func (m *TeeCache) Get(oid string) *Blob {
 	if !ok {
 		return nil
 	}
-	tf, ok := f.(*Blob)
+	blob, ok := f.(*Blob)
 	if !ok {
 		return nil
 	}
-	return tf
+	return blob
 }
 
 // StartFetch initiates fetching the specified LFS objects from the given source URL.
 func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []LFSObject) error {
 	client := newClient(m.httpClient)
 
+	missingObjects := m.collectMissingObjects(objects)
+	if len(missingObjects) == 0 {
+		return nil
+	}
+
+	batchResp, err := client.GetBatch(ctx, sourceURL, missingObjects)
+	if err != nil {
+		return err
+	}
+
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	for _, obj := range batchResp.Objects {
+		if obj.Error != nil {
+			slog.ErrorContext(ctx, "LFS tee cache: batch API returned error for object, skipping", "oid", obj.Oid, "error", obj.Error)
+			continue
+		}
+
+		downloadAction, ok := obj.Actions["download"]
+		if !ok {
+			continue
+		}
+
+		if _, ok := m.cache.Load(obj.Oid); ok {
+			continue
+		}
+
+		m.fetchSingleObject(context.Background(), sourceURL, obj.Oid, obj.Size, downloadAction)
+	}
+	return nil
+}
+
+func (m *TeeCache) collectMissingObjects(objects []LFSObject) []LFSObject {
 	missingObjects := make([]LFSObject, 0, len(objects))
 	for _, obj := range objects {
 		if m.storage.Exists(obj.Oid) {
@@ -93,42 +133,31 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 		}
 		missingObjects = append(missingObjects, obj)
 	}
-
-	if len(missingObjects) == 0 {
-		return nil
-	}
-
-	batchResp, err := client.GetBatch(ctx, sourceURL, missingObjects)
-	if err != nil {
-		return err
-	}
-
-	for _, obj := range batchResp.Objects {
-		if obj.Error != nil {
-			continue
-		}
-
-		downloadAction, ok := obj.Actions["download"]
-		if !ok {
-			continue
-		}
-
-		slog.InfoContext(ctx, "LFS tee cache: fetching object from upstream", "oid", obj.Oid)
-		m.fetchSingleObject(context.Background(), obj.Oid, obj.Size, downloadAction)
-	}
-	return nil
+	return missingObjects
 }
 
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
 // body into the local storage while making it available for concurrent readers.
-func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64, downloadAction action) {
-	m.mut.Lock()
-	defer m.mut.Unlock()
-	_, ok := m.cache.Load(oid)
-	if ok {
-		return
-	}
+func (m *TeeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string, size int64, downloadAction action) {
+	if target, _ := getXetTarget(sourceURL); target != nil {
+		slog.InfoContext(ctx, "Fetching object from upstream with XET", "oid", oid)
+		err := m.fetchSingleObjectWithXET(ctx, target, oid, size, downloadAction)
+		if err == nil {
+			return
+		}
 
+		if errors.Is(err, errSkipXET) {
+			slog.InfoContext(ctx, "LFS tee cache: skipping XET download due to missing credentials or unsupported endpoint", "oid", oid, "reason", err)
+		} else {
+			slog.ErrorContext(ctx, "LFS tee cache: failed to fetch object with XET, falling back to basic download", "oid", oid, "error", err)
+		}
+	} else {
+		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
+	}
+	m.fetchSingleObjectWithBasic(ctx, oid, size, downloadAction)
+}
+
+func (m *TeeCache) fetchSingleObjectWithBasic(ctx context.Context, oid string, size int64, downloadAction action) {
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to create download request", "oid", oid, "error", err)
@@ -147,39 +176,150 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, oid string, size int64
 		return
 	}
 
+	m.storeAndPersist(ctx, oid, size, resp.Header.Get("Last-Modified"), resp.Body)
+}
+
+func (m *TeeCache) fetchSingleObjectWithXET(ctx context.Context, target *xethf.Target, oid string, size int64, downloadAction action) error {
+	xetHash, err := parseXetHashFromDownloadHref(downloadAction.Href)
+	if err != nil {
+		return err
+	}
+
+	auth := xethf.NewReadTokenProvider(m.httpClient, *target, "")
+	xc := xetclient.NewClient(
+		xetclient.WithAuthProvider(auth),
+		xetclient.WithConcurrency(4),
+	)
+
+	reader, expectedSize, err := xc.DownloadFile(ctx, xetHash, nil)
+	if err != nil {
+		return err
+	}
+
+	if expectedSize > 0 {
+		size = expectedSize
+	}
+	m.storeAndPersist(ctx, oid, size, "", io.NopCloser(reader))
+	return nil
+}
+
+func parseXetHashFromDownloadHref(href string) (xet.Hash, error) {
+	u, err := url.Parse(href)
+	if err != nil {
+		return xet.Hash{}, fmt.Errorf("parse download href: %w", err)
+	}
+
+	last := path.Base(strings.Trim(u.Path, "/"))
+	if last == "" || last == "." || last == "/" {
+		return xet.Hash{}, fmt.Errorf("empty xet hash in download href")
+	}
+
+	hash, err := xet.ParseHash(last)
+	if err != nil {
+		return xet.Hash{}, fmt.Errorf("invalid xet hash %q: %w", last, err)
+	}
+	return hash, nil
+}
+
+func (m *TeeCache) storeAndPersist(ctx context.Context, oid string, size int64, lastModified string, body io.ReadCloser) {
+	tmpFile, err := os.CreateTemp("", "lfs-tee-cache-*")
+	if err != nil {
+		slog.ErrorContext(ctx, "LFS tee cache: failed to create temporary file", "oid", oid, "error", err)
+		return
+	}
+
 	f := &Blob{
 		swmr: ioswmr.NewSWMR(
-			ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
+			tmpFile,
 			ioswmr.WithAutoClose(),
 			ioswmr.WithBeforeCloseFunc(func() {
+				if putter, ok := m.storage.(MovePutter); ok {
+					err := putter.MovePut(oid, tmpFile.Name())
+					if err != nil {
+						slog.ErrorContext(ctx, "LFS tee cache: failed to move file into storage", "oid", oid, "error", err)
+					}
+					return
+				}
+
+				osFile, err := os.Open(tmpFile.Name())
+				if err != nil {
+					slog.ErrorContext(ctx, "LFS tee cache: failed to open temporary file", "oid", oid, "error", err)
+					return
+				}
+				defer osFile.Close()
+
+				err = m.storage.Put(oid, osFile, size)
+				if err != nil {
+					slog.ErrorContext(ctx, "LFS tee cache: failed to put file into storage", "oid", oid, "error", err)
+					return
+				}
+
 				m.cache.Delete(oid)
+			}),
+			ioswmr.WithAfterCloseFunc(func(err error) error {
+				if err != nil {
+					return err
+				}
+				os.Remove(tmpFile.Name())
+				return nil
 			}),
 		),
 		total: size,
 	}
-	lastModified := resp.Header.Get("Last-Modified")
-	if modTime, err := time.Parse(http.TimeFormat, lastModified); err != nil {
-		f.modTime = time.Now()
-	} else {
-		f.modTime = modTime
-	}
+	f.modTime = parseLastModified(lastModified)
 
 	m.cache.Store(oid, f)
-	reader := f.swmr.NewReader(0)
 
 	go func() {
 		sw := f.swmr.Writer()
-		defer sw.Close()
-		defer resp.Body.Close()
-		_, err := io.Copy(sw, resp.Body)
+		defer body.Close()
+		_, err := io.Copy(sw, body)
 		sw.CloseWithError(err)
 	}()
+}
 
-	go func() {
-		defer reader.Close()
-		if err := m.storage.Put(oid, reader, size); err != nil {
-			slog.ErrorContext(ctx, "LFS tee cache: failed to storage object", "oid", oid, "error", err)
-			return
-		}
-	}()
+func parseLastModified(lastModified string) time.Time {
+	if modTime, err := time.Parse(http.TimeFormat, lastModified); err == nil {
+		return modTime
+	}
+	return time.Now()
+}
+
+func getXetTarget(sourceURL string) (*xethf.Target, error) {
+	u, err := url.Parse(sourceURL)
+	if err != nil {
+		return nil, err
+	}
+
+	switch u.Hostname() {
+	default:
+		return nil, nil
+	case "huggingface.co", "hf.m.daocloud.io", "hf-mirror.com":
+	}
+
+	repoType := "model"
+
+	parts := strings.SplitN(strings.Trim(u.Path, "/"), "/", 3)
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid source URL path: %s", u.Path)
+	}
+
+	repoID := ""
+
+	switch len(parts) {
+	case 2:
+		repoID = parts[0] + "/" + parts[1]
+	case 3:
+		repoType = parts[0]
+		repoID = parts[1] + "/" + parts[2]
+	}
+
+	target := xethf.Target{
+		Endpoint: fmt.Sprintf("%s://%s", u.Scheme, u.Host),
+		RepoType: repoType,
+		RepoID:   repoID,
+		Revision: "main",
+	}
+
+	return &target, nil
 }

@@ -83,6 +83,16 @@ func (s *localStorage) Put(oid string, r io.Reader, size int64) error {
 	return nil
 }
 
+// MovePut moves a file from the given path to the location determined by the OID.
+func (s *localStorage) MovePut(oid, path string) error {
+	destPath := filepath.Join(s.basePath, transformKey(oid))
+	dir := filepath.Dir(destPath)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	return os.Rename(path, destPath)
+}
+
 func (s *localStorage) Info(oid string) (os.FileInfo, error) {
 	path := filepath.Join(s.basePath, transformKey(oid))
 	return os.Stat(path)

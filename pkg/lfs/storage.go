@@ -28,3 +28,8 @@ type SignGetter interface {
 type SignPutter interface {
 	SignPut(oid string) (string, error)
 }
+
+// MovePutter is implemented by stores that support moving files within the storage backend.
+type MovePutter interface {
+	MovePut(oid, path string) error
+}
