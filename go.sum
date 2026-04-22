@@ -132,8 +132,8 @@ github.com/wzshiming/httpseek v0.5.0 h1:9pFLlTcebylAtLA4ni0Qo5xwXTgeQOo0iVQA3G1Q
 github.com/wzshiming/httpseek v0.5.0/go.mod h1:YoZhlLIwNjTBDXIT8NpK5zRjOgZouRXPaBfjVXdqMMs=
 github.com/wzshiming/ioswmr v0.1.1 h1:g1x/ljtu1pQgt2+Vm8KF3/D7wlEHajFk73YM1LNjGrs=
 github.com/wzshiming/ioswmr v0.1.1/go.mod h1:TwwDyS1wnJG3AvKliA+PPB0kliN3yEjsabtH4o7xySQ=
-github.com/wzshiming/xet v0.0.0-20260420022919-7da80814e8b0 h1:ocy5TLxQJ3FDY1YXsjSXd70j8T+j1bcxvIRc3uC4NEQ=
-github.com/wzshiming/xet v0.0.0-20260420022919-7da80814e8b0/go.mod h1:JVTzvpZ0v4rLEA4AzWEaqyJzEyOjoIpdr057Ft8gr8c=
+github.com/wzshiming/xet v0.0.0-20260421023923-57041bbfc55a h1:B8pghfpg/Be7xtiYyeb/D+be6UlkChgoQHMYjTk6kms=
+github.com/wzshiming/xet v0.0.0-20260421023923-57041bbfc55a/go.mod h1:JVTzvpZ0v4rLEA4AzWEaqyJzEyOjoIpdr057Ft8gr8c=
 github.com/xanzy/ssh-agent v0.3.3 h1:+/15pJfg/RsTxqYcX6fHqOXZwwMP+2VyYWJeWM2qQFM=
 github.com/xanzy/ssh-agent v0.3.3/go.mod h1:6dzNDKs0J9rVPHPhaGCukekBHKqfl+L3KghI1Bc68Uw=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f h1:J9EGpcZtP0E/raorCMxlFGSTBrsSlaDGf3jU/qvAE2c=
