@@ -176,9 +176,6 @@ func main() {
 	var sharedMirror *mirror.Mirror
 	if proxyURL != "" {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
-		lfsTeeCache := lfs.NewTeeCache(
-			lfsStorage,
-		)
 
 		baseURL := strings.TrimSuffix(proxyURL, "/")
 		mirrorSourceFunc := func(ctx context.Context, repoName string) (string, bool, error) {
@@ -199,7 +196,7 @@ func main() {
 			mirror.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
 			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
-			mirror.WithLFSCache(lfsTeeCache),
+			mirror.WithStorage(lfsStorage),
 			mirror.WithTTL(mirrorTTL),
 		)
 	}

@@ -19,7 +19,9 @@ type Mirror struct {
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
-	lfsTeeCache         *lfs.TeeCache
+	storage             lfs.Storage
+	xetConcurrency      int
+	lfsTeeCache         *teeCache
 	ttl                 time.Duration
 	group               singleflight.Group
 	lastSync            sync.Map // map[string]time.Time, keyed by repoName
@@ -64,10 +66,17 @@ func WithTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithLFSCache sets the LFS tee cache for transparent upstream object fetching during mirror sync.
-func WithLFSCache(tc *lfs.TeeCache) Option {
+// WithStorage configures the Mirror to use the provided LFS storage backend for caching fetched objects.
+func WithStorage(storage lfs.Storage) Option {
 	return func(m *Mirror) {
-		m.lfsTeeCache = tc
+		m.storage = storage
+	}
+}
+
+// WithXET enables the use of XET for concurrent fetching of LFS objects during mirror syncs.
+func WithXET(concurrency int) Option {
+	return func(m *Mirror) {
+		m.xetConcurrency = concurrency
 	}
 }
 
@@ -77,6 +86,8 @@ func NewMirror(opts ...Option) *Mirror {
 	for _, opt := range opts {
 		opt(m)
 	}
+
+	m.lfsTeeCache = newTeeCache(m.storage, m.xetConcurrency)
 	return m
 }
 

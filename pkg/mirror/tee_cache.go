@@ -1,4 +1,4 @@
-package lfs
+package mirror
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/wzshiming/ioswmr"
 	"github.com/wzshiming/xet"
 	xetclient "github.com/wzshiming/xet/client"
@@ -51,33 +52,33 @@ func (b *Blob) Progress() int64 {
 	return int64(b.swmr.Length())
 }
 
-// TeeCache fetches LFS objects from an upstream source, tees the download
+// teeCache fetches LFS objects from an upstream source, tees the download
 // stream into a local store, and allows concurrent readers to access
 // in-flight data before the download completes.
-type TeeCache struct {
+type teeCache struct {
 	httpClient     *http.Client
 	cache          sync.Map
-	storage        Storage
+	storage        lfs.Storage
 	mut            sync.Mutex
 	enableXet      bool
 	xetConcurrency int
 }
 
-// NewTeeCache creates a new TeeCache.
+// newTeeCache creates a new teeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func NewTeeCache(storage Storage) *TeeCache {
-	p := &TeeCache{
+func newTeeCache(storage lfs.Storage, xetConcurrency int) *teeCache {
+	p := &teeCache{
 		httpClient:     utils.HTTPClient,
 		storage:        storage,
-		enableXet:      true,
-		xetConcurrency: 8,
+		enableXet:      xetConcurrency > 0,
+		xetConcurrency: xetConcurrency,
 	}
 
 	return p
 }
 
 // Get returns a Blob for the given OID if it is currently being fetched, or nil if not.
-func (m *TeeCache) Get(oid string) *Blob {
+func (m *teeCache) Get(oid string) *Blob {
 	f, ok := m.cache.Load(oid)
 	if !ok {
 		return nil
@@ -90,8 +91,8 @@ func (m *TeeCache) Get(oid string) *Blob {
 }
 
 // StartFetch initiates fetching the specified LFS objects from the given source URL.
-func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []LFSObject) error {
-	client := newClient(m.httpClient)
+func (m *teeCache) StartFetch(ctx context.Context, sourceURL string, objects []lfs.LFSObject) error {
+	client := lfs.NewClient(m.httpClient)
 
 	missingObjects := m.collectMissingObjects(objects)
 	if len(missingObjects) == 0 {
@@ -126,8 +127,8 @@ func (m *TeeCache) StartFetch(ctx context.Context, sourceURL string, objects []L
 	return nil
 }
 
-func (m *TeeCache) collectMissingObjects(objects []LFSObject) []LFSObject {
-	missingObjects := make([]LFSObject, 0, len(objects))
+func (m *teeCache) collectMissingObjects(objects []lfs.LFSObject) []lfs.LFSObject {
+	missingObjects := make([]lfs.LFSObject, 0, len(objects))
 	for _, obj := range objects {
 		if m.storage.Exists(obj.Oid) {
 			continue
@@ -142,7 +143,7 @@ func (m *TeeCache) collectMissingObjects(objects []LFSObject) []LFSObject {
 
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
 // body into the local storage while making it available for concurrent readers.
-func (m *TeeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string, size int64, downloadAction action) {
+func (m *teeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action) {
 	if !m.enableXet {
 		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
 		m.fetchSingleObjectWithBasic(ctx, oid, size, downloadAction)
@@ -166,7 +167,7 @@ func (m *TeeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string,
 	m.fetchSingleObjectWithBasic(ctx, oid, size, downloadAction)
 }
 
-func (m *TeeCache) fetchSingleObjectWithBasic(ctx context.Context, oid string, size int64, downloadAction action) {
+func (m *teeCache) fetchSingleObjectWithBasic(ctx context.Context, oid string, size int64, downloadAction lfs.Action) {
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to create download request", "oid", oid, "error", err)
@@ -188,7 +189,7 @@ func (m *TeeCache) fetchSingleObjectWithBasic(ctx context.Context, oid string, s
 	m.storeAndPersist(ctx, oid, size, resp.Header.Get("Last-Modified"), resp.Body)
 }
 
-func (m *TeeCache) fetchSingleObjectWithXET(ctx context.Context, target *xethf.Target, oid string, size int64, downloadAction action) error {
+func (m *teeCache) fetchSingleObjectWithXET(ctx context.Context, target *xethf.Target, oid string, size int64, downloadAction lfs.Action) error {
 	xetHash, err := parseXetHashFromDownloadHref(downloadAction.Href)
 	if err != nil {
 		return err
@@ -230,7 +231,7 @@ func parseXetHashFromDownloadHref(href string) (xet.Hash, error) {
 	return hash, nil
 }
 
-func (m *TeeCache) storeAndPersist(ctx context.Context, oid string, size int64, lastModified string, body io.ReadCloser) {
+func (m *teeCache) storeAndPersist(ctx context.Context, oid string, size int64, lastModified string, body io.ReadCloser) {
 	tmpFile, err := os.CreateTemp("", "lfs-tee-cache-*")
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to create temporary file", "oid", oid, "error", err)
@@ -242,7 +243,7 @@ func (m *TeeCache) storeAndPersist(ctx context.Context, oid string, size int64, 
 			tmpFile,
 			ioswmr.WithAutoClose(),
 			ioswmr.WithBeforeCloseFunc(func() {
-				if putter, ok := m.storage.(MovePutter); ok {
+				if putter, ok := m.storage.(lfs.MovePutter); ok {
 					err := putter.MovePut(oid, tmpFile.Name())
 					if err != nil {
 						slog.ErrorContext(ctx, "LFS tee cache: failed to move file into storage", "oid", oid, "error", err)
