@@ -52,7 +52,7 @@ var (
 
 	mirrorTTL = time.Hour
 
-	mirrorXetConcurrency = 16
+	mirrorXetConcurrency = 4
 )
 
 func init() {
