@@ -200,7 +200,7 @@ func main() {
 			mirror.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
 			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
-			mirror.WithStorage(lfsStorage),
+			mirror.WithLFSStorage(lfsStorage),
 			mirror.WithXET(mirrorXet),
 			mirror.WithConcurrency(mirrorConcurrency),
 			mirror.WithTTL(mirrorTTL),
