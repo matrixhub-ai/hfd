@@ -52,7 +52,8 @@ var (
 
 	mirrorTTL = time.Hour
 
-	mirrorXetConcurrency = 4
+	mirrorXet         = false
+	mirrorConcurrency = 4
 )
 
 func init() {
@@ -77,7 +78,8 @@ func init() {
 	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
-	flag.IntVar(&mirrorXetConcurrency, "mirror-xet-concurrency", mirrorXetConcurrency, "Concurrency level for XET in mirror operations")
+	flag.IntVar(&mirrorConcurrency, "mirror-concurrency", mirrorConcurrency, "Number of concurrent workers for fetching LFS objects during mirror syncs")
+	flag.BoolVar(&mirrorXet, "mirror-xet", mirrorXet, "Enable XET for fetching LFS objects during mirror syncs")
 	flag.Parse()
 
 	if HostURL == "" {
@@ -199,7 +201,8 @@ func main() {
 			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
 			mirror.WithStorage(lfsStorage),
-			mirror.WithXET(mirrorXetConcurrency),
+			mirror.WithXET(mirrorXet),
+			mirror.WithConcurrency(mirrorConcurrency),
 			mirror.WithTTL(mirrorTTL),
 		)
 	}

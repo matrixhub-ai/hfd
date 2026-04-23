@@ -20,7 +20,8 @@ type Mirror struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	storage             lfs.Storage
-	xetConcurrency      int
+	concurrency         int
+	enableXET           bool
 	lfsTeeCache         *teeCache
 	ttl                 time.Duration
 	group               singleflight.Group
@@ -73,10 +74,18 @@ func WithStorage(storage lfs.Storage) Option {
 	}
 }
 
-// WithXET enables the use of XET for concurrent fetching of LFS objects during mirror syncs.
-func WithXET(concurrency int) Option {
+// WithXET enables or disables the use of XET for fetching LFS objects during mirror syncs.
+// When enabled, LFS objects will be fetched directly to the configured storage backend, bypassing local disk caching.
+func WithXET(b bool) Option {
 	return func(m *Mirror) {
-		m.xetConcurrency = concurrency
+		m.enableXET = b
+	}
+}
+
+// WithConcurrency sets the concurrency level for concurrent fetching of LFS objects during mirror syncs.
+func WithConcurrency(concurrency int) Option {
+	return func(m *Mirror) {
+		m.concurrency = concurrency
 	}
 }
 
@@ -87,7 +96,7 @@ func NewMirror(opts ...Option) *Mirror {
 		opt(m)
 	}
 
-	m.lfsTeeCache = newTeeCache(m.storage, m.xetConcurrency)
+	m.lfsTeeCache = newTeeCache(m.storage, m.concurrency, m.enableXET)
 	return m
 }
 

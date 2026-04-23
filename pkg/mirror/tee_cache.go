@@ -56,24 +56,23 @@ func (b *Blob) Progress() int64 {
 // stream into a local store, and allows concurrent readers to access
 // in-flight data before the download completes.
 type teeCache struct {
-	httpClient     *http.Client
-	cache          sync.Map
-	storage        lfs.Storage
-	mut            sync.Mutex
-	enableXet      bool
-	xetConcurrency int
+	httpClient  *http.Client
+	cache       sync.Map
+	storage     lfs.Storage
+	mut         sync.Mutex
+	enableXET   bool
+	concurrency int
 }
 
 // newTeeCache creates a new teeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func newTeeCache(storage lfs.Storage, xetConcurrency int) *teeCache {
+func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool) *teeCache {
 	p := &teeCache{
-		httpClient:     utils.HTTPClient,
-		storage:        storage,
-		enableXet:      xetConcurrency > 0,
-		xetConcurrency: xetConcurrency,
+		httpClient:  utils.HTTPClient,
+		storage:     storage,
+		enableXET:   enableXET,
+		concurrency: concurrency,
 	}
-
 	return p
 }
 
@@ -144,7 +143,7 @@ func (m *teeCache) collectMissingObjects(objects []lfs.LFSObject) []lfs.LFSObjec
 // fetchSingleObject fetches a single LFS object from upstream, tees the response
 // body into the local storage while making it available for concurrent readers.
 func (m *teeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action) {
-	if !m.enableXet {
+	if !m.enableXET {
 		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
 		m.fetchSingleObjectWithBasic(ctx, oid, size, downloadAction)
 		return
@@ -198,7 +197,7 @@ func (m *teeCache) fetchSingleObjectWithXET(ctx context.Context, target *xethf.T
 	auth := xethf.NewReadTokenProvider(m.httpClient, *target, "")
 	xc := xetclient.NewClient(
 		xetclient.WithAuthProvider(auth),
-		xetclient.WithConcurrency(m.xetConcurrency),
+		xetclient.WithConcurrency(m.concurrency),
 	)
 
 	reader, expectedSize, err := xc.DownloadFile(ctx, xetHash, nil)
