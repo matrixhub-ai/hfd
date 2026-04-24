@@ -185,7 +185,7 @@ func (m *teeCache) fetchSingleObjectWithBasic(ctx context.Context, oid string, s
 	dl := dl.NewDownloader(
 		dl.WithHTTPClient(m.httpClient),
 		dl.WithConcurrency(m.concurrency),
-		dl.WithChunkSize(64*1024*1024), // 4MB
+		dl.WithChunkSize(64*1024*1024), // 64MB
 		dl.WithResume(true),
 		dl.WithForceTryRange(true),
 		dl.WithProgressFunc(m.progressFunc),
