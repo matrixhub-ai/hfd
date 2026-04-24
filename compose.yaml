@@ -5,4 +5,4 @@ services:
       - "8080:8080"
       - "2222:2222"
     volumes:
-      - ./data1/:/data/
+      - ./data/:/data/
