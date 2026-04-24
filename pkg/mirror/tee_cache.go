@@ -301,7 +301,7 @@ func (m *teeCache) startDownload(ctx context.Context, sourceURL, oid string, siz
 func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) {
 	if !m.enableXET {
 		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
-		if err := m.doDownloadBasic(ctx, oid, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
@@ -310,13 +310,13 @@ func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size i
 	target, err := getXetTarget(sourceURL)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to parse XET target from source URL, falling back to basic download", "url", sourceURL, "error", err)
-		if err := m.doDownloadBasic(ctx, oid, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
 	}
 	if target == nil {
-		if err := m.doDownloadBasic(ctx, oid, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
@@ -330,7 +330,7 @@ func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size i
 }
 
 // doDownloadBasic downloads the LFS object via plain HTTP into ws.
-func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, downloadAction lfs.Action, ws ioswmr.Writer) error {
+func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) error {
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		ws.CloseWithError(err)
@@ -351,6 +351,32 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, downloadActi
 		ws.CloseWithError(err)
 		return err
 	}
+
+	for i := 0; i < 8; i++ {
+		n, err := ws.Seek(0, io.SeekEnd)
+		if err != nil {
+			ws.CloseWithError(err)
+			return err
+		}
+		if n == size {
+			break
+		}
+
+		if n > size {
+			ws.CloseWithError(fmt.Errorf("downloaded more bytes than expected: got %d, expected %d", n, size))
+			return fmt.Errorf("downloaded more bytes than expected: got %d, expected %d", n, size)
+		}
+
+		slog.WarnContext(ctx, "Download incomplete, retrying", "oid", oid, "downloaded", n, "expected", size, "attempt", i+1)
+		time.Sleep(time.Second << i)
+
+		err = d.Download(ctx, oid, ws, req.URL.String())
+		if err != nil {
+			ws.CloseWithError(err)
+			return err
+		}
+	}
+
 	ws.Close()
 	return nil
 }
@@ -377,6 +403,32 @@ func (m *teeCache) doDownloadXET(ctx context.Context, target *xethf.Target, oid 
 		ws.CloseWithError(err)
 		return err
 	}
+
+	for i := 0; i < 8; i++ {
+		n, err := ws.Seek(0, io.SeekEnd)
+		if err != nil {
+			ws.CloseWithError(err)
+			return err
+		}
+		if n == size {
+			break
+		}
+
+		if n > size {
+			ws.CloseWithError(fmt.Errorf("downloaded more bytes than expected: got %d, expected %d", n, size))
+			return fmt.Errorf("downloaded more bytes than expected: got %d, expected %d", n, size)
+		}
+
+		slog.WarnContext(ctx, "XET download incomplete, retrying", "oid", oid, "downloaded", n, "expected", size, "attempt", i+1)
+		time.Sleep(time.Second << i)
+
+		err = xc.DownloadFile(ctx, xetHash, ws)
+		if err != nil {
+			ws.CloseWithError(err)
+			return err
+		}
+	}
+
 	ws.Close()
 	return nil
 }
@@ -405,6 +457,16 @@ func (m *teeCache) storeAndPersist(ctx context.Context, oid string, size int64, 
 			buffer,
 			ioswmr.WithAutoClose(),
 			ioswmr.WithBeforeCloseFunc(func() {
+				n, err := buffer.Seek(0, io.SeekEnd)
+				if err != nil {
+					slog.ErrorContext(ctx, "LFS tee cache: failed to seek to end of buffer before persisting", "oid", oid, "error", err)
+					return
+				}
+				if n != size {
+					slog.ErrorContext(ctx, "LFS tee cache: downloaded size does not match expected size", "oid", oid, "expected", size, "actual", n)
+					return
+				}
+
 				if putter, ok := m.storage.(lfs.MovePutter); ok {
 					err := putter.MovePut(oid, buffer.Name())
 					if err != nil {
