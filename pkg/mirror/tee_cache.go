@@ -21,6 +21,7 @@ import (
 	"github.com/wzshiming/xet"
 	xetclient "github.com/wzshiming/xet/client"
 	xethf "github.com/wzshiming/xet/hf"
+	"golang.org/x/sync/singleflight"
 )
 
 var errSkipXET = errors.New("skip xet")
@@ -64,6 +65,7 @@ type teeCache struct {
 	enableXET    bool
 	concurrency  int
 	cacheDir     string
+	group        singleflight.Group
 	progressFunc func(name string, downloaded, total int64)
 }
 
@@ -127,7 +129,10 @@ func (m *teeCache) StartFetch(ctx context.Context, sourceURL string, objects []l
 			continue
 		}
 
-		go m.fetchSingleObject(context.Background(), sourceURL, obj.Oid, obj.Size, downloadAction)
+		m.group.DoChan(obj.Oid, func() (interface{}, error) {
+			m.fetchSingleObject(context.Background(), sourceURL, obj.Oid, obj.Size, downloadAction)
+			return nil, nil
+		})
 	}
 	return nil
 }
