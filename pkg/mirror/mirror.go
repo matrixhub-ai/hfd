@@ -361,8 +361,7 @@ func (m *Mirror) syncMirrorLFS(ctx context.Context, repo *repository.Repository,
 		return nil
 	}
 
-	objects := []lfs.LFSObject{}
-
+	objects := make([]lfs.LFSObject, 0, len(lfsPointers))
 	for _, pointer := range lfsPointers {
 		objects = append(objects, lfs.LFSObject{
 			Oid:  pointer.OID(),
@@ -370,5 +369,6 @@ func (m *Mirror) syncMirrorLFS(ctx context.Context, repo *repository.Repository,
 		})
 	}
 
-	return m.lfsTeeCache.StartFetch(ctx, sourceURL, objects)
+	m.lfsTeeCache.Queue(sourceURL, objects)
+	return nil
 }
