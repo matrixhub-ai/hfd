@@ -26,6 +26,7 @@ type Mirror struct {
 	ttl                 time.Duration
 	group               singleflight.Group
 	lastSync            sync.Map // map[string]time.Time, keyed by repoName
+	progressFunc        func(name string, downloaded, total int64)
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -89,6 +90,13 @@ func WithConcurrency(concurrency int) Option {
 	}
 }
 
+// WithProgressFunc sets a callback function to receive progress updates during LFS object fetches.
+func WithProgressFunc(fn func(name string, downloaded, total int64)) Option {
+	return func(m *Mirror) {
+		m.progressFunc = fn
+	}
+}
+
 // NewMirror creates a new Mirror with the provided options.
 func NewMirror(opts ...Option) *Mirror {
 	m := &Mirror{}
@@ -96,7 +104,7 @@ func NewMirror(opts ...Option) *Mirror {
 		opt(m)
 	}
 
-	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET)
+	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.progressFunc)
 	return m
 }
 

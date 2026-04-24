@@ -8,9 +8,10 @@ require (
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
+	github.com/wzshiming/dl v0.0.0-20260423083018-2c43f43307bc
 	github.com/wzshiming/httpseek v0.6.0
-	github.com/wzshiming/ioswmr v0.1.1
-	github.com/wzshiming/xet v0.0.0-20260422112741-def6b0084bc8
+	github.com/wzshiming/ioswmr v0.2.0
+	github.com/wzshiming/xet v0.0.0-20260424050041-255461d9459a
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
 	gopkg.in/yaml.v3 v3.0.1
