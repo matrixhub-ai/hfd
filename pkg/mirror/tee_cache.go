@@ -2,7 +2,6 @@ package mirror
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,8 +22,6 @@ import (
 	xethf "github.com/wzshiming/xet/hf"
 	"golang.org/x/sync/singleflight"
 )
-
-var errSkipXET = errors.New("skip xet")
 
 // Blob tracks the state of an in-flight LFS object fetch, allowing concurrent readers to access
 // the data as it is being downloaded and written to the local store.
@@ -169,12 +166,7 @@ func (m *teeCache) fetchSingleObject(ctx context.Context, sourceURL, oid string,
 	slog.InfoContext(ctx, "Fetching object from upstream with XET", "oid", oid)
 	err = m.fetchSingleObjectWithXET(ctx, target, oid, size, downloadAction)
 	if err != nil {
-		if errors.Is(err, errSkipXET) {
-			slog.InfoContext(ctx, "Skipping XET for object and falling back to basic download", "oid", oid)
-			m.fetchSingleObjectWithBasic(ctx, oid, size, downloadAction)
-		} else {
-			slog.ErrorContext(ctx, "LFS tee cache: failed to fetch object with XET, falling back to basic download", "oid", oid, "error", err)
-		}
+		slog.ErrorContext(ctx, "LFS tee cache: failed to fetch object with XET, falling back to basic download", "oid", oid, "error", err)
 		return
 	}
 }
