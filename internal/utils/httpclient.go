@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,12 +13,18 @@ import (
 var HTTPClient = &http.Client{
 	Transport: newFixHFMirrorRoundTripper(httpseek.NewMustReaderTransport(http.DefaultTransport,
 		func(r *http.Request, retry int, err error) error {
-			slog.WarnContext(r.Context(), "Retrying request", "retry", retry+1, "url", r.URL.String(), "error", err)
-			if retry >= 5 {
+			if err == context.Canceled {
+				return err
+			}
+
+			if retry >= 8 {
 				return fmt.Errorf("max retries reached for %s: %w", r.URL.String(), err)
 			}
+
+			slog.WarnContext(r.Context(), "Retrying request", "retry", retry+1, "url", r.URL.String(), "error", err)
+
 			// Simple backoff strategy
-			time.Sleep(time.Duration(retry+1) * time.Second)
+			time.Sleep(100 * time.Millisecond << retry)
 			return nil
 		})),
 }
