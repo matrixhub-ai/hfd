@@ -10,6 +10,7 @@ type Storage struct {
 	rootDir         string
 	repositoriesDir string
 	lfsDir          string
+	tmpDir          string
 }
 
 // Option defines a functional option for configuring the Storage.
@@ -33,6 +34,7 @@ func NewStorage(opts ...Option) *Storage {
 	}
 
 	h.lfsDir = filepath.Join(h.rootDir, "lfs")
+	h.tmpDir = filepath.Join(h.rootDir, "tmp")
 	h.repositoriesDir = filepath.Join(h.rootDir, "repositories")
 
 	return h
@@ -51,6 +53,11 @@ func (s *Storage) RepositoriesDir() string {
 // LFSDir returns the directory path for storing LFS objects.
 func (s *Storage) LFSDir() string {
 	return s.lfsDir
+}
+
+// TmpDir returns the directory path for temporary files.
+func (s *Storage) TmpDir() string {
+	return s.tmpDir
 }
 
 // ResolvePath resolves the given URL path to an absolute filesystem path within the repositories directory.

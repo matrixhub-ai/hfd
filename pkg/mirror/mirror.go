@@ -22,6 +22,7 @@ type Mirror struct {
 	lfsStorage          lfs.Storage
 	concurrency         int
 	enableXET           bool
+	cacheDir            string
 	lfsTeeCache         *teeCache
 	ttl                 time.Duration
 	group               singleflight.Group
@@ -97,6 +98,13 @@ func WithProgressFunc(fn func(name string, downloaded, total int64)) Option {
 	}
 }
 
+// WithCacheDir sets the directory path for caching LFS objects during mirror syncs. If not set, a temporary directory will be used.
+func WithCacheDir(dir string) Option {
+	return func(m *Mirror) {
+		m.cacheDir = dir
+	}
+}
+
 // NewMirror creates a new Mirror with the provided options.
 func NewMirror(opts ...Option) *Mirror {
 	m := &Mirror{}
@@ -104,7 +112,7 @@ func NewMirror(opts ...Option) *Mirror {
 		opt(m)
 	}
 
-	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.progressFunc)
+	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.cacheDir, m.progressFunc)
 	return m
 }
 

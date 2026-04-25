@@ -86,16 +86,21 @@ type teeCache struct {
 
 // newTeeCache creates a new teeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, progressFunc func(name string, downloaded, total int64)) *teeCache {
+func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir string, progressFunc func(name string, downloaded, total int64)) *teeCache {
 	p := &teeCache{
 		httpClient:   utils.HTTPClient,
 		storage:      storage,
 		enableXET:    enableXET,
 		concurrency:  concurrency,
-		cacheDir:     path.Join(os.TempDir(), "hfd"),
+		cacheDir:     cacheDir,
 		progressFunc: progressFunc,
 		pendingList:  list.New(),
 	}
+
+	if cacheDir == "" {
+		cacheDir = path.Join(os.TempDir(), "hfd")
+	}
+
 	p.queueCond = sync.NewCond(&p.queueMu)
 	p.idleCond = sync.NewCond(&p.activeMu)
 	go p.backgroundWorker()

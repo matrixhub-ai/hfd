@@ -53,7 +53,7 @@ var (
 	mirrorTTL = time.Hour
 
 	mirrorXet         = false
-	mirrorConcurrency = 4
+	mirrorConcurrency = 2
 )
 
 func init() {
@@ -204,6 +204,7 @@ func main() {
 			mirror.WithXET(mirrorXet),
 			mirror.WithConcurrency(mirrorConcurrency),
 			mirror.WithTTL(mirrorTTL),
+			mirror.WithCacheDir(storage.TmpDir()),
 		)
 	}
 
