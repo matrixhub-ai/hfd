@@ -3,10 +3,12 @@ package hf
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
-
+	"github.com/matrixhub-ai/hfd/pkg/backend"
+	"github.com/matrixhub-ai/hfd/pkg/constants"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -25,6 +27,7 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	routerTable         map[string]backend.RouterEntry
 }
 
 // Option defines a functional option for configuring the Handler.
@@ -83,7 +86,7 @@ func WithMirror(m *mirror.Mirror) Option {
 }
 
 // NewHandler creates a new Handler with the given repository directory.
-func NewHandler(opts ...Option) *Handler {
+func NewHandler(opts ...Option) (*Handler, map[string]string) {
 	h := &Handler{
 		root: mux.NewRouter(),
 	}
@@ -92,8 +95,48 @@ func NewHandler(opts ...Option) *Handler {
 		opt(h)
 	}
 
+	routerTable := make(map[string]backend.RouterEntry)
+
+	// Auth endpoint - used by huggingface-cli auth commands (login, whoami)
+	routerTable["/api/whoami-v2"] = backend.RouterEntry{Operation: constants.OpHfGetWhoami, Method: http.MethodGet, Handler: h.handleWhoami}
+
+	// Repository management endpoints - used by huggingface_hub for repo CRUD
+	routerTable["/api/repos/create"] = backend.RouterEntry{Operation: constants.OpHfPostCreateRepo, Method: http.MethodPost, Handler: h.handleCreateRepo}
+	routerTable["/api/repos/delete"] = backend.RouterEntry{Operation: constants.OpHfDeleteDeleteRepo, Method: http.MethodDelete, Handler: h.handleDeleteRepo}
+	routerTable["/api/repos/move"] = backend.RouterEntry{Operation: constants.OpHfPostMoveRepo, Method: http.MethodPost, Handler: h.handleMoveRepo}
+
+	// YAML validation endpoint - used by huggingface_hub to validate README YAML front matter
+	routerTable["/api/validate-yaml"] = backend.RouterEntry{Operation: constants.OpHfPostValidateYaml, Method: http.MethodPost, Handler: h.handleValidateYAML}
+
+	// Repository settings, branch, tag, and refs endpoints
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/settings"] = backend.RouterEntry{Operation: constants.OpHfPutRepoSettings, Method: http.MethodPut, Handler: h.handleRepoSettings}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}"] = backend.RouterEntry{Operation: constants.OpHfPostCreateBranch, Method: http.MethodPost, Handler: h.handleCreateBranch}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}"] = backend.RouterEntry{Operation: constants.OpHfDeleteDeleteBranch, Method: http.MethodDelete, Handler: h.handleDeleteBranch}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}"] = backend.RouterEntry{Operation: constants.OpHfPostCreateTag, Method: http.MethodPost, Handler: h.handleCreateTag}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}"] = backend.RouterEntry{Operation: constants.OpHfDeleteDeleteTag, Method: http.MethodDelete, Handler: h.handleDeleteTag}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/refs"] = backend.RouterEntry{Operation: constants.OpHfGetListRefs, Method: http.MethodGet, Handler: h.handleListRefs}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commits/{rev}"] = backend.RouterEntry{Operation: constants.OpHfGetListCommits, Method: http.MethodGet, Handler: h.handleListCommits}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/compare/{compare}"] = backend.RouterEntry{Operation: constants.OpHfGetCompare, Method: http.MethodGet, Handler: h.handleCompare}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/super-squash/{rev}"] = backend.RouterEntry{Operation: constants.OpHfPostSuperSquash, Method: http.MethodPost, Handler: h.handleSuperSquash}
+
+	// API endpoints for all repo types (models, datasets, spaces)
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/preupload/{rev}"] = backend.RouterEntry{Operation: constants.OpHfPostPreupload, Method: http.MethodPost, Handler: h.handlePreupload}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commit/{rev}"] = backend.RouterEntry{Operation: constants.OpHfPostCommit, Method: http.MethodPost, Handler: h.handleCommit}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/treesize/{revpath:.*}"] = backend.RouterEntry{Operation: constants.OpHfGetTreeSize, Method: http.MethodGet, Handler: h.handleTreeSize}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tree/{revpath:.*}"] = backend.RouterEntry{Operation: constants.OpHfGetTree, Method: http.MethodGet, Handler: h.handleTree}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}"] = backend.RouterEntry{Operation: constants.OpHfGetInfoRevision, Method: http.MethodGet, Handler: h.handleInfoRevision}
+	routerTable["/api/{repoType:models|datasets|spaces}/{namespace}/{repo}"] = backend.RouterEntry{Operation: constants.OpHfGetInfoRevision, Method: http.MethodGet, Handler: h.handleInfoRevision}
+	routerTable["/api/{repoType:models|datasets|spaces}"] = backend.RouterEntry{Operation: constants.OpHfGetList, Method: http.MethodGet, Handler: h.handleList}
+
+	// File download endpoints - datasets and spaces use a type prefix, models use the root
+	routerTable["/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}"] = backend.RouterEntry{Operation: constants.OpHfGetResolve, Method: http.MethodGet, Handler: h.handleResolve}
+	routerTable["/{namespace}/{repo}/resolve/{revpath:.*}"] = backend.RouterEntry{Operation: constants.OpHfGetResolve, Method: http.MethodGet, Handler: h.handleResolve}
+	routerTable["/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}"] = backend.RouterEntry{Operation: constants.OpHfGetResolve, Method: http.MethodGet, Handler: h.handleResolve}
+
+	h.routerTable = routerTable
 	h.register()
-	return h
+
+	return h, h.routerMap()
 }
 
 // ServeHTTP implements the http.Handler interface.
@@ -106,53 +149,24 @@ func (h *Handler) Router() *mux.Router {
 	return h.root
 }
 
-func (h *Handler) register() {
-	// HuggingFace-compatible API endpoints
-	h.registryHuggingFace(h.root)
+func (h *Handler) routerMap() map[string]string {
+	routerMap := make(map[string]string)
+	for pattern, r := range h.routerTable {
+		routerMap[fmt.Sprintf("%s %s", r.Method, pattern)] = r.Operation
+	}
 
-	h.root.NotFoundHandler = h.next
+	return routerMap
 }
 
-// registryHuggingFace registers the HuggingFace-compatible API endpoints.
-// These endpoints allow using huggingface-cli and huggingface_hub library
-// with HF_ENDPOINT pointing to this server.
-func (h *Handler) registryHuggingFace(r *mux.Router) {
-	// Auth endpoint - used by huggingface-cli auth commands (login, whoami)
-	r.HandleFunc("/api/whoami-v2", h.handleWhoami).Methods(http.MethodGet)
+func (h *Handler) register() {
+	for pattern, r := range h.routerTable {
+		// registryHuggingFace registers the HuggingFace-compatible API endpoints.
+		// These endpoints allow using huggingface-cli and huggingface_hub library
+		// with HF_ENDPOINT pointing to this server.
+		h.root.HandleFunc(pattern, r.Handler).Methods(r.Method)
+	}
 
-	// Repository management endpoints - used by huggingface_hub for repo CRUD
-	r.HandleFunc("/api/repos/create", h.handleCreateRepo).Methods(http.MethodPost)
-	r.HandleFunc("/api/repos/delete", h.handleDeleteRepo).Methods(http.MethodDelete)
-	r.HandleFunc("/api/repos/move", h.handleMoveRepo).Methods(http.MethodPost)
-
-	// YAML validation endpoint - used by huggingface_hub to validate README YAML front matter
-	r.HandleFunc("/api/validate-yaml", h.handleValidateYAML).Methods(http.MethodPost)
-
-	// Repository settings, branch, tag, and refs endpoints
-	// These must be registered before the generic model info catch-all route.
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/settings", h.handleRepoSettings).Methods(http.MethodPut)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}", h.handleCreateBranch).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}", h.handleDeleteBranch).Methods(http.MethodDelete)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}", h.handleCreateTag).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}", h.handleDeleteTag).Methods(http.MethodDelete)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/refs", h.handleListRefs).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commits/{rev}", h.handleListCommits).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/compare/{compare}", h.handleCompare).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/super-squash/{rev}", h.handleSuperSquash).Methods(http.MethodPost)
-
-	// API endpoints for all repo types (models, datasets, spaces)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/preupload/{rev}", h.handlePreupload).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commit/{rev}", h.handleCommit).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/treesize/{revpath:.*}", h.handleTreeSize).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tree/{revpath:.*}", h.handleTree).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}", h.handleList).Methods(http.MethodGet)
-
-	// File download endpoints - datasets and spaces use a type prefix, models use the root
-	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
-	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
-	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+	h.root.NotFoundHandler = h.next
 }
 
 type repoInformation struct {

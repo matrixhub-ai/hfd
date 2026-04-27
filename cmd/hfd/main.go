@@ -18,6 +18,7 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/hook"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -241,14 +242,13 @@ func main() {
 	}
 
 	var handler http.Handler
+	var hfRouterMap map[string]string
 
-	handler = backendhf.NewHandler(
+	// Create HF handler
+	handler, hfRouterMap = backendhf.NewHandler(
 		backendhf.WithStorage(storage),
 		backendhf.WithNext(handler),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPermissionHookFunc(permissionHookFunc),
-		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
-		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
 		backendhf.WithLFSStorage(lfsStorage),
 	)
 
@@ -323,6 +323,25 @@ func main() {
 			}
 		}()
 	}
+
+	// Empty hook functions for hook middleware
+	emptyPermissionHook := func(hCtx hook.HookContext) (bool, error) {
+		slog.Info("Permission check", hCtx.Operation, hCtx.PathParams, hCtx.QueryParams, hCtx.Costume)
+		return true, nil
+	}
+
+	emptyPreReceiveHook := func(hCtx hook.HookContext) error {
+		slog.Info("Pre-receive hook", hCtx.Operation, hCtx.PathParams, hCtx.QueryParams, hCtx.Costume)
+		return nil
+	}
+
+	emptyPostReceiveHook := func(hCtx hook.HookContext) error {
+		slog.Info("Post-receive hook", hCtx.Operation, hCtx.PathParams, hCtx.QueryParams, hCtx.Costume)
+		return nil
+	}
+
+	hookMiddleware := hook.NewHookMiddleware(emptyPermissionHook, emptyPreReceiveHook, emptyPostReceiveHook, hfRouterMap)
+	handler = hookMiddleware.Middleware(handler)
 
 	handler = handlers.CombinedLoggingHandler(os.Stderr, handler)
 	if err := http.ListenAndServe(addr, handler); err != nil {
