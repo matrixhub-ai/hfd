@@ -306,7 +306,7 @@ func (m *teeCache) startDownload(ctx context.Context, sourceURL, oid string, siz
 func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) {
 	if !m.enableXET {
 		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
-		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, sourceURL, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
@@ -315,13 +315,13 @@ func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size i
 	target, err := getXetTarget(sourceURL)
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to parse XET target from source URL, falling back to basic download", "url", sourceURL, "error", err)
-		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, sourceURL, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
 	}
 	if target == nil {
-		if err := m.doDownloadBasic(ctx, oid, size, downloadAction, ws); err != nil {
+		if err := m.doDownloadBasic(ctx, sourceURL, oid, size, downloadAction, ws); err != nil {
 			slog.ErrorContext(ctx, "LFS tee cache: basic download failed", "oid", oid, "error", err)
 		}
 		return
@@ -334,13 +334,28 @@ func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size i
 	}
 }
 
+// getExpiresAt the url actual expiration date is one hour,
+// but hf lfs doesn't provide a expires_at and expires_in.
+func getExpiresAt(downloadAction lfs.Action) time.Time {
+	if downloadAction.ExpiresAt.IsZero() {
+		if downloadAction.ExpiresIn == 0 {
+			downloadAction.ExpiresIn = 3600
+		}
+		return time.Now().Add(time.Duration(downloadAction.ExpiresIn) * time.Second)
+	}
+	return downloadAction.ExpiresAt
+}
+
 // doDownloadBasic downloads the LFS object via plain HTTP into ws.
-func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) error {
+func (m *teeCache) doDownloadBasic(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) error {
 	req, err := downloadAction.Request(ctx)
 	if err != nil {
 		ws.CloseWithError(err)
 		return err
 	}
+
+	urls := []string{req.URL.String()}
+	expiresAt := getExpiresAt(downloadAction).Add(-5 * time.Minute)
 
 	d := dl.NewDownloader(
 		dl.WithHTTPClient(m.httpClient),
@@ -352,7 +367,41 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, size int64, 
 		dl.WithCacheDir(path.Join(m.cacheDir, "dl")),
 	)
 
-	if err := d.Download(ctx, oid, ws, req.URL.String()); err != nil {
+	urlsFunc := func() ([]string, error) {
+		if expiresAt.After(time.Now()) {
+			return urls, nil
+		}
+
+		client := lfs.NewClient(m.httpClient)
+		batchResp, err := client.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh batch download URL: %w", err)
+		}
+
+		if len(batchResp.Objects) == 0 {
+			return nil, fmt.Errorf("batch API returned no objects for oid %s", oid)
+		}
+
+		obj := batchResp.Objects[0]
+		if obj.Error != nil {
+			return nil, fmt.Errorf("batch API error: %v", obj.Error)
+		}
+
+		downloadAction, ok := obj.Actions["download"]
+		if !ok {
+			return nil, fmt.Errorf("no download action in batch response for oid %s", oid)
+		}
+
+		req, err = downloadAction.Request(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request from refreshed download action: %w", err)
+		}
+
+		urls = []string{req.URL.String()}
+		expiresAt = getExpiresAt(downloadAction).Add(-5 * time.Minute)
+		return urls, nil
+	}
+	if err := d.DownloadWithURLsFunc(ctx, oid, ws, urlsFunc); err != nil {
 		ws.CloseWithError(err)
 		return err
 	}
@@ -375,7 +424,7 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, oid string, size int64, 
 		slog.WarnContext(ctx, "Download incomplete, retrying", "oid", oid, "downloaded", n, "expected", size, "attempt", i+1)
 		time.Sleep(time.Second << i)
 
-		err = d.Download(ctx, oid, ws, req.URL.String())
+		err = d.DownloadWithURLsFunc(ctx, oid, ws, urlsFunc)
 		if err != nil {
 			ws.CloseWithError(err)
 			return err

@@ -8,7 +8,7 @@ require (
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
-	github.com/wzshiming/dl v0.0.0-20260425142301-7b7828195ce1
+	github.com/wzshiming/dl v0.0.0-20260427082752-19804485f005
 	github.com/wzshiming/httpseek v0.6.0
 	github.com/wzshiming/ioswmr v0.2.0
 	github.com/wzshiming/xet v0.0.0-20260424050041-255461d9459a
