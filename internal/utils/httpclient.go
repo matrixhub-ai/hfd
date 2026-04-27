@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,11 +22,14 @@ var HTTPClient = &http.Client{
 		httpseek.NewMustReaderTransport(
 			newFastTimeoutRetryTransport(
 				defaultTransport,
-				5*time.Second,
+				// hf client has a default timeout of 10s.
+				// we set it to 8s to avoid hitting the timeout too frequently.
+				8*time.Second,
 			),
 			func(r *http.Request, retry int, err error) error {
-				if err == context.Canceled {
-					slog.WarnContext(r.Context(), "Request canceled by context", "url", r.URL.String())
+				headerRange := r.Header.Get("Range")
+				if errors.Is(err, context.Canceled) {
+					slog.WarnContext(r.Context(), "Request canceled by context", "url", r.URL.String(), "range", headerRange, "error", err)
 					return err
 				}
 
@@ -33,11 +37,11 @@ var HTTPClient = &http.Client{
 					return fmt.Errorf("max retries reached for %s: %w", r.URL.String(), err)
 				}
 
-				if err == context.DeadlineExceeded {
-					slog.WarnContext(r.Context(), "Retrying request due to deadline exceeded", "retry", retry+1, "url", r.URL.String(), "error", err)
+				if errors.Is(err, context.DeadlineExceeded) {
+					slog.WarnContext(r.Context(), "Retrying request due to deadline exceeded", "retry", retry+1, "url", r.URL.String(), "range", headerRange, "error", err)
 				} else {
 					backoff := 100 * time.Millisecond << retry
-					slog.WarnContext(r.Context(), "Retrying request due to error, backoff applied", "retry", retry+1, "url", r.URL.String(), "backoff", backoff, "error", err)
+					slog.WarnContext(r.Context(), "Retrying request due to error, backoff applied", "retry", retry+1, "url", r.URL.String(), "range", headerRange, "backoff", backoff, "error", err)
 					time.Sleep(backoff)
 				}
 				return nil

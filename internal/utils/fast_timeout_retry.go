@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -20,25 +21,49 @@ func newFastTimeoutRetryTransport(base http.RoundTripper, timeout time.Duration)
 }
 
 func (t *fastTimeoutRetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Perform the request using the base RoundTripper
-	resp, err := t.base.RoundTrip(req)
-	if err != nil {
-		return nil, err
+	ctx, cancel := context.WithCancel(req.Context())
+
+	type roundTripResult struct {
+		resp *http.Response
+		err  error
 	}
 
-	if resp.Body != nil {
-		resp.Body = &fastTimeoutBody{
-			body:    resp.Body,
-			timeout: t.timeout,
+	resultCh := make(chan roundTripResult, 1)
+
+	go func() {
+		resp, err := t.base.RoundTrip(req.WithContext(ctx))
+		resultCh <- roundTripResult{resp: resp, err: err}
+	}()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			cancel()
+			return nil, res.err
 		}
-	}
 
-	return resp, nil
+		if res.resp.Body != nil {
+			res.resp.Body = &fastTimeoutBody{
+				body:    res.resp.Body,
+				timeout: t.timeout,
+				cancel:  cancel,
+			}
+		} else {
+			cancel()
+		}
+
+		return res.resp, nil
+	case <-time.After(t.timeout):
+		cancel()
+		return nil, fmt.Errorf("request timed out after %s: %w", t.timeout, context.DeadlineExceeded)
+	}
 }
 
 type fastTimeoutBody struct {
 	body    io.ReadCloser
+	cancel  context.CancelFunc
 	timeout time.Duration
+	readed  int64
 }
 
 func (b *fastTimeoutBody) Read(p []byte) (n int, err error) {
@@ -56,13 +81,18 @@ func (b *fastTimeoutBody) Read(p []byte) (n int, err error) {
 
 	select {
 	case res := <-resultCh:
+		if res.err != nil && res.err != io.EOF {
+			return 0, res.err
+		}
+		b.readed += int64(res.n)
 		return res.n, res.err
 	case <-time.After(b.timeout):
-		b.body.Close() // Close the body to stop any further reads
-		return 0, context.DeadlineExceeded
+		return 0, fmt.Errorf("read timed out after %s, readed %d: %w", b.timeout, b.readed, context.DeadlineExceeded)
 	}
 }
 
 func (b *fastTimeoutBody) Close() error {
-	return b.body.Close()
+	err := b.body.Close()
+	b.cancel()
+	return err
 }
