@@ -313,6 +313,8 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 				s.executeCommand(ctx, channel, cmd.service, cmd.repoName, envs...)
 			}
 			return
+		case "auth-agent-req@openssh.com":
+			_ = req.Reply(false, nil)
 		default:
 			_ = req.Reply(false, nil)
 			sendExitStatus(channel, 1, "unsupported request type\n")
