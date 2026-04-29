@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -177,6 +178,18 @@ func main() {
 		return nil
 	}
 
+	gitGitOutputFunc := func(ctx context.Context, repoName string) io.Writer {
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		slog.InfoContext(ctx, "Git command output", "user", userInfo.User, "repo", repoName)
+		return os.Stdout
+	}
+
+	syncTokenFunc := func(ctx context.Context, repoName string) (string, error) {
+		userInfo, _ := authenticate.GetUserInfo(ctx)
+		slog.InfoContext(ctx, "Get sync token", "user", userInfo.User, "repo", repoName)
+		return "", nil
+	}
+
 	var sharedMirror *mirror.Mirror
 	if proxyURL != "" {
 		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
@@ -205,6 +218,8 @@ func main() {
 			mirror.WithConcurrency(mirrorConcurrency),
 			mirror.WithTTL(mirrorTTL),
 			mirror.WithCacheDir(storage.TmpDir()),
+			mirror.WithGitOutputFunc(gitGitOutputFunc),
+			mirror.WithSyncTokenFunc(syncTokenFunc),
 		)
 	}
 

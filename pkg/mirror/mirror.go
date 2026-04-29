@@ -3,10 +3,14 @@ package mirror
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
 	"sync"
 	"time"
 
+	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -19,6 +23,8 @@ type Mirror struct {
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
+	syncTokenFunc       SyncTokenFunc
+	gitOutputFunc       GitOutputFunc
 	lfsStorage          lfs.Storage
 	concurrency         int
 	enableXET           bool
@@ -105,6 +111,26 @@ func WithCacheDir(dir string) Option {
 	}
 }
 
+// GitOutputFunc defines a function type for providing an io.Writer to capture git command output for a given repository.
+type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
+
+// WithGitOutputFunc sets a callback function to provide an io.Writer for capturing git command output for a given repository.
+func WithGitOutputFunc(fn GitOutputFunc) Option {
+	return func(m *Mirror) {
+		m.gitOutputFunc = fn
+	}
+}
+
+// SyncTokenFunc defines a function type for generating a sync token for a given repository, used to coordinate concurrent sync operations.
+type SyncTokenFunc func(ctx context.Context, repoName string) (string, error)
+
+// WithSyncTokenFunc sets a callback function to generate a sync token for a given repository, used to coordinate concurrent sync operations.
+func WithSyncTokenFunc(fn SyncTokenFunc) Option {
+	return func(m *Mirror) {
+		m.syncTokenFunc = fn
+	}
+}
+
 // NewMirror creates a new Mirror with the provided options.
 func NewMirror(opts ...Option) *Mirror {
 	m := &Mirror{}
@@ -128,6 +154,8 @@ func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
 type syncOption struct {
 	SourceURL string
 	Refs      []string
+	Token     string
+	Output    io.Writer
 }
 
 // WithSyncMirrorSourceURL sets the source URL for mirror sync operations, overriding the default mirrorSourceFunc lookup.
@@ -144,11 +172,37 @@ func WithSyncMirrorRefs(refs []string) func(*syncOption) {
 	}
 }
 
+// WithSyncToken sets a sync token for the mirror sync operation, used to coordinate concurrent syncs. This is an alternative to setting a global SyncTokenFunc.
+func WithSyncToken(token string) func(*syncOption) {
+	return func(o *syncOption) {
+		o.Token = token
+	}
+}
+
+// WithSyncOutput sets an io.Writer to capture git command output during the mirror sync operation, overriding the default GitOutputFunc.
+func WithSyncOutput(output io.Writer) func(*syncOption) {
+	return func(o *syncOption) {
+		o.Output = output
+	}
+}
+
 // OpenOrSync opens the mirror repository at repoPath, syncing with the source URL if necessary based on TTL.
 func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts ...func(*syncOption)) (*repository.Repository, error) {
 	var opt syncOption
 	for _, o := range opts {
 		o(&opt)
+	}
+
+	logctx := context.Background()
+	if m.gitOutputFunc != nil {
+		ui, _ := authenticate.GetUserInfo(ctx)
+		logctx = authenticate.WithContext(logctx, ui)
+
+		opt.Output = m.gitOutputFunc(logctx, repoName)
+	}
+
+	if opt.Output != nil {
+		logctx = utils.WithCommandOutput(logctx, opt.Output)
 	}
 
 	if opt.SourceURL == "" {
@@ -162,6 +216,22 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		opt.SourceURL = sourceURL
 	}
 
+	if opt.Token != "" && m.syncTokenFunc != nil {
+		token, err := m.syncTokenFunc(ctx, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get sync token: %w", err)
+		}
+
+		if token != "" {
+			u, err := url.Parse(opt.SourceURL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse source URL: %w", err)
+			}
+			u.User = url.UserPassword("git", token)
+			opt.SourceURL = u.String()
+		}
+	}
+
 	repo, err := repository.Open(repoPath)
 	if err == nil {
 		if !m.shouldSync(repoPath) {
@@ -169,7 +239,8 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		}
 		_, err, _ := m.group.Do(repoPath, func() (any, error) {
 			defer m.markSynced(repoPath)
-			err := m.syncMirror(context.Background(), repo, repoName, opt.SourceURL, opt.Refs)
+
+			err := m.syncMirror(logctx, repo, repoName, opt.SourceURL, opt.Refs)
 			if err != nil {
 				return nil, err
 			}
@@ -191,13 +262,14 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 	}
 
 	v, err, _ := m.group.Do(repoPath, func() (any, error) {
-		repo, err = repository.InitMirror(ctx, repoPath, opt.SourceURL)
+		repo, err = repository.InitMirror(logctx, repoPath, opt.SourceURL)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
 			return nil, repository.ErrRepositoryNotExists
 		}
 		defer m.markSynced(repoPath)
-		err = m.syncMirror(context.Background(), repo, repoName, opt.SourceURL, opt.Refs)
+
+		err = m.syncMirror(logctx, repo, repoName, opt.SourceURL, opt.Refs)
 		if err != nil {
 			return nil, err
 		}
@@ -221,6 +293,18 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 		o(&opt)
 	}
 
+	logctx := context.Background()
+	if m.gitOutputFunc != nil {
+		ui, _ := authenticate.GetUserInfo(ctx)
+		logctx = authenticate.WithContext(logctx, ui)
+
+		opt.Output = m.gitOutputFunc(logctx, repoName)
+	}
+
+	if opt.Output != nil {
+		logctx = utils.WithCommandOutput(logctx, opt.Output)
+	}
+
 	if opt.SourceURL == "" {
 		sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
 		if err != nil {
@@ -230,6 +314,22 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 			return fmt.Errorf("repository %q is not configured as a mirror", repoName)
 		}
 		opt.SourceURL = sourceURL
+	}
+
+	if opt.Token != "" && m.syncTokenFunc != nil {
+		token, err := m.syncTokenFunc(ctx, repoName)
+		if err != nil {
+			return fmt.Errorf("failed to get sync token: %w", err)
+		}
+
+		if token != "" {
+			u, err := url.Parse(opt.SourceURL)
+			if err != nil {
+				return fmt.Errorf("failed to parse source URL: %w", err)
+			}
+			u.User = url.UserPassword("git", token)
+			opt.SourceURL = u.String()
+		}
 	}
 
 	repo, err := repository.Open(repoPath)
