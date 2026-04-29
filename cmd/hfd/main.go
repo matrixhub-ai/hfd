@@ -51,7 +51,7 @@ var (
 	proxyURL = ""
 	HostURL  = ""
 
-	mirrorTTL = time.Hour
+	mirrorTTL = time.Minute
 
 	mirrorXet         = false
 	mirrorConcurrency = 2
