@@ -23,7 +23,7 @@ type Mirror struct {
 	mirrorRefFilterFunc repository.MirrorRefFilterFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
-	syncTokenFunc       SyncTokenFunc
+	syncUserInfoFunc    SyncUserInfoFunc
 	gitOutputFunc       GitOutputFunc
 	lfsStorage          lfs.Storage
 	concurrency         int
@@ -121,13 +121,13 @@ func WithGitOutputFunc(fn GitOutputFunc) Option {
 	}
 }
 
-// SyncTokenFunc defines a function type for generating a sync token for a given repository, used to coordinate concurrent sync operations.
-type SyncTokenFunc func(ctx context.Context, repoName string) (string, error)
+// SyncUserInfoFunc defines a function type for generating a sync token for a given repository, used to coordinate concurrent sync operations.
+type SyncUserInfoFunc func(ctx context.Context, repoName string) (*url.Userinfo, error)
 
-// WithSyncTokenFunc sets a callback function to generate a sync token for a given repository, used to coordinate concurrent sync operations.
-func WithSyncTokenFunc(fn SyncTokenFunc) Option {
+// WithSyncUserInfoFunc sets a callback function to generate a sync token for a given repository, used to coordinate concurrent sync operations.
+func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 	return func(m *Mirror) {
-		m.syncTokenFunc = fn
+		m.syncUserInfoFunc = fn
 	}
 }
 
@@ -151,43 +151,45 @@ func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
 	return isMirror, err
 }
 
+type SyncOption func(*syncOption)
+
 type syncOption struct {
 	SourceURL string
 	Refs      []string
-	Token     string
+	UserInfo  *url.Userinfo
 	Output    io.Writer
 }
 
 // WithSyncMirrorSourceURL sets the source URL for mirror sync operations, overriding the default mirrorSourceFunc lookup.
-func WithSyncMirrorSourceURL(url string) func(*syncOption) {
+func WithSyncMirrorSourceURL(url string) SyncOption {
 	return func(o *syncOption) {
 		o.SourceURL = url
 	}
 }
 
 // WithSyncMirrorRefs sets the specific refs to sync during mirror operations, overriding the default mirrorRefFilterFunc.
-func WithSyncMirrorRefs(refs []string) func(*syncOption) {
+func WithSyncMirrorRefs(refs []string) SyncOption {
 	return func(o *syncOption) {
 		o.Refs = refs
 	}
 }
 
-// WithSyncToken sets a sync token for the mirror sync operation, used to coordinate concurrent syncs. This is an alternative to setting a global SyncTokenFunc.
-func WithSyncToken(token string) func(*syncOption) {
+// WithSyncUserInfo sets a sync user info for the mirror sync operation, used to coordinate concurrent syncs. This is an alternative to setting a global SyncUserInfoFunc.
+func WithSyncUserInfo(userInfo *url.Userinfo) SyncOption {
 	return func(o *syncOption) {
-		o.Token = token
+		o.UserInfo = userInfo
 	}
 }
 
 // WithSyncOutput sets an io.Writer to capture git command output during the mirror sync operation, overriding the default GitOutputFunc.
-func WithSyncOutput(output io.Writer) func(*syncOption) {
+func WithSyncOutput(output io.Writer) SyncOption {
 	return func(o *syncOption) {
 		o.Output = output
 	}
 }
 
 // OpenOrSync opens the mirror repository at repoPath, syncing with the source URL if necessary based on TTL.
-func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts ...func(*syncOption)) (*repository.Repository, error) {
+func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts ...SyncOption) (*repository.Repository, error) {
 	var opt syncOption
 	for _, o := range opts {
 		o(&opt)
@@ -216,20 +218,21 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 		opt.SourceURL = sourceURL
 	}
 
-	if opt.Token != "" && m.syncTokenFunc != nil {
-		token, err := m.syncTokenFunc(ctx, repoName)
+	if opt.UserInfo == nil && m.syncUserInfoFunc != nil {
+		userInfo, err := m.syncUserInfoFunc(ctx, repoName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get sync token: %w", err)
+			return nil, fmt.Errorf("failed to get sync user info: %w", err)
 		}
+		opt.UserInfo = userInfo
+	}
 
-		if token != "" {
-			u, err := url.Parse(opt.SourceURL)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse source URL: %w", err)
-			}
-			u.User = url.UserPassword("git", token)
-			opt.SourceURL = u.String()
+	if opt.UserInfo != nil {
+		u, err := url.Parse(opt.SourceURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse source URL: %w", err)
 		}
+		u.User = opt.UserInfo
+		opt.SourceURL = u.String()
 	}
 
 	repo, err := repository.Open(repoPath)
@@ -287,7 +290,7 @@ func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts
 }
 
 // Sync forcefully syncs the mirror repository at repoPath with the source URL, regardless of TTL.
-func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...func(*syncOption)) error {
+func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...SyncOption) error {
 	var opt syncOption
 	for _, o := range opts {
 		o(&opt)
@@ -316,20 +319,21 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...fu
 		opt.SourceURL = sourceURL
 	}
 
-	if opt.Token != "" && m.syncTokenFunc != nil {
-		token, err := m.syncTokenFunc(ctx, repoName)
+	if opt.UserInfo == nil && m.syncUserInfoFunc != nil {
+		userInfo, err := m.syncUserInfoFunc(ctx, repoName)
 		if err != nil {
-			return fmt.Errorf("failed to get sync token: %w", err)
+			return fmt.Errorf("failed to get sync user info: %w", err)
 		}
+		opt.UserInfo = userInfo
+	}
 
-		if token != "" {
-			u, err := url.Parse(opt.SourceURL)
-			if err != nil {
-				return fmt.Errorf("failed to parse source URL: %w", err)
-			}
-			u.User = url.UserPassword("git", token)
-			opt.SourceURL = u.String()
+	if opt.UserInfo != nil {
+		u, err := url.Parse(opt.SourceURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse source URL: %w", err)
 		}
+		u.User = opt.UserInfo
+		opt.SourceURL = u.String()
 	}
 
 	repo, err := repository.Open(repoPath)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,10 +185,10 @@ func main() {
 		return os.Stdout
 	}
 
-	syncTokenFunc := func(ctx context.Context, repoName string) (string, error) {
+	syncUserInfoFunc := func(ctx context.Context, repoName string) (*url.Userinfo, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
-		slog.InfoContext(ctx, "Get sync token", "user", userInfo.User, "repo", repoName)
-		return "", nil
+		slog.InfoContext(ctx, "Get sync user info", "user", userInfo.User, "repo", repoName)
+		return nil, nil
 	}
 
 	var sharedMirror *mirror.Mirror
@@ -219,7 +220,7 @@ func main() {
 			mirror.WithTTL(mirrorTTL),
 			mirror.WithCacheDir(storage.TmpDir()),
 			mirror.WithGitOutputFunc(gitGitOutputFunc),
-			mirror.WithSyncTokenFunc(syncTokenFunc),
+			mirror.WithSyncUserInfoFunc(syncUserInfoFunc),
 		)
 	}
 
