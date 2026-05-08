@@ -29,6 +29,8 @@ type Mirror struct {
 	concurrency         int
 	enableXET           bool
 	cacheDir            string
+	xetEvictMaxBytes    int64
+	xetEvictBeforeFunc  func() time.Time
 	lfsTeeCache         *teeCache
 	ttl                 time.Duration
 	group               singleflight.Group
@@ -90,6 +92,22 @@ func WithXET(b bool) Option {
 	}
 }
 
+// WithXETIdleEvictMaxBytes sets the maximum XET disk cache size after an idle cleanup pass.
+// A value of 0 evicts all eligible inactive entries.
+func WithXETIdleEvictMaxBytes(maxBytes int64) Option {
+	return func(m *Mirror) {
+		m.xetEvictMaxBytes = maxBytes
+	}
+}
+
+// WithXETIdleEvictBeforeFunc sets the cutoff time used for XET disk cache eviction when downloads become idle.
+// Entries updated before the returned time are eligible for eviction.
+func WithXETIdleEvictBeforeFunc(fn func() time.Time) Option {
+	return func(m *Mirror) {
+		m.xetEvictBeforeFunc = fn
+	}
+}
+
 // WithConcurrency sets the concurrency level for concurrent fetching of LFS objects during mirror syncs.
 func WithConcurrency(concurrency int) Option {
 	return func(m *Mirror) {
@@ -137,8 +155,11 @@ func NewMirror(opts ...Option) *Mirror {
 	for _, opt := range opts {
 		opt(m)
 	}
+	if m.xetEvictBeforeFunc == nil {
+		m.xetEvictBeforeFunc = time.Now
+	}
 
-	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.cacheDir, m.progressFunc)
+	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.cacheDir, m.xetEvictMaxBytes, m.xetEvictBeforeFunc, m.progressFunc)
 	return m
 }
 

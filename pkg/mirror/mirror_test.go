@@ -46,6 +46,37 @@ func TestOpenOrSyncRespectsTTL(t *testing.T) {
 	})
 }
 
+func TestNewMirrorConfiguresXETIdleEvict(t *testing.T) {
+	t.Run("defaults before func to time now", func(t *testing.T) {
+		m := NewMirror()
+		if m.lfsTeeCache == nil {
+			t.Fatal("expected tee cache to be initialized")
+		}
+		if m.lfsTeeCache.xetEvictBeforeFunc == nil {
+			t.Fatal("expected default xet evict before func")
+		}
+		before := m.lfsTeeCache.xetEvictBeforeFunc()
+		if before.IsZero() {
+			t.Fatal("expected default xet evict before time to be non-zero")
+		}
+	})
+
+	t.Run("propagates custom evict settings", func(t *testing.T) {
+		expectedBefore := time.Unix(123, 0)
+		m := NewMirror(
+			WithXETIdleEvictMaxBytes(42),
+			WithXETIdleEvictBeforeFunc(func() time.Time { return expectedBefore }),
+		)
+
+		if got := m.lfsTeeCache.xetEvictMaxBytes; got != 42 {
+			t.Fatalf("xetEvictMaxBytes = %d, want 42", got)
+		}
+		if got := m.lfsTeeCache.xetEvictBeforeFunc(); !got.Equal(expectedBefore) {
+			t.Fatalf("xetEvictBeforeFunc() = %v, want %v", got, expectedBefore)
+		}
+	})
+}
+
 func setupUpstreamRepo(t *testing.T, root string) string {
 	t.Helper()
 

@@ -52,10 +52,12 @@ var (
 	proxyURL = ""
 	HostURL  = ""
 
-	mirrorTTL = time.Minute
+	proxyCacheTTL = time.Minute
 
-	mirrorXet         = false
-	mirrorConcurrency = 2
+	proxyXet                      = false
+	proxyConcurrencyPerFile       = 2
+	proxyXetEvictMaxBytes   int64 = 10 * 1024 * 1024 * 1024 // 10 GB
+	proxyXetEvictBefore           = 6 * time.Hour
 )
 
 func init() {
@@ -77,11 +79,14 @@ func init() {
 	flag.StringVar(&authToken, "token", authToken, "Static token for authentication (alternative to username/password)")
 	flag.StringVar(&authSignKey, "sign-key", authSignKey, "Key for signing authentication tokens (enables token signing)")
 
-	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
-	flag.DurationVar(&mirrorTTL, "mirror-ttl", mirrorTTL, "Minimum duration between mirror syncs; 0 syncs on every fetch")
-	flag.IntVar(&mirrorConcurrency, "mirror-concurrency", mirrorConcurrency, "Number of concurrent workers for fetching LFS objects during mirror syncs")
-	flag.BoolVar(&mirrorXet, "mirror-xet", mirrorXet, "Enable XET for fetching LFS objects during mirror syncs")
+
+	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
+	flag.DurationVar(&proxyCacheTTL, "proxy-cache-ttl", proxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
+	flag.IntVar(&proxyConcurrencyPerFile, "proxy-concurrency-per-file", proxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
+	flag.BoolVar(&proxyXet, "proxy-xet", proxyXet, "Enable XET for fetching LFS objects during proxy syncs")
+	flag.Int64Var(&proxyXetEvictMaxBytes, "proxy-xet-evict-max-bytes", proxyXetEvictMaxBytes, "Maximum XET disk cache size after idle cleanup; 0 evicts all eligible inactive entries")
+	flag.DurationVar(&proxyXetEvictBefore, "proxy-xet-evict-before", proxyXetEvictBefore, "Evict XET cache entries older than this idle-time age; negative disables the age cutoff")
 	flag.Parse()
 
 	if HostURL == "" {
@@ -215,9 +220,16 @@ func main() {
 			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
 			mirror.WithLFSStorage(lfsStorage),
-			mirror.WithXET(mirrorXet),
-			mirror.WithConcurrency(mirrorConcurrency),
-			mirror.WithTTL(mirrorTTL),
+			mirror.WithXET(proxyXet),
+			mirror.WithXETIdleEvictMaxBytes(proxyXetEvictMaxBytes),
+			mirror.WithXETIdleEvictBeforeFunc(func() time.Time {
+				if proxyXetEvictBefore < 0 {
+					return time.Time{}
+				}
+				return time.Now().Add(-proxyXetEvictBefore)
+			}),
+			mirror.WithConcurrency(proxyConcurrencyPerFile),
+			mirror.WithTTL(proxyCacheTTL),
 			mirror.WithCacheDir(storage.TmpDir()),
 			mirror.WithGitOutputFunc(gitGitOutputFunc),
 			mirror.WithSyncUserInfoFunc(syncUserInfoFunc),

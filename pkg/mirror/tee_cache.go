@@ -66,15 +66,21 @@ type pendingObject struct {
 // starts the next download when all active (foreground + background) downloads
 // have finished.
 type teeCache struct {
-	httpClient   *http.Client
-	cache        sync.Map // oid -> *Blob (active downloads)
-	pending      sync.Map // oid -> *pendingObject (queued, not yet started)
-	storage      lfs.Storage
-	promoteGroup singleflight.Group // deduplicates concurrent promotions per oid
-	enableXET    bool
-	concurrency  int
-	cacheDir     string
-	progressFunc func(name string, downloaded, total int64)
+	httpClient         *http.Client
+	cache              sync.Map // oid -> *Blob (active downloads)
+	pending            sync.Map // oid -> *pendingObject (queued, not yet started)
+	storage            lfs.Storage
+	lfsClient          *lfs.Client
+	downloader         *dl.Downloader
+	xetClient          *xetclient.Client
+	xetClientErr       error
+	promoteGroup       singleflight.Group // deduplicates concurrent promotions per oid
+	enableXET          bool
+	concurrency        int
+	cacheDir           string
+	xetEvictMaxBytes   int64
+	xetEvictBeforeFunc func() time.Time
+	progressFunc       func(name string, downloaded, total int64)
 
 	queueMu     sync.Mutex // guards pendingQueue and queueCond
 	pendingList *list.List // FIFO list of oid strings for the background worker
@@ -86,19 +92,46 @@ type teeCache struct {
 
 // newTeeCache creates a new teeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir string, progressFunc func(name string, downloaded, total int64)) *teeCache {
-	p := &teeCache{
-		httpClient:   utils.HTTPClient,
-		storage:      storage,
-		enableXET:    enableXET,
-		concurrency:  concurrency,
-		cacheDir:     cacheDir,
-		progressFunc: progressFunc,
-		pendingList:  list.New(),
-	}
-
+func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir string, xetEvictMaxBytes int64, xetEvictBeforeFunc func() time.Time, progressFunc func(name string, downloaded, total int64)) *teeCache {
 	if cacheDir == "" {
 		cacheDir = path.Join(os.TempDir(), "hfd")
+	}
+
+	p := &teeCache{
+		httpClient:         utils.HTTPClient,
+		storage:            storage,
+		lfsClient:          lfs.NewClient(utils.HTTPClient),
+		enableXET:          enableXET,
+		concurrency:        concurrency,
+		cacheDir:           cacheDir,
+		xetEvictMaxBytes:   xetEvictMaxBytes,
+		xetEvictBeforeFunc: xetEvictBeforeFunc,
+		progressFunc:       progressFunc,
+		pendingList:        list.New(),
+	}
+
+	p.downloader = dl.NewDownloader(
+		dl.WithHTTPClient(p.httpClient),
+		dl.WithConcurrency(p.concurrency),
+		dl.WithChunkSize(64*1024*1024), // 64MB
+		dl.WithResume(true),
+		dl.WithForceTryRange(true),
+		dl.WithProgressFunc(p.progressFunc),
+		dl.WithCacheDir(path.Join(p.cacheDir, "dl")),
+	)
+
+	if p.enableXET {
+		xetClient, err := xetclient.NewClient(
+			xetclient.WithConcurrency(p.concurrency),
+			xetclient.WithProgressFunc(p.progressFunc),
+			xetclient.WithCacheDir(path.Join(p.cacheDir, "xet")),
+		)
+		if err != nil {
+			p.xetClientErr = err
+			slog.Error("LFS tee cache: failed to create XET client", "error", err)
+		} else {
+			p.xetClient = xetClient
+		}
 	}
 
 	p.queueCond = sync.NewCond(&p.queueMu)
@@ -215,12 +248,34 @@ func (m *teeCache) promote(oid string, pending *pendingObject) *Blob {
 // downloadDone decrements the active download counter and notifies the background worker
 // if all downloads have completed.
 func (m *teeCache) downloadDone() {
+	idle := false
+
 	m.activeMu.Lock()
 	m.activeCount--
 	if m.activeCount == 0 {
+		idle = true
 		m.idleCond.Broadcast()
 	}
 	m.activeMu.Unlock()
+
+	if idle {
+		m.evictXETOnIdle(context.Background())
+	}
+}
+
+func (m *teeCache) evictXETOnIdle(ctx context.Context) {
+	if m.xetClient == nil {
+		return
+	}
+
+	before := time.Now()
+	if m.xetEvictBeforeFunc != nil {
+		before = m.xetEvictBeforeFunc()
+	}
+
+	if err := m.xetClient.Evict(m.xetEvictMaxBytes, before); err != nil {
+		slog.ErrorContext(ctx, "LFS tee cache: failed to evict XET disk cache on idle", "error", err)
+	}
 }
 
 // backgroundWorker runs for the lifetime of the teeCache. It drains the pending list
@@ -268,8 +323,7 @@ func (m *teeCache) backgroundWorker() {
 // into ws. It is intended to run in a goroutine after the Blob has been registered in the cache.
 func (m *teeCache) startDownload(ctx context.Context, sourceURL, oid string, size int64, ws ioswmr.Writer) {
 	defer m.downloadDone()
-	client := lfs.NewClient(m.httpClient)
-	batchResp, err := client.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
+	batchResp, err := m.lfsClient.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to get batch download URL", "oid", oid, "error", err)
 		m.cache.Delete(oid)
@@ -356,23 +410,12 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, sourceURL, oid string, s
 	urls := []string{req.URL.String()}
 	expiresAt := getExpiresAt(downloadAction).Add(-5 * time.Minute)
 
-	d := dl.NewDownloader(
-		dl.WithHTTPClient(m.httpClient),
-		dl.WithConcurrency(m.concurrency),
-		dl.WithChunkSize(64*1024*1024), // 64MB
-		dl.WithResume(true),
-		dl.WithForceTryRange(true),
-		dl.WithProgressFunc(m.progressFunc),
-		dl.WithCacheDir(path.Join(m.cacheDir, "dl")),
-	)
-
 	urlsFunc := func() ([]string, error) {
 		if expiresAt.After(time.Now()) {
 			return urls, nil
 		}
 
-		client := lfs.NewClient(m.httpClient)
-		batchResp, err := client.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
+		batchResp, err := m.lfsClient.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
 		if err != nil {
 			return nil, fmt.Errorf("failed to refresh batch download URL: %w", err)
 		}
@@ -400,7 +443,7 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, sourceURL, oid string, s
 		expiresAt = getExpiresAt(downloadAction).Add(-5 * time.Minute)
 		return urls, nil
 	}
-	if err := d.DownloadWithURLsFunc(ctx, oid, ws, urlsFunc); err != nil {
+	if err := m.downloader.DownloadWithURLsFunc(ctx, oid, ws, urlsFunc); err != nil {
 		return err
 	}
 
@@ -414,18 +457,16 @@ func (m *teeCache) doDownloadXET(ctx context.Context, target *xethf.Target, oid 
 		return err
 	}
 
-	auth := xethf.NewReadTokenProvider(m.httpClient, *target, "")
-	xc, err := xetclient.NewClient(
-		xetclient.WithAuthProvider(auth),
-		xetclient.WithConcurrency(m.concurrency),
-		xetclient.WithProgressFunc(m.progressFunc),
-		xetclient.WithCacheDir(path.Join(m.cacheDir, "xet")),
-	)
-	if err != nil {
-		return err
+	if m.xetClient == nil {
+		if m.xetClientErr != nil {
+			return fmt.Errorf("initialize xet client: %w", m.xetClientErr)
+		}
+		return fmt.Errorf("xet client is not initialized")
 	}
 
-	if err := xc.DownloadFile(ctx, xetHash, ws); err != nil {
+	auth := xethf.NewReadTokenProvider(m.httpClient, *target, "")
+
+	if err := m.xetClient.DownloadFileWithAuthProvider(ctx, auth, xetHash, ws); err != nil {
 		return err
 	}
 
