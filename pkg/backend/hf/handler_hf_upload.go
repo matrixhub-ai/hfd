@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/gorilla/mux"
+	"github.com/matrixhub-ai/hfd/pkg/constants"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -139,6 +140,12 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		_ = repo.Remove()
 		responseJSON(w, fmt.Errorf("failed to create initial commit: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// inject costume data
+	if costume, ok := r.Context().Value(constants.OperationChangeKey).(map[string]string); ok {
+		costume["repoName"] = req.Name
+		costume["organization"] = req.Organization
 	}
 
 	resp := createRepoResponse{
