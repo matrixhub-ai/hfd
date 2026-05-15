@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"io"
 	"net/http"
 
@@ -18,10 +19,14 @@ type Handler struct {
 	root                *mux.Router
 	next                http.Handler
 	permissionHookFunc  permission.PermissionHookFunc
+	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
 }
+
+// PreOpenHookFunc is called before opening a repository for a git service request.
+type PreOpenHookFunc func(ctx context.Context, repoPath, repoName, service string) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
@@ -44,6 +49,13 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(h *Handler) {
 		h.permissionHookFunc = fn
+	}
+}
+
+// WithPreOpenHookFunc sets a hook called before repository open.
+func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
+	return func(h *Handler) {
+		h.preOpenHookFunc = fn
 	}
 }
 

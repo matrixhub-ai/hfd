@@ -121,10 +121,14 @@ func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir 
 	)
 
 	if p.enableXET {
+		xetCacheDir := path.Join(p.cacheDir, "xet")
+		if err := os.MkdirAll(xetCacheDir, 0700); err != nil {
+			slog.Error("LFS tee cache: failed to create XET cache directory", "error", err)
+		}
 		xetClient, err := xetclient.NewClient(
 			xetclient.WithConcurrency(p.concurrency),
 			xetclient.WithProgressFunc(p.progressFunc),
-			xetclient.WithCacheDir(path.Join(p.cacheDir, "xet")),
+			xetclient.WithCacheDir(xetCacheDir),
 		)
 		if err != nil {
 			p.xetClientErr = err
@@ -323,7 +327,7 @@ func (m *teeCache) backgroundWorker() {
 // into ws. It is intended to run in a goroutine after the Blob has been registered in the cache.
 func (m *teeCache) startDownload(ctx context.Context, sourceURL, oid string, size int64, ws ioswmr.Writer) {
 	defer m.downloadDone()
-	batchResp, err := m.lfsClient.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
+	batchResp, err := m.lfsClient.DownloadBatch(ctx, sourceURL, lfs.TransferCapabilities, []lfs.LFSObject{{Oid: oid, Size: size}})
 	if err != nil {
 		slog.ErrorContext(ctx, "LFS tee cache: failed to get batch download URL", "oid", oid, "error", err)
 		m.cache.Delete(oid)
@@ -415,7 +419,7 @@ func (m *teeCache) doDownloadBasic(ctx context.Context, sourceURL, oid string, s
 			return urls, nil
 		}
 
-		batchResp, err := m.lfsClient.GetBatch(ctx, sourceURL, []lfs.LFSObject{{Oid: oid, Size: size}})
+		batchResp, err := m.lfsClient.DownloadBatch(ctx, sourceURL, lfs.TransferCapabilities, []lfs.LFSObject{{Oid: oid, Size: size}})
 		if err != nil {
 			return nil, fmt.Errorf("failed to refresh batch download URL: %w", err)
 		}

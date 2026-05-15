@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -24,6 +25,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -49,12 +51,16 @@ var (
 	authToken        = ""
 	authSignKey      = "secret-sign-key"
 
-	proxyURL = ""
-	HostURL  = ""
+	proxy         = ""
+	proxyToken    = ""
+	HostURL       = ""
+	pullMirrorURL = ""
+	pushMirrorURL = ""
 
 	proxyCacheTTL = time.Minute
 
-	proxyXet                      = false
+	pullMirrorXet                 = false
+	pushMirrorXet                 = false
 	proxyConcurrencyPerFile       = 2
 	proxyXetEvictMaxBytes   int64 = 10 * 1024 * 1024 * 1024 // 10 GB
 	proxyXetEvictBefore           = 6 * time.Hour
@@ -81,10 +87,14 @@ func init() {
 
 	flag.StringVar(&HostURL, "host-url", HostURL, "External URL for the server (e.g. http://localhost:8080); if not set, it is inferred from the listen address")
 
-	flag.StringVar(&proxyURL, "proxy", proxyURL, "Proxy source URL for fetching repositories that don't exist locally (e.g. https://huggingface.co)")
+	flag.StringVar(&proxy, "proxy", proxy, "Proxy URL for fetching repositories from a remote during pull-mirror syncs (e.g. https://huggingface.co)")
+	flag.StringVar(&proxyToken, "proxy-token", proxyToken, "Static token for authenticating to the pull mirror proxy")
+	flag.StringVar(&pullMirrorURL, "pull-mirror", proxy, "Pull mirror source base URL for syncing repositories from a remote (e.g. https://huggingface.co)")
+	flag.StringVar(&pushMirrorURL, "push-mirror", proxy, "Push mirror destination base URL for syncing local pushes to a remote (e.g. https://huggingface.co)")
 	flag.DurationVar(&proxyCacheTTL, "proxy-cache-ttl", proxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
 	flag.IntVar(&proxyConcurrencyPerFile, "proxy-concurrency-per-file", proxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
-	flag.BoolVar(&proxyXet, "proxy-xet", proxyXet, "Enable XET for fetching LFS objects during proxy syncs")
+	flag.BoolVar(&pullMirrorXet, "pull-xet", pullMirrorXet, "Enable XET for downloading LFS objects during pull-mirror syncs")
+	flag.BoolVar(&pushMirrorXet, "push-xet", pushMirrorXet, "Enable XET for uploading LFS objects during push-mirror syncs")
 	flag.Int64Var(&proxyXetEvictMaxBytes, "proxy-xet-evict-max-bytes", proxyXetEvictMaxBytes, "Maximum XET disk cache size after idle cleanup; 0 evicts all eligible inactive entries")
 	flag.DurationVar(&proxyXetEvictBefore, "proxy-xet-evict-before", proxyXetEvictBefore, "Evict XET cache entries older than this idle-time age; negative disables the age cutoff")
 	flag.Parse()
@@ -99,6 +109,15 @@ func init() {
 			host = "localhost"
 		}
 		HostURL = fmt.Sprintf("http://%s:%s", host, port)
+	}
+
+	if proxy != "" {
+		if pullMirrorURL == "" {
+			pullMirrorURL = proxy
+		}
+		if pushMirrorURL == "" {
+			pushMirrorURL = proxy
+		}
 	}
 }
 
@@ -166,6 +185,36 @@ func main() {
 		return true, nil // or return false, nil to deny, or return an error to indicate an error
 	}
 
+	var sharedMirror *mirror.Mirror
+
+	ttl := proxyCacheTTL
+	var lastSync sync.Map
+
+	preOpenHookFunc := func(ctx context.Context, repoPath, repoName, service string) error {
+		if sharedMirror == nil || service != repository.GitUploadPack {
+			return nil
+		}
+		if ttl > 0 {
+			if last, ok := lastSync.Load(repoPath); ok {
+				if t, ok := last.(time.Time); ok && time.Since(t) < ttl {
+					slog.InfoContext(ctx, "Skipping pull mirror sync due to recent sync", "repo", repoName, "lastSync", t)
+					return nil
+				}
+			}
+			lastSync.Store(repoPath, time.Now())
+		}
+
+		isMirror, err := sharedMirror.IsMirrorSource(ctx, repoName)
+		if err != nil {
+			return err
+		}
+		if !isMirror {
+			return nil
+		}
+
+		return sharedMirror.PullFromRemote(context.Background(), repoPath, repoName)
+	}
+
 	preReceiveHookFunc := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		for _, e := range updates {
@@ -181,6 +230,32 @@ func main() {
 			slog.InfoContext(ctx, "Post-receive hook", "user", userInfo.User, "repo", repoName, "event", e.String(),
 				"ref", e.RefName, "old", e.OldRev, "new", e.NewRev)
 		}
+
+		if sharedMirror == nil {
+			return nil
+		}
+
+		repoPath := storage.ResolvePath(repoName)
+		if repoPath == "" {
+			slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
+			return nil
+		}
+
+		shouldPush := false
+		for _, u := range updates {
+			if strings.HasPrefix(u.RefName(), "refs/heads/") || strings.HasPrefix(u.RefName(), "refs/tags/") {
+				shouldPush = true
+				break
+			}
+		}
+		if !shouldPush {
+			slog.InfoContext(ctx, "Skip push mirror for non-branch/tag refs", "repo", repoName)
+			return nil
+		}
+
+		if err := sharedMirror.PushToRemote(context.Background(), repoPath, repoName, updates); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -193,17 +268,52 @@ func main() {
 	syncUserInfoFunc := func(ctx context.Context, repoName string) (*url.Userinfo, error) {
 		userInfo, _ := authenticate.GetUserInfo(ctx)
 		slog.InfoContext(ctx, "Get sync user info", "user", userInfo.User, "repo", repoName)
+		if proxyToken != "" {
+			return url.UserPassword("git", proxyToken), nil
+		}
 		return nil, nil
 	}
 
-	var sharedMirror *mirror.Mirror
-	if proxyURL != "" {
-		slog.InfoContext(ctx, "Proxy mode enabled", "source", proxyURL)
-
-		baseURL := strings.TrimSuffix(proxyURL, "/")
-		mirrorSourceFunc := func(ctx context.Context, repoName string) (string, bool, error) {
-			return baseURL + "/" + repoName, true, nil
+	if pullMirrorURL != "" || pushMirrorURL != "" {
+		opts := []mirror.Option{
+			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
+			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
+			mirror.WithLFSStorage(lfsStorage),
+			mirror.WithXET(pullMirrorXet || pushMirrorXet),
+			mirror.WithXETIdleEvictMaxBytes(proxyXetEvictMaxBytes),
+			mirror.WithXETIdleEvictBeforeFunc(func() time.Time {
+				if proxyXetEvictBefore < 0 {
+					return time.Time{}
+				}
+				return time.Now().Add(-proxyXetEvictBefore)
+			}),
+			mirror.WithConcurrency(proxyConcurrencyPerFile),
+			mirror.WithCacheDir(storage.TmpDir()),
+			mirror.WithGitOutputFunc(gitGitOutputFunc),
+			mirror.WithSyncUserInfoFunc(syncUserInfoFunc),
 		}
+
+		if pullMirrorURL != "" {
+			slog.InfoContext(ctx, "Pull mirror mode enabled", "source", pullMirrorURL)
+			baseURL := strings.TrimSuffix(pullMirrorURL, "/")
+			mirrorSourceFunc := func(ctx context.Context, repoName string) (string, bool, error) {
+				return baseURL + "/" + strings.TrimPrefix(repoName, "/"), true, nil
+			}
+
+			opts = append(opts,
+				mirror.WithMirrorSourceFunc(mirrorSourceFunc),
+			)
+		}
+
+		if pushMirrorURL != "" {
+			slog.InfoContext(ctx, "Push mirror mode enabled", "destination", pushMirrorURL)
+			baseURL := strings.TrimSuffix(pushMirrorURL, "/")
+			mirrorDestFunc := func(ctx context.Context, repoName string) (string, bool, error) {
+				return baseURL + "/" + strings.TrimPrefix(repoName, "/"), true, nil
+			}
+			opts = append(opts, mirror.WithMirrorDestinationFunc(mirrorDestFunc))
+		}
+
 		mirrorRefFilterFunc := func(ctx context.Context, repoName string, remoteRefs []string) ([]string, error) {
 			var filtered []string
 			for _, ref := range remoteRefs {
@@ -214,26 +324,11 @@ func main() {
 			slog.InfoContext(ctx, "Mirror ref filter", "repo", repoName, "remoteRefs", remoteRefs, "filteredRefs", filtered)
 			return filtered, nil
 		}
-		sharedMirror = mirror.NewMirror(
-			mirror.WithMirrorSourceFunc(mirrorSourceFunc),
+		opts = append(opts,
 			mirror.WithMirrorRefFilterFunc(mirrorRefFilterFunc),
-			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
-			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
-			mirror.WithLFSStorage(lfsStorage),
-			mirror.WithXET(proxyXet),
-			mirror.WithXETIdleEvictMaxBytes(proxyXetEvictMaxBytes),
-			mirror.WithXETIdleEvictBeforeFunc(func() time.Time {
-				if proxyXetEvictBefore < 0 {
-					return time.Time{}
-				}
-				return time.Now().Add(-proxyXetEvictBefore)
-			}),
-			mirror.WithConcurrency(proxyConcurrencyPerFile),
-			mirror.WithTTL(proxyCacheTTL),
-			mirror.WithCacheDir(storage.TmpDir()),
-			mirror.WithGitOutputFunc(gitGitOutputFunc),
-			mirror.WithSyncUserInfoFunc(syncUserInfoFunc),
 		)
+
+		sharedMirror = mirror.NewMirror(opts...)
 	}
 
 	var basicAuthValidator authenticate.BasicAuthValidator
@@ -274,6 +369,7 @@ func main() {
 		backendhf.WithStorage(storage),
 		backendhf.WithNext(handler),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithPreOpenHookFunc(preOpenHookFunc),
 		backendhf.WithPermissionHookFunc(permissionHookFunc),
 		backendhf.WithPreReceiveHookFunc(preReceiveHookFunc),
 		backendhf.WithPostReceiveHookFunc(postReceiveHookFunc),
@@ -294,6 +390,7 @@ func main() {
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
+		backendhttp.WithPreOpenHookFunc(preOpenHookFunc),
 		backendhttp.WithPermissionHookFunc(permissionHookFunc),
 		backendhttp.WithPreReceiveHookFunc(preReceiveHookFunc),
 		backendhttp.WithPostReceiveHookFunc(postReceiveHookFunc),
@@ -333,6 +430,7 @@ func main() {
 			backendssh.WithStorage(storage),
 			backendssh.WithHostKey(hostKeySigner),
 			backendssh.WithPermissionHookFunc(permissionHookFunc),
+			backendssh.WithPreOpenHookFunc(preOpenHookFunc),
 			backendssh.WithPreReceiveHookFunc(preReceiveHookFunc),
 			backendssh.WithPostReceiveHookFunc(postReceiveHookFunc),
 			backendssh.WithMirror(sharedMirror),

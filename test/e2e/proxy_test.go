@@ -32,6 +32,24 @@ func newMirrorSourceFunc(baseURL string) repository.MirrorSourceFunc {
 	}
 }
 
+func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, string, string, string) error {
+	return func(ctx context.Context, repoPath, repoName, service string) error {
+		if sharedMirror == nil || service != repository.GitUploadPack {
+			return nil
+		}
+
+		isMirror, err := sharedMirror.IsMirrorSource(ctx, repoName)
+		if err != nil {
+			return err
+		}
+		if !isMirror {
+			return nil
+		}
+
+		return sharedMirror.PullFromRemote(ctx, repoPath, repoName)
+	}
+}
+
 // setupProxyServer creates a proxy HTTP server that mirrors repositories from
 // upstreamURL on demand.
 func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, string) {
@@ -56,6 +74,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 		backendhf.WithStorage(storage),
 		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -68,6 +87,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
+		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
 	)
 
 	server := httptest.NewServer(handler)
@@ -106,6 +126,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(storage),
 		backendssh.WithMirror(sharedMirror),
+		backendssh.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
 	)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -338,6 +359,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 		backendhf.WithStorage(storage),
 		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -350,6 +372,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
+		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
 	)
 
 	server := httptest.NewServer(handler)

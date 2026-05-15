@@ -41,16 +41,28 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject receive-pack (push) advertisement for mirror repositories
-	if service == repository.GitReceivePack && h.mirror != nil {
-		isMirror, err := h.mirror.IsMirror(r.Context(), repoName)
-		if err != nil {
-			responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if isMirror {
-			responseText(w, "push to mirror repository is not allowed", http.StatusForbidden)
-			return
+	if h.mirror != nil {
+		switch service {
+		case repository.GitUploadPack:
+			isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
+			if err != nil {
+				responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if !isMirrorSrc {
+				responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
+				return
+			}
+		case repository.GitReceivePack:
+			isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
+			if err != nil {
+				responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if !isMirrorDest {
+				responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
+				return
+			}
 		}
 	}
 
@@ -115,16 +127,28 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
-	// Reject pushes to mirror repositories
-	if service == repository.GitReceivePack && h.mirror != nil {
-		isMirror, err := h.mirror.IsMirror(r.Context(), repoName)
-		if err != nil {
-			responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if isMirror {
-			responseText(w, "push to mirror repository is not allowed", http.StatusForbidden)
-			return
+	if h.mirror != nil {
+		switch service {
+		case repository.GitUploadPack:
+			isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
+			if err != nil {
+				responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if !isMirrorSrc {
+				responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
+				return
+			}
+		case repository.GitReceivePack:
+			isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
+			if err != nil {
+				responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if !isMirrorDest {
+				responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
+				return
+			}
 		}
 	}
 
@@ -179,16 +203,33 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
-	if service == repository.GitReceivePack && h.postReceiveHookFunc != nil && len(updates) > 0 {
-		if hookErr := h.postReceiveHookFunc(r.Context(), repoName, updates); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", repoName, "error", hookErr)
+	if service == repository.GitReceivePack {
+		h.afterReceivePack(r.Context(), repoName, updates)
+	}
+}
+
+func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates []receive.RefUpdate) {
+	if len(updates) == 0 {
+		return
+	}
+
+	if h.postReceiveHookFunc != nil {
+		if hookErr := h.postReceiveHookFunc(ctx, repoName, updates); hookErr != nil {
+			slog.WarnContext(ctx, "post-receive hook error", "repo", repoName, "error", hookErr)
 		}
 	}
 }
 
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if h.mirror == nil || service != repository.GitUploadPack {
-		return repository.Open(repoPath)
+	if err := h.preOpenHook(ctx, repoPath, repoName, service); err != nil {
+		return nil, err
 	}
-	return h.mirror.OpenOrSync(ctx, repoPath, repoName)
+	return repository.Open(repoPath)
+}
+
+func (h *Handler) preOpenHook(ctx context.Context, repoPath, repoName, service string) error {
+	if h.preOpenHookFunc == nil {
+		return nil
+	}
+	return h.preOpenHookFunc(ctx, repoPath, repoName, service)
 }

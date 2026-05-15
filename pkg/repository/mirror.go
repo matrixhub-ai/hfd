@@ -13,6 +13,11 @@ import (
 // the mirror should be enabled for this repository, and an error if any occurs during the process.
 type MirrorSourceFunc func(ctx context.Context, repoName string) (string, bool, error)
 
+// MirrorDestinationFunc defines a function type for determining the destination URL of a repository push mirror.
+// It receives the repository name and returns the destination URL, a boolean indicating whether
+// push mirroring is enabled for this repository, and an error if any occurs during the process.
+type MirrorDestinationFunc func(ctx context.Context, repoName string) (string, bool, error)
+
 // MirrorRefFilterFunc filters which refs should be synced during mirror operations.
 // It receives the repository name and a list of remote ref names (e.g. "refs/heads/main",
 // "refs/tags/v1.0") and returns the filtered list of refs to sync.
@@ -81,9 +86,41 @@ func GetRemoteRefs(ctx context.Context, sourceURL string) (map[string]string, er
 	return refs, nil
 }
 
+// PushMirrorRefs pushes the specified refspecs to the destination URL.
+// Each refspec should be "+src:dst" for create/update or ":dst" for delete.
+func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refspecs []string) error {
+	if len(refspecs) == 0 {
+		return nil
+	}
+
+	args := []string{
+		"push",
+		"--no-tags",
+		"--progress",
+		destURL,
+	}
+	args = append(args, refspecs...)
+
+	cmd := utils.Command(ctx, "git", args...)
+	cmd.Dir = r.repoPath
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to push mirror refs to remote: %w", err)
+	}
+
+	return nil
+}
+
 // SyncMirrorRefs syncs only the specified refs from the sourceURL.
 // Local refs that are not in the specified list are pruned.
+//
+//go:fix inline
 func (r *Repository) SyncMirrorRefs(ctx context.Context, sourceURL string, refs []string) error {
+	return r.PullMirrorRefs(ctx, sourceURL, refs)
+}
+
+// PullMirrorRefs fetches the specified refs from the sourceURL and updates the local mirror repository.
+// Local refs that are not in the specified list are pruned.
+func (r *Repository) PullMirrorRefs(ctx context.Context, sourceURL string, refs []string) error {
 	if len(refs) == 0 {
 		return nil
 	}

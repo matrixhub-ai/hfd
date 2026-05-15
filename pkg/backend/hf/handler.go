@@ -3,6 +3,7 @@ package hf
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -22,10 +23,14 @@ type Handler struct {
 	next                http.Handler
 	lfsStorage          lfs.Storage
 	permissionHookFunc  permission.PermissionHookFunc
+	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
 }
+
+// PreOpenHookFunc is called before opening a repository for a git service request.
+type PreOpenHookFunc func(ctx context.Context, repoPath, repoName, service string) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
@@ -48,6 +53,13 @@ func WithNext(next http.Handler) Option {
 func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(h *Handler) {
 		h.permissionHookFunc = fn
+	}
+}
+
+// WithPreOpenHookFunc sets a hook called before repository open.
+func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
+	return func(h *Handler) {
+		h.preOpenHookFunc = fn
 	}
 }
 
@@ -193,10 +205,29 @@ func getRepoInformation(r *http.Request) repoInformation {
 }
 
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if h.mirror == nil || service != repository.GitUploadPack {
-		return repository.Open(repoPath)
+	if err := h.preOpenHook(ctx, repoPath, repoName, service); err != nil {
+		return nil, err
 	}
-	return h.mirror.OpenOrSync(ctx, repoPath, repoName)
+	return repository.Open(repoPath)
+}
+
+func (h *Handler) preOpenHook(ctx context.Context, repoPath, repoName, service string) error {
+	if h.preOpenHookFunc == nil {
+		return nil
+	}
+	return h.preOpenHookFunc(ctx, repoPath, repoName, service)
+}
+
+func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates []receive.RefUpdate) {
+	if len(updates) == 0 {
+		return
+	}
+
+	if h.postReceiveHookFunc != nil {
+		if hookErr := h.postReceiveHookFunc(ctx, repoName, updates); hookErr != nil {
+			slog.WarnContext(ctx, "post-receive hook error", "repo", repoName, "error", hookErr)
+		}
+	}
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {
