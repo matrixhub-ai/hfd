@@ -23,7 +23,15 @@ type Cmd struct {
 func Command(ctx context.Context, name string, args ...string) *Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	if name == "git" {
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		// GIT_TERMINAL_PROMPT=0 prevents git from prompting for credentials.
+		// safe.bareRepository=all allows git to operate on bare repositories, which
+		// is required since hfd intentionally runs git commands inside bare repos.
+		cmd.Env = append(os.Environ(),
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=safe.bareRepository",
+			"GIT_CONFIG_VALUE_0=all",
+		)
 	}
 	return &Cmd{Cmd: cmd, ctx: ctx}
 }

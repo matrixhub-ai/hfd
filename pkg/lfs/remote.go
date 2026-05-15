@@ -84,8 +84,25 @@ func NewClient(httpClient *http.Client) *Client {
 	}
 }
 
-// GetBatch requests download URLs for LFS objects using the batch API
-func (c *Client) GetBatch(ctx context.Context, lfsEndpoint string, objects []LFSObject) (*BatchResponse, error) {
+var (
+	TransferCapabilities        = []string{"basic"}
+	TransferWithXETCapabilities = []string{"xet", "basic"}
+)
+
+// DownloadBatch requests download URLs for LFS objects using the batch API
+func (c *Client) DownloadBatch(ctx context.Context, lfsEndpoint string, transfers []string, objects []LFSObject) (*BatchResponse, error) {
+	return c.batch(ctx, lfsEndpoint, "download", transfers, objects)
+}
+
+// UploadBatch requests upload URLs for LFS objects using the batch API.
+// The server only returns an "upload" action for objects it does not already have;
+// objects already present on the remote will have no action in the response.
+func (c *Client) UploadBatch(ctx context.Context, lfsEndpoint string, transfers []string, objects []LFSObject) (*BatchResponse, error) {
+	return c.batch(ctx, lfsEndpoint, "upload", transfers, objects)
+}
+
+// batch calls the LFS batch API with the given operation ("download" or "upload").
+func (c *Client) batch(ctx context.Context, lfsEndpoint string, operation string, transfers []string, objects []LFSObject) (*BatchResponse, error) {
 	if len(objects) == 0 {
 		return &BatchResponse{}, nil
 	}
@@ -97,9 +114,13 @@ func (c *Client) GetBatch(ctx context.Context, lfsEndpoint string, objects []LFS
 		batchObjects[i] = batchObject(obj)
 	}
 
+	if len(transfers) == 0 {
+		transfers = []string{"basic"}
+	}
+
 	reqBody := batchRequest{
-		Operation: "download",
-		Transfers: []string{"basic"},
+		Operation: operation,
+		Transfers: transfers,
 		Objects:   batchObjects,
 	}
 
@@ -144,6 +165,24 @@ func (a Action) Request(ctx context.Context) (*http.Request, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	req.Header.Set("User-Agent", lfshttp.UserAgent)
+	for key, value := range a.Header {
+		req.Header.Set(key, value)
+	}
+
+	return req, nil
+}
+
+// UploadRequest creates an HTTP PUT request for uploading an LFS object.
+// body is the object content and size is its byte length.
+func (a Action) UploadRequest(ctx context.Context, body io.Reader, size int64) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.Href, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upload request: %w", err)
+	}
+
+	req.ContentLength = size
+	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("User-Agent", lfshttp.UserAgent)
 	for key, value := range a.Header {
 		req.Header.Set(key, value)

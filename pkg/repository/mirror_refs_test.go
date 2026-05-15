@@ -130,10 +130,99 @@ func setupMirrorSyncUpstream(t *testing.T, root string) string {
 	return upstream
 }
 
+func TestPushMirrorRefs(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	// Set up the remote destination (bare repo)
+	remote := filepath.Join(root, "remote.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+
+	// Set up the local repo with some commits
+	work := filepath.Join(root, "work")
+	runGit(t, "", "init", "--initial-branch=main", work)
+	runGit(t, work, "config", "user.email", "test@example.com")
+	runGit(t, work, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, work, "add", ".")
+	runGit(t, work, "commit", "-m", "initial")
+
+	// Create a bare local repo and push the commit there
+	local := filepath.Join(root, "local.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", local)
+	runGit(t, work, "remote", "add", "local", local)
+	runGit(t, work, "push", "-u", "local", "main")
+
+	repo, err := Open(local)
+	if err != nil {
+		t.Fatalf("open local repo: %v", err)
+	}
+
+	localRefs, err := repo.Refs()
+	if err != nil {
+		t.Fatalf("get local refs: %v", err)
+	}
+
+	// Push main to the remote destination
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}); err != nil {
+		t.Fatalf("push mirror refs: %v", err)
+	}
+
+	// Verify the ref was pushed to the remote
+	remoteRefs, err := GetRemoteRefs(ctx, remote)
+	if err != nil {
+		t.Fatalf("get remote refs: %v", err)
+	}
+
+	if got, ok := remoteRefs["refs/heads/main"]; !ok {
+		t.Fatalf("expected refs/heads/main to be present in remote")
+	} else if got != localRefs["refs/heads/main"] {
+		t.Fatalf("refs/heads/main hash mismatch: got %s, want %s", got, localRefs["refs/heads/main"])
+	}
+
+	// Push a tag
+	runGit(t, work, "tag", "v1")
+	runGit(t, work, "push", "local", "v1")
+
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/tags/v1:refs/tags/v1"}); err != nil {
+		t.Fatalf("push tag: %v", err)
+	}
+
+	remoteRefs, err = GetRemoteRefs(ctx, remote)
+	if err != nil {
+		t.Fatalf("get remote refs after tag push: %v", err)
+	}
+	if _, ok := remoteRefs["refs/tags/v1"]; !ok {
+		t.Fatalf("expected refs/tags/v1 to be present in remote after push")
+	}
+
+	// Delete the tag from remote using empty refspec
+	if err := repo.PushMirrorRefs(ctx, remote, []string{":refs/tags/v1"}); err != nil {
+		t.Fatalf("delete tag from remote: %v", err)
+	}
+
+	remoteRefs, err = GetRemoteRefs(ctx, remote)
+	if err != nil {
+		t.Fatalf("get remote refs after tag delete: %v", err)
+	}
+	if _, ok := remoteRefs["refs/tags/v1"]; ok {
+		t.Fatalf("expected refs/tags/v1 to be absent from remote after delete")
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.bareRepository",
+		"GIT_CONFIG_VALUE_0=all",
+	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}

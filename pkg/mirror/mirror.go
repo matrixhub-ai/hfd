@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/matrixhub-ai/hfd/internal/utils"
@@ -14,28 +15,29 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
+	xetclient "github.com/wzshiming/xet/client"
 	"golang.org/x/sync/singleflight"
 )
 
 // Mirror handles repository mirror operations, including syncing from upstream and firing hooks for ref changes.
 type Mirror struct {
-	mirrorSourceFunc    repository.MirrorSourceFunc
-	mirrorRefFilterFunc repository.MirrorRefFilterFunc
-	preReceiveHookFunc  receive.PreReceiveHookFunc
-	postReceiveHookFunc receive.PostReceiveHookFunc
-	syncUserInfoFunc    SyncUserInfoFunc
-	gitOutputFunc       GitOutputFunc
-	lfsStorage          lfs.Storage
-	concurrency         int
-	enableXET           bool
-	cacheDir            string
-	xetEvictMaxBytes    int64
-	xetEvictBeforeFunc  func() time.Time
-	lfsTeeCache         *teeCache
-	ttl                 time.Duration
-	group               singleflight.Group
-	lastSync            sync.Map // map[string]time.Time, keyed by repoName
-	progressFunc        func(name string, downloaded, total int64)
+	mirrorSourceFunc      repository.MirrorSourceFunc
+	mirrorDestinationFunc repository.MirrorDestinationFunc
+	mirrorRefFilterFunc   repository.MirrorRefFilterFunc
+	preReceiveHookFunc    receive.PreReceiveHookFunc
+	postReceiveHookFunc   receive.PostReceiveHookFunc
+	syncUserInfoFunc      SyncUserInfoFunc
+	gitOutputFunc         GitOutputFunc
+	lfsStorage            lfs.Storage
+	concurrency           int
+	enableXET             bool
+	cacheDir              string
+	xetEvictMaxBytes      int64
+	xetEvictBeforeFunc    func() time.Time
+	lfsTeeCache           *teeCache
+	pullGroup             singleflight.Group
+	pushGroup             singleflight.Group
+	progressFunc          func(name string, downloaded, total int64)
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -45,6 +47,13 @@ type Option func(*Mirror)
 func WithMirrorSourceFunc(fn repository.MirrorSourceFunc) Option {
 	return func(m *Mirror) {
 		m.mirrorSourceFunc = fn
+	}
+}
+
+// WithMirrorDestinationFunc sets the repository destination callback for pushing local changes to a remote repository.
+func WithMirrorDestinationFunc(fn repository.MirrorDestinationFunc) Option {
+	return func(m *Mirror) {
+		m.mirrorDestinationFunc = fn
 	}
 }
 
@@ -66,14 +75,6 @@ func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(m *Mirror) {
 		m.postReceiveHookFunc = fn
-	}
-}
-
-// WithTTL sets a minimum duration between successive mirror syncs for the same repository.
-// A zero value preserves the existing behavior of syncing on every read.
-func WithTTL(ttl time.Duration) Option {
-	return func(m *Mirror) {
-		m.ttl = ttl
 	}
 }
 
@@ -163,8 +164,8 @@ func NewMirror(opts ...Option) *Mirror {
 	return m
 }
 
-// IsMirror checks if a repository is configured as a mirror. Returns false if mirrorSourceFunc is not set.
-func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
+// IsMirrorSource checks if the given repository is a mirror source by invoking the mirrorSourceFunc callback. Returns false if the callback is not set.
+func (m *Mirror) IsMirrorSource(ctx context.Context, repoName string) (bool, error) {
 	if m.mirrorSourceFunc == nil {
 		return false, nil
 	}
@@ -172,19 +173,36 @@ func (m *Mirror) IsMirror(ctx context.Context, repoName string) (bool, error) {
 	return isMirror, err
 }
 
+// IsMirrorDestination checks if the given repository is a mirror destination by invoking the mirrorDestinationFunc callback. Returns false if the callback is not set.
+func (m *Mirror) IsMirrorDestination(ctx context.Context, repoName string) (bool, error) {
+	if m.mirrorDestinationFunc == nil {
+		return false, nil
+	}
+	_, isMirror, err := m.mirrorDestinationFunc(ctx, repoName)
+	return isMirror, err
+}
+
 type SyncOption func(*syncOption)
 
 type syncOption struct {
-	SourceURL string
-	Refs      []string
-	UserInfo  *url.Userinfo
-	Output    io.Writer
+	SourceURL      string
+	DestinationURL string
+	Refs           []string
+	UserInfo       *url.Userinfo
+	Output         io.Writer
 }
 
 // WithSyncMirrorSourceURL sets the source URL for mirror sync operations, overriding the default mirrorSourceFunc lookup.
 func WithSyncMirrorSourceURL(url string) SyncOption {
 	return func(o *syncOption) {
 		o.SourceURL = url
+	}
+}
+
+// WithSyncMirrorDestURL sets the destination URL for push mirror operations, overriding the default mirrorDestFunc lookup.
+func WithSyncMirrorDestURL(url string) SyncOption {
+	return func(o *syncOption) {
+		o.DestinationURL = url
 	}
 }
 
@@ -209,109 +227,8 @@ func WithSyncOutput(output io.Writer) SyncOption {
 	}
 }
 
-// OpenOrSync opens the mirror repository at repoPath, syncing with the source URL if necessary based on TTL.
-func (m *Mirror) OpenOrSync(ctx context.Context, repoPath, repoName string, opts ...SyncOption) (*repository.Repository, error) {
-	var opt syncOption
-	for _, o := range opts {
-		o(&opt)
-	}
-
-	logctx := context.Background()
-	if m.gitOutputFunc != nil {
-		ui, _ := authenticate.GetUserInfo(ctx)
-		logctx = authenticate.WithContext(logctx, ui)
-
-		opt.Output = m.gitOutputFunc(logctx, repoName)
-	}
-
-	if opt.Output != nil {
-		logctx = utils.WithCommandOutput(logctx, opt.Output)
-	}
-
-	if opt.SourceURL == "" {
-		sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
-		if err != nil {
-			return nil, err
-		}
-		if !isMirror {
-			return repository.Open(repoPath)
-		}
-		opt.SourceURL = sourceURL
-	}
-
-	if opt.UserInfo == nil && m.syncUserInfoFunc != nil {
-		userInfo, err := m.syncUserInfoFunc(ctx, repoName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get sync user info: %w", err)
-		}
-		opt.UserInfo = userInfo
-	}
-
-	if opt.UserInfo != nil {
-		u, err := url.Parse(opt.SourceURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse source URL: %w", err)
-		}
-		u.User = opt.UserInfo
-		opt.SourceURL = u.String()
-	}
-
-	repo, err := repository.Open(repoPath)
-	if err == nil {
-		if !m.shouldSync(repoPath) {
-			return repo, nil
-		}
-		_, err, _ := m.group.Do(repoPath, func() (any, error) {
-			defer m.markSynced(repoPath)
-
-			err := m.syncMirror(logctx, repo, repoName, opt.SourceURL, opt.Refs)
-			if err != nil {
-				return nil, err
-			}
-
-			err = m.syncMirrorLFS(context.Background(), repo, repoName, opt.SourceURL)
-			if err != nil {
-				return nil, err
-			}
-			return repo, nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		return repo, nil
-	}
-
-	if err != repository.ErrRepositoryNotExists {
-		return nil, err
-	}
-
-	v, err, _ := m.group.Do(repoPath, func() (any, error) {
-		repo, err = repository.InitMirror(logctx, repoPath, opt.SourceURL)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
-			return nil, repository.ErrRepositoryNotExists
-		}
-		defer m.markSynced(repoPath)
-
-		err = m.syncMirror(logctx, repo, repoName, opt.SourceURL, opt.Refs)
-		if err != nil {
-			return nil, err
-		}
-		err = m.syncMirrorLFS(context.Background(), repo, repoName, opt.SourceURL)
-		if err != nil {
-			return nil, err
-		}
-		return repo, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return v.(*repository.Repository), nil
-}
-
-// Sync forcefully syncs the mirror repository at repoPath with the source URL, regardless of TTL.
-func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...SyncOption) error {
+// PullFromRemote syncs the mirror repository at repoPath with the source URL, firing hooks for any ref changes. If the repository does not exist, it is initialized as a mirror and then synced.
+func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, opts ...SyncOption) error {
 	var opt syncOption
 	for _, o := range opts {
 		o(&opt)
@@ -359,16 +276,39 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...Sy
 
 	repo, err := repository.Open(repoPath)
 	if err != nil {
-		return fmt.Errorf("failed to open mirror repository: %w", err)
+		if err != repository.ErrRepositoryNotExists {
+			return fmt.Errorf("failed to open mirror repository: %w", err)
+		}
+
+		_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
+			repo, err = repository.InitMirror(logctx, repoPath, opt.SourceURL)
+			if err != nil {
+				slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
+				return nil, repository.ErrRepositoryNotExists
+			}
+
+			err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+			if err != nil {
+				return nil, err
+			}
+			err = m.pullMirrorLFS(repo, opt.SourceURL)
+			if err != nil {
+				return nil, err
+			}
+			return repo, nil
+		})
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 
-	_, err, _ = m.group.Do(repoPath, func() (any, error) {
-		defer m.markSynced(repoPath)
+	_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 		if err != nil {
 			return nil, err
 		}
-		err = m.syncMirrorLFS(ctx, repo, repoName, opt.SourceURL)
+		err = m.pullMirrorLFS(repo, opt.SourceURL)
 		if err != nil {
 			return nil, err
 		}
@@ -377,6 +317,261 @@ func (m *Mirror) Sync(ctx context.Context, repoPath, repoName string, opts ...Sy
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+// PushToRemote pushes the given ref updates to the configured remote destination.
+// It is typically called after a successful push to the local repository (post-receive hook)
+// to keep the remote destination in sync with local changes.
+// If mirrorDestFunc is not set and no DestURL is provided via opts, the function returns nil.
+func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, updates []receive.RefUpdate, opts ...SyncOption) error {
+	if m.mirrorDestinationFunc == nil {
+		return nil
+	}
+
+	var opt syncOption
+	for _, o := range opts {
+		o(&opt)
+	}
+
+	if m.gitOutputFunc != nil {
+		logctx := context.Background()
+		ui, _ := authenticate.GetUserInfo(ctx)
+		logctx = authenticate.WithContext(logctx, ui)
+		opt.Output = m.gitOutputFunc(logctx, repoName)
+	}
+
+	if opt.Output != nil {
+		ctx = utils.WithCommandOutput(ctx, opt.Output)
+	}
+
+	if opt.DestinationURL == "" {
+		destURL, isPushMirror, err := m.mirrorDestinationFunc(ctx, repoName)
+		if err != nil {
+			return err
+		}
+		if !isPushMirror {
+			return nil
+		}
+		opt.DestinationURL = destURL
+	}
+
+	if opt.UserInfo == nil && m.syncUserInfoFunc != nil {
+		userInfo, err := m.syncUserInfoFunc(ctx, repoName)
+		if err != nil {
+			return fmt.Errorf("failed to get sync user info: %w", err)
+		}
+		opt.UserInfo = userInfo
+	}
+
+	if opt.UserInfo != nil {
+		u, err := url.Parse(opt.DestinationURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse dest URL: %w", err)
+		}
+		u.User = opt.UserInfo
+		opt.DestinationURL = u.String()
+	}
+
+	repo, err := repository.Open(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	_, err, _ = m.pushGroup.Do(repoPath, func() (any, error) {
+		if err := m.pushMirrorLFS(repo, opt.DestinationURL); err != nil {
+			return nil, fmt.Errorf("failed to push LFS objects to remote: %w", err)
+		}
+
+		var refspecs []string
+		if len(opt.Refs) > 0 {
+			for _, ref := range opt.Refs {
+				refspecs = append(refspecs, "+"+ref+":"+ref)
+			}
+		} else {
+			for _, update := range updates {
+				if update.IsDelete() {
+					refspecs = append(refspecs, ":"+update.RefName())
+				} else {
+					refspecs = append(refspecs, "+"+update.RefName()+":"+update.RefName())
+				}
+			}
+		}
+
+		if err := repo.PushMirrorRefs(ctx, opt.DestinationURL, refspecs); err != nil {
+			return nil, err
+		}
+
+		return nil, nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// pushMirrorLFS uploads LFS objects referenced by the repository to the remote LFS endpoint.
+func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) error {
+	if m.lfsStorage == nil {
+		return nil
+	}
+
+	ctx := context.Background()
+
+	getter, ok := m.lfsStorage.(lfs.Getter)
+	if !ok {
+		return nil
+	}
+
+	lfsPointers, err := repo.ScanLFSPointers()
+	if err != nil {
+		return fmt.Errorf("failed to scan LFS pointers: %w", err)
+	}
+
+	if len(lfsPointers) == 0 {
+		return nil
+	}
+
+	objects := make([]lfs.LFSObject, 0, len(lfsPointers))
+	for _, ptr := range lfsPointers {
+		if m.lfsStorage.Exists(ptr.OID()) {
+			objects = append(objects, lfs.LFSObject{Oid: ptr.OID(), Size: ptr.Size()})
+		}
+	}
+
+	if len(objects) == 0 {
+		return nil
+	}
+
+	lfsClient := lfs.NewClient(utils.HTTPClient)
+
+	// When XET is enabled and the xet client is initialized, advertise the xet transfer
+	// protocol so the remote can select it. Fall back to a basic-only request on error.
+	var batchResp *lfs.BatchResponse
+	var xetC *xetclient.Client
+	if m.enableXET && m.lfsTeeCache != nil {
+		xetC = m.lfsTeeCache.xetClient
+	}
+	xetUpload := xetC != nil
+	if xetUpload {
+		batchResp, err = lfsClient.UploadBatch(ctx, destURL, lfs.TransferWithXETCapabilities, objects)
+		if err != nil {
+			return fmt.Errorf("failed to get LFS upload batch from remote with XET capabilities: %w", err)
+		}
+
+		if !strings.EqualFold(batchResp.Transfer, "xet") {
+			xetUpload = false
+		}
+	} else {
+		batchResp, err = lfsClient.UploadBatch(ctx, destURL, lfs.TransferCapabilities, objects)
+		if err != nil {
+			return fmt.Errorf("failed to get LFS upload batch from remote: %w", err)
+		}
+	}
+
+	for _, obj := range batchResp.Objects {
+		if obj.Error != nil {
+			slog.WarnContext(ctx, "LFS push mirror: remote returned error for object", "oid", obj.Oid, "error", obj.Error)
+			continue
+		}
+
+		uploadAction, ok := obj.Actions["upload"]
+		if !ok {
+			// Remote already has this object; skip.
+			continue
+		}
+
+		if xetUpload {
+			if err := m.doXETUpload(ctx, obj.Oid, uploadAction, obj.Actions["verify"], getter, xetC); err != nil {
+				slog.WarnContext(ctx, "LFS push mirror: XET upload failed", "oid", obj.Oid, "error", err)
+				continue
+			}
+			slog.InfoContext(ctx, "LFS push mirror: uploaded object via XET", "oid", obj.Oid)
+			continue
+		}
+
+		content, info, err := getter.Get(obj.Oid)
+		if err != nil {
+			slog.WarnContext(ctx, "LFS push mirror: failed to read local object", "oid", obj.Oid, "error", err)
+			continue
+		}
+
+		req, err := uploadAction.UploadRequest(ctx, content, info.Size())
+		if err != nil {
+			_ = content.Close()
+			slog.WarnContext(ctx, "LFS push mirror: failed to build upload request", "oid", obj.Oid, "error", err)
+			continue
+		}
+
+		resp, err := utils.HTTPClient.Do(req)
+		_ = content.Close()
+		if err != nil {
+			slog.WarnContext(ctx, "LFS push mirror: failed to upload object", "oid", obj.Oid, "error", err)
+			continue
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			slog.WarnContext(ctx, "LFS push mirror: upload returned unexpected status", "oid", obj.Oid, "status", resp.StatusCode)
+			continue
+		}
+
+		// If a verify action is present, call it.
+		if verifyAction, ok := obj.Actions["verify"]; ok {
+			verifyReq, err := verifyAction.Request(ctx)
+			if err != nil {
+				slog.WarnContext(ctx, "LFS push mirror: failed to build verify request", "oid", obj.Oid, "error", err)
+				continue
+			}
+			verifyReq.Method = http.MethodPost
+			verifyResp, err := utils.HTTPClient.Do(verifyReq)
+			if err != nil {
+				slog.WarnContext(ctx, "LFS push mirror: failed to verify object", "oid", obj.Oid, "error", err)
+				continue
+			}
+			_ = verifyResp.Body.Close()
+		}
+
+		slog.InfoContext(ctx, "LFS push mirror: uploaded object", "oid", obj.Oid)
+	}
+
+	return nil
+}
+
+// doXETUpload uploads an LFS object to the remote XET CAS using the credentials
+// embedded in uploadAction.Header, then fires the optional verify action.
+func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, verifyAction lfs.Action, getter lfs.Getter, xetC *xetclient.Client) error {
+	casURL := uploadAction.Header["X-Xet-Cas-Url"]
+	casToken := uploadAction.Header["X-Xet-Access-Token"]
+
+	provider := xetclient.StaticAuthProvider(casURL, casToken)
+
+	content, _, err := getter.Get(oid)
+	if err != nil {
+		return fmt.Errorf("read local object: %w", err)
+	}
+	defer content.Close()
+
+	if _, err := xetC.UploadFileWithAuthProvider(ctx, provider, content); err != nil {
+		return fmt.Errorf("XET upload: %w", err)
+	}
+
+	if verifyAction.Href != "" {
+		verifyReq, err := verifyAction.Request(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "LFS push mirror: failed to build XET verify request", "oid", oid, "error", err)
+			return nil
+		}
+		verifyReq.Method = http.MethodPost
+		verifyResp, err := utils.HTTPClient.Do(verifyReq)
+		if err != nil {
+			slog.WarnContext(ctx, "LFS push mirror: failed to verify XET upload", "oid", oid, "error", err)
+			return nil
+		}
+		_ = verifyResp.Body.Close()
+	}
+
 	return nil
 }
 
@@ -401,27 +596,6 @@ func keys(m map[string]string) []string {
 		result = append(result, k)
 	}
 	return result
-}
-
-func (m *Mirror) shouldSync(repoPath string) bool {
-	if m.ttl <= 0 {
-		return true
-	}
-
-	last, ok := m.lastSync.Load(repoPath)
-	if !ok {
-		return true
-	}
-
-	return time.Since(last.(time.Time)) >= m.ttl
-}
-
-func (m *Mirror) markSynced(repoPath string) {
-	if m.ttl <= 0 {
-		return
-	}
-
-	m.lastSync.Store(repoPath, time.Now())
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
@@ -484,7 +658,7 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 	return nil
 }
 
-func (m *Mirror) syncMirrorLFS(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string) error {
+func (m *Mirror) pullMirrorLFS(repo *repository.Repository, sourceURL string) error {
 	lfsPointers, err := repo.ScanLFSPointers()
 	if err != nil {
 		return fmt.Errorf("failed to scan LFS pointers: %w", err)

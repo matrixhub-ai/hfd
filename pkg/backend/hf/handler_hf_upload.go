@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -370,17 +369,13 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.postReceiveHookFunc != nil {
-		oldRev := header.ParentCommit
-		if oldRev == "" {
-			oldRev = receive.ZeroHash
-		}
-		if hookErr := h.postReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoName),
-		}); hookErr != nil {
-			slog.WarnContext(r.Context(), "post-receive hook error", "repo", ri.RepoName, "error", hookErr)
-		}
+	oldRev := header.ParentCommit
+	if oldRev == "" {
+		oldRev = receive.ZeroHash
 	}
+	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
+		receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoName),
+	})
 
 	resp := commitResponse{
 		CommitURL:     fmt.Sprintf("%s/%s/commit/%s", requestOrigin(r), ri.RepoName, commitHash),
