@@ -391,7 +391,11 @@ func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size i
 	}
 
 	slog.InfoContext(ctx, "Fetching object from upstream with XET", "oid", oid)
-	return m.doDownloadXET(ctx, target, oid, size, downloadAction, ws)
+	if err := m.doDownloadXET(ctx, target, oid, size, downloadAction, ws); err != nil {
+		slog.ErrorContext(ctx, "LFS tee cache: failed to download object with XET, falling back to basic download", "oid", oid, "error", err)
+		return m.doDownloadBasic(ctx, sourceURL, oid, size, downloadAction, ws)
+	}
+	return nil
 }
 
 // getExpiresAt the url actual expiration date is one hour,
