@@ -253,7 +253,7 @@ func main() {
 			return nil
 		}
 
-		if err := sharedMirror.PushToRemote(context.Background(), repoPath, repoName, updates); err != nil {
+		if err := sharedMirror.PushToRemote(context.Background(), repoPath, repoName); err != nil {
 			return err
 		}
 		return nil
@@ -279,7 +279,8 @@ func main() {
 			mirror.WithPreReceiveHookFunc(preReceiveHookFunc),
 			mirror.WithPostReceiveHookFunc(postReceiveHookFunc),
 			mirror.WithLFSStorage(lfsStorage),
-			mirror.WithXET(pullMirrorXet || pushMirrorXet),
+			mirror.WithPullXET(pullMirrorXet),
+			mirror.WithPushXET(pushMirrorXet),
 			mirror.WithXETIdleEvictMaxBytes(proxyXetEvictMaxBytes),
 			mirror.WithXETIdleEvictBeforeFunc(func() time.Time {
 				if proxyXetEvictBefore < 0 {

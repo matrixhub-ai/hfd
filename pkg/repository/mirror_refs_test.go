@@ -167,7 +167,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 
 	// Push main to the remote destination
-	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}, false); err != nil {
 		t.Fatalf("push mirror refs: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	runGit(t, work, "tag", "v1")
 	runGit(t, work, "push", "local", "v1")
 
-	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/tags/v1:refs/tags/v1"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/tags/v1:refs/tags/v1"}, false); err != nil {
 		t.Fatalf("push tag: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 
 	// Delete the tag from remote using empty refspec
-	if err := repo.PushMirrorRefs(ctx, remote, []string{":refs/tags/v1"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{":refs/tags/v1"}, false); err != nil {
 		t.Fatalf("delete tag from remote: %v", err)
 	}
 
@@ -210,6 +210,60 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 	if _, ok := remoteRefs["refs/tags/v1"]; ok {
 		t.Fatalf("expected refs/tags/v1 to be absent from remote after delete")
+	}
+}
+
+func TestPushMirrorRefsPrune(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	remote := filepath.Join(root, "remote.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+
+	work := filepath.Join(root, "work")
+	runGit(t, "", "init", "--initial-branch=main", work)
+	runGit(t, work, "config", "user.email", "test@example.com")
+	runGit(t, work, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, work, "add", ".")
+	runGit(t, work, "commit", "-m", "initial")
+
+	local := filepath.Join(root, "local.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", local)
+	runGit(t, work, "remote", "add", "local", local)
+	runGit(t, work, "push", "-u", "local", "main")
+
+	repo, err := Open(local)
+	if err != nil {
+		t.Fatalf("open local repo: %v", err)
+	}
+
+	localRefs, err := repo.Refs()
+	if err != nil {
+		t.Fatalf("get local refs: %v", err)
+	}
+	mainHash := localRefs["refs/heads/main"]
+
+	runGit(t, remote, "update-ref", "refs/heads/feature", mainHash)
+
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/*:refs/heads/*"}, true); err != nil {
+		t.Fatalf("push mirror refs with prune: %v", err)
+	}
+
+	remoteRefs, err := GetRemoteRefs(ctx, remote)
+	if err != nil {
+		t.Fatalf("get remote refs after prune: %v", err)
+	}
+	if _, ok := remoteRefs["refs/heads/feature"]; ok {
+		t.Fatalf("expected refs/heads/feature to be pruned from remote")
+	}
+	if got, ok := remoteRefs["refs/heads/main"]; !ok {
+		t.Fatalf("expected refs/heads/main to remain in remote")
+	} else if got != mainHash {
+		t.Fatalf("refs/heads/main hash mismatch after prune: got %s, want %s", got, mainHash)
 	}
 }
 
