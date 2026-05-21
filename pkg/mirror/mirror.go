@@ -199,8 +199,8 @@ func WithSyncMirrorSourceURL(url string) SyncOption {
 	}
 }
 
-// WithSyncMirrorDestURL sets the destination URL for push mirror operations, overriding the default mirrorDestFunc lookup.
-func WithSyncMirrorDestURL(url string) SyncOption {
+// WithSyncMirrorDestinationURL sets the destination URL for push mirror operations, overriding the default mirrorDestFunc lookup.
+func WithSyncMirrorDestinationURL(url string) SyncOption {
 	return func(o *syncOption) {
 		o.DestinationURL = url
 	}
