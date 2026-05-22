@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/matrixhub-ai/hfd/internal/utils"
@@ -39,6 +40,8 @@ type Mirror struct {
 	pullGroup             singleflight.Group
 	pushGroup             singleflight.Group
 	progressFunc          func(name string, downloaded, total int64)
+	ttl                   time.Duration
+	lastSync              sync.Map // map[string]time.Time, keyed by repoName
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -139,6 +142,13 @@ func WithCacheDir(dir string) Option {
 	}
 }
 
+// WithTTL sets the time-to-live duration for cached LFS objects in the mirror. Objects not accessed within this duration may be evicted from the cache.
+func WithTTL(d time.Duration) Option {
+	return func(m *Mirror) {
+		m.ttl = d
+	}
+}
+
 // GitOutputFunc defines a function type for providing an io.Writer to capture git command output for a given repository.
 type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
 
@@ -236,6 +246,27 @@ func WithSyncOutput(output io.Writer) SyncOption {
 	}
 }
 
+func (m *Mirror) shouldSync(repoPath string) bool {
+	if m.ttl <= 0 {
+		return true
+	}
+
+	last, ok := m.lastSync.Load(repoPath)
+	if !ok {
+		return true
+	}
+
+	return time.Since(last.(time.Time)) >= m.ttl
+}
+
+func (m *Mirror) markSynced(repoPath string) {
+	if m.ttl <= 0 {
+		return
+	}
+
+	m.lastSync.Store(repoPath, time.Now())
+}
+
 // PullFromRemote syncs the mirror repository at repoPath with the source URL, firing hooks for any ref changes. If the repository does not exist, it is initialized as a mirror and then synced.
 func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, opts ...SyncOption) error {
 	var opt syncOption
@@ -296,6 +327,8 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 				return nil, repository.ErrRepositoryNotExists
 			}
 
+			defer m.markSynced(repoPath)
+
 			err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 			if err != nil {
 				return nil, err
@@ -312,7 +345,13 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		return nil
 	}
 
+	if !m.shouldSync(repoPath) {
+		return nil
+	}
+
 	_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
+		defer m.markSynced(repoPath)
+
 		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
 		if err != nil {
 			return nil, err

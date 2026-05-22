@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -186,9 +185,6 @@ func main() {
 
 	var sharedMirror *mirror.Mirror
 
-	ttl := proxyCacheTTL
-	var lastSync sync.Map
-
 	preOpenHookFunc := func(ctx context.Context, repoName string, write bool) error {
 		if sharedMirror == nil {
 			return nil
@@ -197,16 +193,6 @@ func main() {
 		if repoPath == "" {
 			slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
 			return nil
-		}
-
-		if ttl > 0 {
-			if last, ok := lastSync.Load(repoPath); ok {
-				if t, ok := last.(time.Time); ok && time.Since(t) < ttl {
-					slog.InfoContext(ctx, "Skipping pull mirror sync due to recent sync", "repo", repoName, "lastSync", t)
-					return nil
-				}
-			}
-			lastSync.Store(repoPath, time.Now())
 		}
 
 		isMirror, err := sharedMirror.IsMirrorSource(ctx, repoName)
@@ -297,6 +283,7 @@ func main() {
 			mirror.WithCacheDir(storage.TmpDir()),
 			mirror.WithGitOutputFunc(gitGitOutputFunc),
 			mirror.WithSyncUserInfoFunc(syncUserInfoFunc),
+			mirror.WithTTL(proxyCacheTTL),
 		}
 
 		if pullMirrorURL != "" {
