@@ -333,7 +333,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open the repository
-	repo, err := repository.Open(repoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, true)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)

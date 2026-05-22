@@ -32,9 +32,9 @@ func newMirrorSourceFunc(baseURL string) repository.MirrorSourceFunc {
 	}
 }
 
-func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, string, string, string) error {
-	return func(ctx context.Context, repoPath, repoName, service string) error {
-		if sharedMirror == nil || service != repository.GitUploadPack {
+func newMirrorPreOpenHook(sharedMirror *mirror.Mirror, storage *storage.Storage) func(context.Context, string, bool) error {
+	return func(ctx context.Context, repoName string, write bool) error {
+		if sharedMirror == nil || !write {
 			return nil
 		}
 
@@ -46,6 +46,10 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 			return nil
 		}
 
+		repoPath := storage.ResolvePath(repoName)
+		if repoPath == "" {
+			return fmt.Errorf("repository path not found for %s", repoName)
+		}
 		return sharedMirror.PullFromRemote(ctx, repoPath, repoName)
 	}
 }
@@ -74,7 +78,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 		backendhf.WithStorage(storage),
 		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
+		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -87,7 +91,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
-		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
+		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
 
 	server := httptest.NewServer(handler)
@@ -126,7 +130,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(storage),
 		backendssh.WithMirror(sharedMirror),
-		backendssh.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
+		backendssh.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -359,7 +363,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 		backendhf.WithStorage(storage),
 		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
+		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -372,7 +376,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter r
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
-		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror)),
+		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
 
 	server := httptest.NewServer(handler)

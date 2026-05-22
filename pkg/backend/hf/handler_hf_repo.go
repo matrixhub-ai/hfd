@@ -40,7 +40,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, repository.GitUploadPack)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -371,7 +371,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := repository.Open(repoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, true)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -448,7 +448,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := repository.Open(repoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, true)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -533,7 +533,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := repository.Open(repoPath)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, true)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -600,7 +600,7 @@ func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, repository.GitUploadPack)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -689,7 +689,7 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, repository.GitUploadPack)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
@@ -775,7 +775,7 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, repository.GitUploadPack)
+	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)

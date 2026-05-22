@@ -30,7 +30,7 @@ type Handler struct {
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
-type PreOpenHookFunc func(ctx context.Context, repoPath, repoName, service string) error
+type PreOpenHookFunc func(ctx context.Context, repoPath string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
@@ -204,18 +204,18 @@ func getRepoInformation(r *http.Request) repoInformation {
 	}
 }
 
-func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if err := h.preOpenHook(ctx, repoPath, repoName, service); err != nil {
+func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string, write bool) (*repository.Repository, error) {
+	if err := h.preOpenHook(ctx, repoName, write); err != nil {
 		return nil, err
 	}
 	return repository.Open(repoPath)
 }
 
-func (h *Handler) preOpenHook(ctx context.Context, repoPath, repoName, service string) error {
+func (h *Handler) preOpenHook(ctx context.Context, repoName string, write bool) error {
 	if h.preOpenHookFunc == nil {
 		return nil
 	}
-	return h.preOpenHookFunc(ctx, repoPath, repoName, service)
+	return h.preOpenHookFunc(ctx, repoName, write)
 }
 
 func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates []receive.RefUpdate) {

@@ -221,15 +221,15 @@ func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates
 }
 
 func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if err := h.preOpenHook(ctx, repoPath, repoName, service); err != nil {
+	if err := h.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
 	return repository.Open(repoPath)
 }
 
-func (h *Handler) preOpenHook(ctx context.Context, repoPath, repoName, service string) error {
+func (h *Handler) preOpenHook(ctx context.Context, repoName string, write bool) error {
 	if h.preOpenHookFunc == nil {
 		return nil
 	}
-	return h.preOpenHookFunc(ctx, repoPath, repoName, service)
+	return h.preOpenHookFunc(ctx, repoName, write)
 }
