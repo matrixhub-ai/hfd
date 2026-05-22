@@ -197,13 +197,13 @@ func TestXETPushMirror_E2E(t *testing.T) {
 			return destServer.URL + "/" + name, true, nil
 		}),
 		mirror.WithLFSStorage(sourceLFSStorage),
-		mirror.WithXET(true),
+		mirror.WithPushXET(true),
 		mirror.WithCacheDir(filepath.Join(root, "xet-cache")),
 	)
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
 		repoPath := sourceStorage.ResolvePath(name)
-		return sharedMirror.PushToRemote(ctx, repoPath, name, updates)
+		return sharedMirror.PushToRemote(ctx, repoPath, name)
 	}
 
 	var sourceHandler http.Handler

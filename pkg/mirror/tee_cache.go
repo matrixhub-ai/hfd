@@ -75,7 +75,8 @@ type teeCache struct {
 	xetClient          *xetclient.Client
 	xetClientErr       error
 	promoteGroup       singleflight.Group // deduplicates concurrent promotions per oid
-	enableXET          bool
+	enablePullXET      bool
+	enablePushXET      bool
 	concurrency        int
 	cacheDir           string
 	xetEvictMaxBytes   int64
@@ -92,7 +93,7 @@ type teeCache struct {
 
 // newTeeCache creates a new teeCache.
 // storage is used to persist fetched objects and check if objects already exist locally.
-func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir string, xetEvictMaxBytes int64, xetEvictBeforeFunc func() time.Time, progressFunc func(name string, downloaded, total int64)) *teeCache {
+func newTeeCache(storage lfs.Storage, concurrency int, enablePullXET, enablePushXET bool, cacheDir string, xetEvictMaxBytes int64, xetEvictBeforeFunc func() time.Time, progressFunc func(name string, downloaded, total int64)) *teeCache {
 	if cacheDir == "" {
 		cacheDir = path.Join(os.TempDir(), "hfd")
 	}
@@ -101,7 +102,8 @@ func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir 
 		httpClient:         utils.HTTPClient,
 		storage:            storage,
 		lfsClient:          lfs.NewClient(utils.HTTPClient),
-		enableXET:          enableXET,
+		enablePullXET:      enablePullXET,
+		enablePushXET:      enablePushXET,
 		concurrency:        concurrency,
 		cacheDir:           cacheDir,
 		xetEvictMaxBytes:   xetEvictMaxBytes,
@@ -120,7 +122,7 @@ func newTeeCache(storage lfs.Storage, concurrency int, enableXET bool, cacheDir 
 		dl.WithCacheDir(path.Join(p.cacheDir, "dl")),
 	)
 
-	if p.enableXET {
+	if p.enablePullXET || p.enablePushXET {
 		xetCacheDir := path.Join(p.cacheDir, "xet")
 		if err := os.MkdirAll(xetCacheDir, 0700); err != nil {
 			slog.Error("LFS tee cache: failed to create XET cache directory", "error", err)
@@ -374,7 +376,7 @@ func (m *teeCache) startDownload(ctx context.Context, sourceURL, oid string, siz
 
 // doDownload dispatches to the XET or basic download backend, writing into the provided ws.
 func (m *teeCache) doDownload(ctx context.Context, sourceURL, oid string, size int64, downloadAction lfs.Action, ws ioswmr.Writer) error {
-	if !m.enableXET {
+	if !m.enablePullXET {
 		slog.InfoContext(ctx, "Fetching object from upstream", "oid", oid)
 		return m.doDownloadBasic(ctx, sourceURL, oid, size, downloadAction, ws)
 	}

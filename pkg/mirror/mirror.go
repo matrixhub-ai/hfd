@@ -30,7 +30,8 @@ type Mirror struct {
 	gitOutputFunc         GitOutputFunc
 	lfsStorage            lfs.Storage
 	concurrency           int
-	enableXET             bool
+	enablePullXET         bool
+	enablePushXET         bool
 	cacheDir              string
 	xetEvictMaxBytes      int64
 	xetEvictBeforeFunc    func() time.Time
@@ -85,11 +86,19 @@ func WithLFSStorage(storage lfs.Storage) Option {
 	}
 }
 
-// WithXET enables or disables the use of XET for fetching LFS objects during mirror syncs.
+// WithPullXET enables or disables the use of XET for fetching LFS objects during mirror pull operations.
 // When enabled, LFS objects will be fetched directly to the configured storage backend, bypassing local disk caching.
-func WithXET(b bool) Option {
+func WithPullXET(b bool) Option {
 	return func(m *Mirror) {
-		m.enableXET = b
+		m.enablePullXET = b
+	}
+}
+
+// WithPushXET enables or disables the use of XET for fetching LFS objects during mirror push operations.
+// When enabled, LFS objects will be fetched directly to the configured storage backend, bypassing local disk caching.
+func WithPushXET(b bool) Option {
+	return func(m *Mirror) {
+		m.enablePushXET = b
 	}
 }
 
@@ -160,7 +169,7 @@ func NewMirror(opts ...Option) *Mirror {
 		m.xetEvictBeforeFunc = time.Now
 	}
 
-	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enableXET, m.cacheDir, m.xetEvictMaxBytes, m.xetEvictBeforeFunc, m.progressFunc)
+	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enablePullXET, m.enablePushXET, m.cacheDir, m.xetEvictMaxBytes, m.xetEvictBeforeFunc, m.progressFunc)
 	return m
 }
 
@@ -324,7 +333,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 // It is typically called after a successful push to the local repository (post-receive hook)
 // to keep the remote destination in sync with local changes.
 // If mirrorDestFunc is not set and no DestURL is provided via opts, the function returns nil.
-func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, updates []receive.RefUpdate, opts ...SyncOption) error {
+func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, opts ...SyncOption) error {
 	if m.mirrorDestinationFunc == nil {
 		return nil
 	}
@@ -384,21 +393,20 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, up
 		}
 
 		var refspecs []string
+		var prune bool
 		if len(opt.Refs) > 0 {
 			for _, ref := range opt.Refs {
 				refspecs = append(refspecs, "+"+ref+":"+ref)
 			}
 		} else {
-			for _, update := range updates {
-				if update.IsDelete() {
-					refspecs = append(refspecs, ":"+update.RefName())
-				} else {
-					refspecs = append(refspecs, "+"+update.RefName()+":"+update.RefName())
-				}
+			prune = true
+			refspecs = []string{
+				"+refs/heads/*:refs/heads/*",
+				"+refs/tags/*:refs/tags/*",
 			}
 		}
 
-		if err := repo.PushMirrorRefs(ctx, opt.DestinationURL, refspecs); err != nil {
+		if err := repo.PushMirrorRefs(ctx, opt.DestinationURL, refspecs, prune); err != nil {
 			return nil, err
 		}
 
@@ -450,7 +458,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 	// protocol so the remote can select it. Fall back to a basic-only request on error.
 	var batchResp *lfs.BatchResponse
 	var xetC *xetclient.Client
-	if m.enableXET && m.lfsTeeCache != nil {
+	if m.enablePushXET && m.lfsTeeCache != nil {
 		xetC = m.lfsTeeCache.xetClient
 	}
 	xetUpload := xetC != nil

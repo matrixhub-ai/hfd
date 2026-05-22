@@ -88,17 +88,23 @@ func GetRemoteRefs(ctx context.Context, sourceURL string) (map[string]string, er
 
 // PushMirrorRefs pushes the specified refspecs to the destination URL.
 // Each refspec should be "+src:dst" for create/update or ":dst" for delete.
-func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refspecs []string) error {
+// When prune is true, git push is executed with --prune.
+func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refspecs []string, prune bool) error {
 	if len(refspecs) == 0 {
 		return nil
 	}
 
 	args := []string{
 		"push",
+	}
+	if prune {
+		args = append(args, "--prune")
+	}
+	args = append(args,
 		"--no-tags",
 		"--progress",
 		destURL,
-	}
+	)
 	args = append(args, refspecs...)
 
 	cmd := utils.Command(ctx, "git", args...)

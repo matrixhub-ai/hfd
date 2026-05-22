@@ -167,7 +167,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 
 	// Push main to the remote destination
-	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}, false); err != nil {
 		t.Fatalf("push mirror refs: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	runGit(t, work, "tag", "v1")
 	runGit(t, work, "push", "local", "v1")
 
-	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/tags/v1:refs/tags/v1"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/tags/v1:refs/tags/v1"}, false); err != nil {
 		t.Fatalf("push tag: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 
 	// Delete the tag from remote using empty refspec
-	if err := repo.PushMirrorRefs(ctx, remote, []string{":refs/tags/v1"}); err != nil {
+	if err := repo.PushMirrorRefs(ctx, remote, []string{":refs/tags/v1"}, false); err != nil {
 		t.Fatalf("delete tag from remote: %v", err)
 	}
 
