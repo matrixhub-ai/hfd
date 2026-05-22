@@ -34,7 +34,7 @@ func newMirrorSourceFunc(baseURL string) repository.MirrorSourceFunc {
 
 func newMirrorPreOpenHook(sharedMirror *mirror.Mirror, storage *storage.Storage) func(context.Context, string, bool) error {
 	return func(ctx context.Context, repoName string, write bool) error {
-		if sharedMirror == nil || !write {
+		if sharedMirror == nil || write {
 			return nil
 		}
 

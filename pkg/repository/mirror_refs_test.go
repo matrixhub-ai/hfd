@@ -247,6 +247,11 @@ func TestPushMirrorRefsPrune(t *testing.T) {
 	}
 	mainHash := localRefs["refs/heads/main"]
 
+	// Push main to remote first so the commit object exists there, then create a
+	// stale feature ref that should be pruned by the subsequent PushMirrorRefs call.
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/main:refs/heads/main"}, false); err != nil {
+		t.Fatalf("initial push main to remote: %v", err)
+	}
 	runGit(t, remote, "update-ref", "refs/heads/feature", mainHash)
 
 	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/*:refs/heads/*"}, true); err != nil {
