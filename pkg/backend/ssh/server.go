@@ -43,7 +43,7 @@ type Server struct {
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
-type PreOpenHookFunc func(ctx context.Context, repoPath, repoName, service string) error
+type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option configures the SSH server.
 type Option func(*Server)
@@ -505,17 +505,17 @@ func (s *Server) afterReceivePack(ctx context.Context, repoName string, updates 
 }
 
 func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
-	if err := s.preOpenHook(ctx, repoPath, repoName, service); err != nil {
+	if err := s.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
 	return repository.Open(repoPath)
 }
 
-func (s *Server) preOpenHook(ctx context.Context, repoPath, repoName, service string) error {
+func (s *Server) preOpenHook(ctx context.Context, repoName string, write bool) error {
 	if s.preOpenHookFunc == nil {
 		return nil
 	}
-	return s.preOpenHookFunc(ctx, repoPath, repoName, service)
+	return s.preOpenHookFunc(ctx, repoName, write)
 }
 
 // lfsAuthResponse is the JSON response returned by git-lfs-authenticate.

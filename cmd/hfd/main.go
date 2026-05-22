@@ -25,7 +25,6 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
-	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -190,10 +189,16 @@ func main() {
 	ttl := proxyCacheTTL
 	var lastSync sync.Map
 
-	preOpenHookFunc := func(ctx context.Context, repoPath, repoName, service string) error {
-		if sharedMirror == nil || service != repository.GitUploadPack {
+	preOpenHookFunc := func(ctx context.Context, repoName string, write bool) error {
+		if sharedMirror == nil {
 			return nil
 		}
+		repoPath := storage.ResolvePath(repoName)
+		if repoPath == "" {
+			slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
+			return nil
+		}
+
 		if ttl > 0 {
 			if last, ok := lastSync.Load(repoPath); ok {
 				if t, ok := last.(time.Time); ok && time.Since(t) < ttl {

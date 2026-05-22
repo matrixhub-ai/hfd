@@ -26,7 +26,7 @@ type Handler struct {
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
-type PreOpenHookFunc func(ctx context.Context, repoPath, repoName, service string) error
+type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
