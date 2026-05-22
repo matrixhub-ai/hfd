@@ -127,7 +127,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create initial commit with default .gitattributes
-	_, err = repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", user.User, user.Email, []repository.CommitOperation{
+	commitHash, err := repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", user.User, user.Email, []repository.CommitOperation{
 		{
 			Type:    repository.CommitOperationAdd,
 			Path:    repository.GitattributesFileName,
@@ -139,6 +139,10 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		responseJSON(w, fmt.Errorf("failed to create initial commit: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	h.afterReceivePack(r.Context(), storageName, []receive.RefUpdate{
+		receive.NewRefUpdate(receive.ZeroHash, commitHash, "refs/heads/"+defaultBranch, storageName),
+	})
 
 	resp := createRepoResponse{
 		URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
