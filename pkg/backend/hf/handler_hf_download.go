@@ -218,7 +218,6 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		// This is an LFS file, redirect to the LFS object
 		// Set HuggingFace-required headers before redirect
 		w.Header().Set("X-Repo-Commit", commitHash)
-		w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
 		if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
 			if pf := h.mirror.Get(ptr.OID()); pf != nil {
@@ -226,11 +225,16 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodHead {
 					w.Header().Set("Content-Length", strconv.FormatInt(pf.Total(), 10))
 					w.Header().Set("Last-Modified", pf.ModTime().UTC().Format(http.TimeFormat))
+
+					w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 					return
 				}
 
 				rs := pf.NewReadSeeker()
 				defer rs.Close()
+
+				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
+
 				http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
 				return
 			}
@@ -243,6 +247,9 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 				responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 				return
 			}
+			w.Header().Set("X-Linked-Size", strconv.FormatInt(ptr.Size(), 10))
+			w.Header().Set("X-Linked-Etag", fmt.Sprintf("\"%s\"", ptr.OID()))
+
 			http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 			return
 		}
@@ -259,6 +266,8 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				_ = content.Close()
 			}()
+
+			w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
 
 			http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
 			return
