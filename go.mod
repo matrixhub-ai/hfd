@@ -9,9 +9,9 @@ require (
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/wzshiming/dl v0.0.0-20260427082752-19804485f005
-	github.com/wzshiming/httpseek v0.6.0
+	github.com/wzshiming/httpseek v0.6.1
 	github.com/wzshiming/ioswmr v0.2.0
-	github.com/wzshiming/xet v0.0.0-20260515075456-afcac81072aa
+	github.com/wzshiming/xet v0.0.0-20260617081805-02c9cfb4deca
 	golang.org/x/crypto v0.50.0
 	golang.org/x/sync v0.20.0
 	gopkg.in/yaml.v3 v3.0.1
