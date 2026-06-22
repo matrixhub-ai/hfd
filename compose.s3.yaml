@@ -1,0 +1,39 @@
+
+services:
+  hfd:
+    image: ghcr.io/matrixhub-ai/hfd:latest
+    # build: .
+    ports:
+      - "8080:8080"
+      - "2222:2222"
+    command:
+      - --pull-mirror=https://huggingface.co
+      - --pull-xet
+      - --s3-use-path-style
+      - --s3-endpoint=http://s3:9000
+      - --s3-sign-endpoint=http://127.0.0.1:9000
+      - --s3-bucket=hfd
+      - --s3-access-key=adminadmin
+      - --s3-secret-key=adminadmin
+      # mount the git repositories use s3fs need enable privileged mode and add --s3-repositories flag
+      - --s3-repositories
+    privileged: true
+    volumes:
+      - ./data/tmp/:/data/tmp/
+  s3:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=adminadmin
+      - MINIO_ROOT_PASSWORD=adminadmin
+    entrypoint:
+      - sh
+      - -c
+    command:
+      - |
+        mkdir -p /data/hfd && \
+        /usr/bin/docker-entrypoint.sh server /data/ --console-address ":9001"
+    volumes:
+      - ./data/s3/:/data/
