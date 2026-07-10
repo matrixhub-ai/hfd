@@ -5,6 +5,7 @@ import (
 	"io"
 	"path"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
@@ -146,26 +147,47 @@ func (r *Repository) TreeSize(rev string, treePath string) (int64, error) {
 func (r *Repository) walkTree(commit *object.Commit, tree *object.Tree, basePath string, opts *TreeOptions, cb func(entry *TreeEntry) error) error {
 	for _, entry := range tree.Entries {
 		entryPath := path.Join(basePath, entry.Name)
+
+		// Get the file-specific commit history to find the last commit that modified this entry
+		var entryLastCommit *Commit
+		commitIter, err := r.repo.Log(&git.LogOptions{
+			From:       commit.Hash,
+			PathFilter: func(p string) bool { return p == entryPath },
+		})
+		if err == nil {
+			var lastCommit *object.Commit
+			commitIter.ForEach(func(c *object.Commit) error {
+				lastCommit = c
+				return io.EOF // Stop after first commit (most recent)
+			})
+			if lastCommit != nil {
+				entryLastCommit = &Commit{r: r, commit: lastCommit}
+			}
+		}
+		// Fallback to the tree's commit if file history is unavailable
+		if entryLastCommit == nil {
+			entryLastCommit = &Commit{r: r, commit: commit}
+		}
+
 		if entry.Mode.IsFile() {
 			hfentry := TreeEntry{
-				hash:      entry.Hash,
-				path:      entryPath,
-				entryType: EntryTypeFile,
-				r:         r,
+				hash:       entry.Hash,
+				path:       entryPath,
+				entryType:  EntryTypeFile,
+				r:          r,
+				lastCommit: entryLastCommit,
 			}
-
-			hfentry.lastCommit = &Commit{r: r, commit: commit}
 
 			if err := cb(&hfentry); err != nil {
 				return err
 			}
 		} else {
 			hfentry := TreeEntry{
-				hash:      entry.Hash,
-				path:      entryPath,
-				entryType: EntryTypeDirectory,
+				hash:       entry.Hash,
+				path:       entryPath,
+				entryType:  EntryTypeDirectory,
+				lastCommit: entryLastCommit,
 			}
-			hfentry.lastCommit = &Commit{r: r, commit: commit}
 
 			if err := cb(&hfentry); err != nil {
 				return err
