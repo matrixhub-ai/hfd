@@ -213,6 +213,60 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 }
 
+func TestPushMirrorRefsPrune(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+
+	remote := filepath.Join(root, "remote.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", remote)
+
+	work := filepath.Join(root, "work")
+	runGit(t, "", "init", "--initial-branch=main", work)
+	runGit(t, work, "config", "user.email", "test@example.com")
+	runGit(t, work, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("content\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, work, "add", ".")
+	runGit(t, work, "commit", "-m", "initial")
+
+	local := filepath.Join(root, "local.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", local)
+	runGit(t, work, "remote", "add", "local", local)
+	runGit(t, work, "push", "-u", "local", "main")
+
+	repo, err := Open(local)
+	if err != nil {
+		t.Fatalf("open local repo: %v", err)
+	}
+
+	localRefs, err := repo.Refs()
+	if err != nil {
+		t.Fatalf("get local refs: %v", err)
+	}
+	mainHash := localRefs["refs/heads/main"]
+
+	runGit(t, remote, "update-ref", "refs/heads/feature", mainHash)
+
+	if err := repo.PushMirrorRefs(ctx, remote, []string{"+refs/heads/*:refs/heads/*"}, true); err != nil {
+		t.Fatalf("push mirror refs with prune: %v", err)
+	}
+
+	remoteRefs, err := GetRemoteRefs(ctx, remote)
+	if err != nil {
+		t.Fatalf("get remote refs after prune: %v", err)
+	}
+	if _, ok := remoteRefs["refs/heads/feature"]; ok {
+		t.Fatalf("expected refs/heads/feature to be pruned from remote")
+	}
+	if got, ok := remoteRefs["refs/heads/main"]; !ok {
+		t.Fatalf("expected refs/heads/main to remain in remote")
+	} else if got != mainHash {
+		t.Fatalf("refs/heads/main hash mismatch after prune: got %s, want %s", got, mainHash)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)
