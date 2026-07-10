@@ -28,6 +28,7 @@ func runPythonScript(t *testing.T, endpoint, script string) string {
 	cmd.Env = append(os.Environ(),
 		"HF_ENDPOINT="+endpoint,
 		"HF_HUB_DISABLE_TELEMETRY=1",
+		"HF_HUB_DISABLE_XET=1",
 		"HF_TOKEN=dummy-token",
 	)
 	out, err := cmd.CombinedOutput()

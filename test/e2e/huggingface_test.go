@@ -63,6 +63,7 @@ func runHFCmd(t *testing.T, endpoint string, args ...string) string {
 	cmd.Env = append(os.Environ(),
 		"HF_ENDPOINT="+endpoint,
 		"HF_HUB_DISABLE_TELEMETRY=1",
+		"HF_HUB_DISABLE_XET=1",
 		"HF_TOKEN=dummy-token",
 	)
 	output, err := cmd.CombinedOutput()
