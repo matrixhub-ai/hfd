@@ -14,6 +14,12 @@ func WithCommandOutput(ctx context.Context, output io.Writer) context.Context {
 	return context.WithValue(ctx, commandOutputKey{}, output)
 }
 
+// CommandOutput returns the writer set by WithCommandOutput, or nil if none is set.
+func CommandOutput(ctx context.Context) io.Writer {
+	output, _ := ctx.Value(commandOutputKey{}).(io.Writer)
+	return output
+}
+
 type Cmd struct {
 	*exec.Cmd
 	ctx context.Context
