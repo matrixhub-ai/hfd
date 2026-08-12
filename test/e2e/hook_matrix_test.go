@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -126,7 +126,7 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 
 			// Tag push should be denied
 			runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
-			cmd := utils.Command(t.Context(), "git", "push", "origin", "v1.0")
+			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "v1.0")
 			cmd.Dir = cloneDir
 			cmd.Env = append(os.Environ(), env...)
 			output, err := cmd.Output()
@@ -453,7 +453,7 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 
 func runHookGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -549,7 +549,7 @@ func TestPermissionHookMatrix(t *testing.T) {
 			runHookGitCmd(t, cloneDir, env, "add", "README.md")
 			runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
 
-			cmd := utils.Command(t.Context(), "git", "push", "origin", "main")
+			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "main")
 			cmd.Dir = cloneDir
 			cmd.Env = append(os.Environ(), env...)
 			output, err := cmd.Output()

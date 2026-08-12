@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -123,7 +123,7 @@ func sshGitEnv(keyFile string, port string) []string {
 // runSSHGitCmd runs a git command with the given environment in the specified directory.
 func runSSHGitCmd(t *testing.T, dir string, env []string, args ...string) string {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
 	output, err := cmd.Output()
@@ -262,7 +262,7 @@ func TestSSHCloneWithUnauthorizedKeyFails(t *testing.T) {
 
 	// Attempt clone with unauthorized key
 	cloneDir := filepath.Join(clientDir, "clone-bad")
-	cmd := utils.Command(t.Context(), "git", "clone", sshURL+"test-user/ssh-unauth-model.git", cloneDir)
+	cmd := exec.CommandContext(t.Context(), "git", "clone", sshURL+"test-user/ssh-unauth-model.git", cloneDir)
 	cmd.Env = append(os.Environ(), badEnv...)
 	output, err := cmd.Output()
 	if err == nil {
@@ -303,7 +303,7 @@ func TestSSHCrossProtocolUploadHTTPCloneSSH(t *testing.T) {
 	// Push content via HTTP git protocol
 	httpCloneDir := filepath.Join(clientDir, "http-clone")
 	httpGitURL := endpoint + "/cross-user/cross-model.git"
-	httpCmd := utils.Command(t.Context(), "git", "clone", httpGitURL, httpCloneDir)
+	httpCmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, httpCloneDir)
 	httpCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if output, err := httpCmd.Output(); err != nil {
 		t.Fatalf("HTTP clone failed: %v\n%s", err, output)
@@ -321,7 +321,7 @@ func TestSSHCrossProtocolUploadHTTPCloneSSH(t *testing.T) {
 		{"commit", "-m", "Upload via HTTP"},
 		{"push", "origin", "main"},
 	} {
-		cmd := utils.Command(t.Context(), "git", args...)
+		cmd := exec.CommandContext(t.Context(), "git", args...)
 		cmd.Dir = httpCloneDir
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if output, err := cmd.Output(); err != nil {

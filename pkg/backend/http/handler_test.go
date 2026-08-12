@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -18,7 +18,7 @@ import (
 // runGitCmd runs a git command in the specified directory.
 func runGitCmd(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.Output()

@@ -1,14 +1,16 @@
 package repository
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
+	"io"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // CommitOperationType represents the type of operation in a commit.
@@ -36,96 +38,40 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 	if rev == "" {
 		rev = r.DefaultBranch()
 	}
+	refName := plumbing.NewBranchReferenceName(rev)
 
-	// Create a temporary index file path (the file must not exist yet for git)
-	tmpIndex, err := os.CreateTemp("", "git-index-*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp index: %w", err)
-	}
-	tmpIndexPath := tmpIndex.Name()
-	_ = tmpIndex.Close()
-	_ = os.Remove(tmpIndexPath) // Remove so git can create it fresh
-	defer os.Remove(tmpIndexPath)
-
-	env := append(os.Environ(),
-		"GIT_INDEX_FILE="+tmpIndexPath,
-		"GIT_DIR="+r.repoPath,
-		"GIT_WORK_TREE="+r.repoPath,
-	)
-
-	// Try to read the current tree into the index (ignore error for new branches)
-	refName := "refs/heads/" + rev
-	{
-		cmd := utils.Command(ctx, "git", "read-tree", refName)
-		cmd.Env = env
-		_ = cmd.Run()
-	}
-
-	// Apply operations
-	for _, op := range ops {
-		switch op.Type {
-		case CommitOperationAdd:
-			// Create blob
-			cmd := utils.Command(ctx, "git", "hash-object", "-w", "--stdin")
-			cmd.Env = env
-			cmd.Stdin = bytes.NewReader(op.Content)
-			output, err := cmd.Output()
-			if err != nil {
-				return "", fmt.Errorf("failed to create blob for %s: %w", op.Path, err)
-			}
-			blobHash := strings.TrimSpace(string(output))
-
-			// Update index
-			cmd = utils.Command(ctx, "git", "update-index", "--add", "--cacheinfo", "100644", blobHash, op.Path)
-			cmd.Env = env
-			if err := cmd.Run(); err != nil {
-				return "", fmt.Errorf("failed to update index for %s: %w", op.Path, err)
-			}
-
-		case CommitOperationDelete:
-			cmd := utils.Command(ctx, "git", "update-index", "--force-remove", op.Path)
-			cmd.Env = env
-			if err := cmd.Run(); err != nil {
-				return "", fmt.Errorf("failed to remove path %s from index: %w", op.Path, err)
-			}
-		default:
-			return "", fmt.Errorf("unsupported operation type: %s", op.Type)
-		}
-	}
-
-	// Write tree
-	cmd := utils.Command(ctx, "git", "write-tree")
-	cmd.Env = env
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to write tree: %w", err)
-	}
-	treeHash := strings.TrimSpace(string(output))
-
-	// Build commit command
-	now := time.Now()
-	commitEnv := append(append([]string{}, env...),
-		"GIT_AUTHOR_NAME="+authorName,
-		"GIT_AUTHOR_EMAIL="+authorEmail,
-		"GIT_AUTHOR_DATE="+now.Format(time.RFC3339),
-		"GIT_COMMITTER_NAME="+authorName,
-		"GIT_COMMITTER_EMAIL="+authorEmail,
-		"GIT_COMMITTER_DATE="+now.Format(time.RFC3339),
-	)
-
-	args := []string{"commit-tree", treeHash, "-m", message}
-
-	// Add parent if branch exists
+	// Load the current tree entries from the branch tip (empty for new branches).
+	entries := make(map[string]object.TreeEntry)
 	var currentTip string
-	{
-		parentCmd := utils.Command(ctx, "git", "rev-parse", "--verify", refName)
-		parentCmd.Env = env
-		parentOutput, err := parentCmd.Output()
-		if err == nil {
-			currentTip = strings.TrimSpace(string(parentOutput))
-			if currentTip != "" {
-				args = append(args, "-p", currentTip)
+	var oldRef *plumbing.Reference
+	var parents []plumbing.Hash
+	if ref, err := r.repo.Storer.Reference(refName); err == nil && !ref.Hash().IsZero() {
+		oldRef = ref
+		currentTip = ref.Hash().String()
+		parents = append(parents, ref.Hash())
+
+		commit, err := r.repo.CommitObject(ref.Hash())
+		if err != nil {
+			return "", fmt.Errorf("failed to read branch tip commit: %w", err)
+		}
+		tree, err := commit.Tree()
+		if err != nil {
+			return "", fmt.Errorf("failed to read branch tip tree: %w", err)
+		}
+		walker := object.NewTreeWalker(tree, true, nil)
+		defer walker.Close()
+		for {
+			name, entry, err := walker.Next()
+			if err == io.EOF {
+				break
 			}
+			if err != nil {
+				return "", fmt.Errorf("failed to walk branch tip tree: %w", err)
+			}
+			if entry.Mode == filemode.Dir {
+				continue
+			}
+			entries[name] = entry
 		}
 	}
 
@@ -134,24 +80,143 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 		return "", fmt.Errorf("expected parent commit %s but branch tip is %s", parentCommit, currentTip)
 	}
 
-	cmd = utils.Command(ctx, "git", args...)
-	cmd.Env = commitEnv
-	output, err = cmd.Output()
+	// Apply operations
+	for _, op := range ops {
+		switch op.Type {
+		case CommitOperationAdd:
+			blobHash, err := r.storeBlob(op.Content)
+			if err != nil {
+				return "", fmt.Errorf("failed to create blob for %s: %w", op.Path, err)
+			}
+			entries[op.Path] = object.TreeEntry{
+				Name: op.Path,
+				Mode: filemode.Regular,
+				Hash: blobHash,
+			}
+		case CommitOperationDelete:
+			delete(entries, op.Path)
+		default:
+			return "", fmt.Errorf("unsupported operation type: %s", op.Type)
+		}
+	}
+
+	// Write tree
+	treeHash, err := r.storeTree(entries)
+	if err != nil {
+		return "", fmt.Errorf("failed to write tree: %w", err)
+	}
+
+	signature := object.Signature{
+		Name:  authorName,
+		Email: authorEmail,
+		When:  time.Now(),
+	}
+	commitHash, err := r.storeCommit(&object.Commit{
+		Author:       signature,
+		Committer:    signature,
+		Message:      message,
+		TreeHash:     treeHash,
+		ParentHashes: parents,
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create commit: %w", err)
 	}
-	commitHash := strings.TrimSpace(string(output))
 
 	// Update ref atomically: provide old value to prevent lost updates
-	updateRefArgs := []string{"update-ref", refName, commitHash}
-	if currentTip != "" {
-		updateRefArgs = append(updateRefArgs, currentTip)
-	}
-	cmd = utils.Command(ctx, "git", updateRefArgs...)
-	cmd.Env = env
-	if err := cmd.Run(); err != nil {
+	newRef := plumbing.NewHashReference(refName, commitHash)
+	if err := r.repo.Storer.CheckAndSetReference(newRef, oldRef); err != nil {
 		return "", fmt.Errorf("failed to update rev: %w", err)
 	}
 
-	return commitHash, nil
+	return commitHash.String(), nil
+}
+
+// storeBlob writes content as a blob object and returns its hash.
+func (r *Repository) storeBlob(content []byte) (plumbing.Hash, error) {
+	obj := r.repo.Storer.NewEncodedObject()
+	obj.SetType(plumbing.BlobObject)
+	obj.SetSize(int64(len(content)))
+	w, err := obj.Writer()
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	if _, err := w.Write(content); err != nil {
+		_ = w.Close()
+		return plumbing.ZeroHash, err
+	}
+	if err := w.Close(); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return r.repo.Storer.SetEncodedObject(obj)
+}
+
+// storeCommit writes the commit object and returns its hash.
+func (r *Repository) storeCommit(commit *object.Commit) (plumbing.Hash, error) {
+	obj := r.repo.Storer.NewEncodedObject()
+	if err := commit.Encode(obj); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return r.repo.Storer.SetEncodedObject(obj)
+}
+
+// treeNode is an intermediate representation of a tree while rebuilding the
+// nested tree objects from a flat path → entry map.
+type treeNode struct {
+	blobs map[string]object.TreeEntry
+	subs  map[string]*treeNode
+}
+
+func newTreeNode() *treeNode {
+	return &treeNode{
+		blobs: make(map[string]object.TreeEntry),
+		subs:  make(map[string]*treeNode),
+	}
+}
+
+// storeTree writes the nested tree objects for a flat map of full path → entry
+// and returns the root tree hash.
+func (r *Repository) storeTree(entries map[string]object.TreeEntry) (plumbing.Hash, error) {
+	root := newTreeNode()
+	for path, entry := range entries {
+		node := root
+		parts := strings.Split(path, "/")
+		for _, dir := range parts[:len(parts)-1] {
+			sub, ok := node.subs[dir]
+			if !ok {
+				sub = newTreeNode()
+				node.subs[dir] = sub
+			}
+			node = sub
+		}
+		entry.Name = parts[len(parts)-1]
+		node.blobs[entry.Name] = entry
+	}
+	return r.storeTreeNode(root)
+}
+
+// storeTreeNode recursively writes tree objects bottom-up and returns the hash of node.
+func (r *Repository) storeTreeNode(node *treeNode) (plumbing.Hash, error) {
+	treeEntries := make([]object.TreeEntry, 0, len(node.blobs)+len(node.subs))
+	for name, sub := range node.subs {
+		hash, err := r.storeTreeNode(sub)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		treeEntries = append(treeEntries, object.TreeEntry{
+			Name: name,
+			Mode: filemode.Dir,
+			Hash: hash,
+		})
+	}
+	for _, entry := range node.blobs {
+		treeEntries = append(treeEntries, entry)
+	}
+	sort.Sort(object.TreeEntrySorter(treeEntries))
+
+	tree := &object.Tree{Entries: treeEntries}
+	obj := r.repo.Storer.NewEncodedObject()
+	if err := tree.Encode(obj); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return r.repo.Storer.SetEncodedObject(obj)
 }

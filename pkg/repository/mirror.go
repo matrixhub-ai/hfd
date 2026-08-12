@@ -2,10 +2,23 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/transport"
+	"github.com/go-git/go-git/v6/storage"
+	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
 // MirrorSourceFunc defines a function type for determining the source URL of a repository mirror.
@@ -37,115 +50,148 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 	return Init(ctx, repoPath, defaultBranch)
 }
 
+// fileLoader resolves file:// URLs to bare repository storage using absolute
+// paths. go-git's transport.DefaultLoader chroots through billy's BoundOS,
+// which can yield a cwd-relative root on Linux and then fail to find the
+// repository when the process cwd is not /.
+type fileLoader struct{}
+
+func (fileLoader) Load(u *url.URL) (storage.Storer, error) {
+	path := u.Path
+	if fi, err := os.Stat(filepath.Join(path, "config")); err != nil || fi.IsDir() {
+		return nil, transport.ErrRepositoryNotFound
+	}
+	return filesystem.NewStorageWithOptions(osfs.New(path), cache.NewObjectLRUDefault(), filesystem.Options{}), nil
+}
+
+// mirrorClientOptions configures the transport client used for mirror operations.
+var mirrorClientOptions = []client.Option{client.WithLoader(fileLoader{})}
+
+// getRemoteAdvertisedRefs opens an upload-pack session to sourceURL and returns
+// the advertised refs, with HEAD resolved to a symbolic reference.
+func getRemoteAdvertisedRefs(ctx context.Context, sourceURL string) (*transport.RemoteRefs, error) {
+	u, err := transport.ParseURL(sourceURL)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := client.New(mirrorClientOptions...).Handshake(ctx, &transport.Request{
+		URL:     u,
+		Command: transport.UploadPackService,
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	return sess.GetRemoteRefs(ctx, nil)
+}
+
 // GetRemoteDefaultBranch retrieves the default branch name of the repository at the given source URL.
 func GetRemoteDefaultBranch(ctx context.Context, sourceURL string) (string, error) {
-	cmd := utils.Command(ctx, "git", "ls-remote", "--symref", sourceURL)
-	out, err := cmd.Output()
+	remoteRefs, err := getRemoteAdvertisedRefs(ctx, sourceURL)
 	if err != nil {
 		return "", err
 	}
 
-	const prefix = "ref: refs/heads/"
-	// Search all output lines for the symref declaration, e.g.:
-	//   ref: refs/heads/main\tHEAD
-	for line := range strings.SplitSeq(string(out), "\n") {
-		ref, found := strings.CutSuffix(line, "\tHEAD")
-		if !found {
+	const prefix = "refs/heads/"
+	for _, ref := range remoteRefs.References {
+		if ref.Name() != plumbing.HEAD || ref.Type() != plumbing.SymbolicReference {
 			continue
 		}
-		if !strings.HasPrefix(ref, prefix) {
-			continue
+		if target := ref.Target().String(); strings.HasPrefix(target, prefix) {
+			return strings.TrimPrefix(target, prefix), nil
 		}
-		return strings.TrimPrefix(ref, prefix), nil
 	}
-	return "", fmt.Errorf("HEAD symref not found in git ls-remote output")
+	// Empty repository: HEAD points at a branch that has no commits yet.
+	if target := remoteRefs.Unborn.String(); strings.HasPrefix(target, prefix) {
+		return strings.TrimPrefix(target, prefix), nil
+	}
+	return "", fmt.Errorf("HEAD symref not found in remote advertisement")
 }
 
 // GetRemoteRefs returns a list of all ref names from the sourceURL.
 // The returned names are fully qualified (e.g. "refs/heads/main", "refs/tags/v1.0").
 func GetRemoteRefs(ctx context.Context, sourceURL string) (map[string]string, error) {
-	cmd := utils.Command(ctx, "git", "ls-remote", "--refs", sourceURL)
-	out, err := cmd.Output()
+	remoteRefs, err := getRemoteAdvertisedRefs(ctx, sourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
 	refs := make(map[string]string)
-	for line := range strings.SplitSeq(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	for _, ref := range remoteRefs.References {
+		if ref.Type() != plumbing.HashReference {
 			continue
 		}
-		// Format: <hash>\t<refname>
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
+		name := ref.Name().String()
+		// Match `git ls-remote --refs`: only refs/*, excluding peeled entries.
+		if !strings.HasPrefix(name, "refs/") || strings.HasSuffix(name, "^{}") {
 			continue
 		}
-		refs[parts[1]] = parts[0]
+		refs[name] = ref.Hash().String()
 	}
 	return refs, nil
 }
 
+// mirrorRemote returns an in-memory remote bound to the given URL, without
+// touching the repository configuration.
+func (r *Repository) mirrorRemote(url string) *git.Remote {
+	return git.NewRemote(r.repo.Storer, &gitconfig.RemoteConfig{
+		Name: "mirror",
+		URLs: []string{url},
+	})
+}
+
 // PushMirrorRefs pushes the specified refspecs to the destination URL.
 // Each refspec should be "+src:dst" for create/update or ":dst" for delete.
-// When prune is true, git push is executed with --prune.
-func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refspecs []string, prune bool) error {
-	if len(refspecs) == 0 {
+// When prune is true, remote refs matching the refspecs that do not exist
+// locally are removed. Server progress messages are written to progress if non-nil.
+func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refs []string, prune bool, progress io.Writer) error {
+	if len(refs) == 0 {
 		return nil
 	}
 
-	args := []string{
-		"push",
+	specs := make([]gitconfig.RefSpec, 0, len(refs))
+	for _, refspec := range refs {
+		specs = append(specs, gitconfig.RefSpec(refspec))
 	}
-	if prune {
-		args = append(args, "--prune")
-	}
-	args = append(args,
-		"--no-tags",
-		"--progress",
-		destURL,
-	)
-	args = append(args, refspecs...)
 
-	cmd := utils.Command(ctx, "git", args...)
-	cmd.Dir = r.repoPath
-	if err := cmd.Run(); err != nil {
+	err := r.mirrorRemote(destURL).PushContext(ctx, &git.PushOptions{
+		RemoteName:    "mirror",
+		RemoteURL:     destURL,
+		RefSpecs:      specs,
+		Prune:         prune,
+		Progress:      progress,
+		ClientOptions: mirrorClientOptions,
+	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("failed to push mirror refs to remote: %w", err)
 	}
 
 	return nil
 }
 
-// SyncMirrorRefs syncs only the specified refs from the sourceURL.
-// Local refs that are not in the specified list are pruned.
-//
-//go:fix inline
-func (r *Repository) SyncMirrorRefs(ctx context.Context, sourceURL string, refs []string) error {
-	return r.PullMirrorRefs(ctx, sourceURL, refs)
-}
-
 // PullMirrorRefs fetches the specified refs from the sourceURL and updates the local mirror repository.
 // Local refs that are not in the specified list are pruned.
-func (r *Repository) PullMirrorRefs(ctx context.Context, sourceURL string, refs []string) error {
+// Server progress messages are written to progress if non-nil.
+func (r *Repository) PullMirrorRefs(ctx context.Context, sourceURL string, refs []string, progress io.Writer) error {
 	if len(refs) == 0 {
 		return nil
 	}
 
-	args := []string{
-		"fetch",
-		sourceURL,
-		"--no-tags",
-		"--progress",
-	}
-
-	// Add explicit refspecs for each desired ref.
+	specs := make([]gitconfig.RefSpec, 0, len(refs))
 	for _, ref := range refs {
-		args = append(args, "+"+ref+":"+ref)
+		specs = append(specs, gitconfig.RefSpec("+"+ref+":"+ref))
 	}
 
-	cmd := utils.Command(ctx, "git", args...)
-	cmd.Dir = r.repoPath
-	if err := cmd.Run(); err != nil {
+	err := r.mirrorRemote(sourceURL).FetchContext(ctx, &git.FetchOptions{
+		RemoteName:    "mirror",
+		RemoteURL:     sourceURL,
+		RefSpecs:      specs,
+		Tags:          plumbing.NoTags,
+		Force:         true,
+		Progress:      progress,
+		ClientOptions: mirrorClientOptions,
+	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("failed to fetch repository refs: %w", err)
 	}
 
@@ -162,9 +208,7 @@ func (r *Repository) PullMirrorRefs(ctx context.Context, sourceURL string, refs 
 
 	for refName := range localRefs {
 		if !desired[refName] {
-			delCmd := utils.Command(ctx, "git", "update-ref", "-d", refName)
-			delCmd.Dir = r.repoPath
-			_ = delCmd.Run()
+			_ = r.repo.Storer.RemoveReference(plumbing.ReferenceName(refName))
 		}
 	}
 

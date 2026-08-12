@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -283,7 +282,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 // runXETGitCmd runs a git command with the given environment for XET e2e tests.
 func runXETGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

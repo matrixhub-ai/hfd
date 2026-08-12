@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 
@@ -15,14 +14,14 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// gitProtocolEnv returns a GIT_PROTOCOL environment variable derived from the
-// request's Git-Protocol header if the value is present and valid, or nil otherwise.
-func gitProtocolEnv(r *http.Request) []string {
+// gitProtocol returns the client's GIT_PROTOCOL request value derived from the
+// request's Git-Protocol header if the value is present and valid, or "" otherwise.
+func gitProtocol(r *http.Request) string {
 	value := r.Header.Get("Git-Protocol")
 	if value == "" || !repository.IsValidGitProtocol(value) {
-		return nil
+		return ""
 	}
-	return []string{"GIT_PROTOCOL=" + value}
+	return value
 }
 
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.
@@ -99,7 +98,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, nil, service, true, gitProtocolEnv(r)...)
+	err = repo.AdvertiseRefs(r.Context(), w, service, gitProtocol(r))
 	if err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
@@ -166,24 +165,6 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		}
 	}
 
-	// For receive-pack, parse ref updates early so they can be included in the permission check
-	var input io.Reader = r.Body
-	var updates []receive.RefUpdate
-	if service == repository.GitReceivePack {
-		updates, input = receive.ParseRefUpdates(r.Body, repoPath)
-	}
-
-	// Pre-receive hook — can reject the push before git-receive-pack processes it.
-	if service == repository.GitReceivePack && h.preReceiveHookFunc != nil && len(updates) > 0 {
-		if ok, err := h.preReceiveHookFunc(r.Context(), repoName, updates); err != nil {
-			responseText(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseText(w, "pre-receive hook denied the push", http.StatusForbidden)
-			return
-		}
-	}
-
 	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
@@ -197,15 +178,44 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, input, service, false, gitProtocolEnv(r)...)
+	err = repo.Stateless(r.Context(), w, r.Body, service, gitProtocol(r), h.receivePackHooks(repoName))
 	if err != nil {
-		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
+		// A pre-receive rejection has already been reported to the client
+		// in-protocol via report-status.
+		if errors.Is(err, errPreReceiveDenied) {
+			slog.WarnContext(r.Context(), "pre-receive hook denied push", "repo", repoName, "error", err)
+			return
+		}
+		responseText(w, fmt.Sprintf("Failed to serve %s for %q: %v", service, repoName, err), http.StatusInternalServerError)
 		return
 	}
+}
 
-	if service == repository.GitReceivePack {
-		h.afterReceivePack(r.Context(), repoName, updates)
+// errPreReceiveDenied marks a push rejected by the pre-receive hook; the
+// rejection is reported to the client in-protocol via report-status.
+var errPreReceiveDenied = errors.New("pre-receive hook denied the push")
+
+// receivePackHooks wires the handler's pre/post-receive hook functions into
+// the go-git receive-pack serving path.
+func (h *Handler) receivePackHooks(repoName string) repository.ReceivePackHooks {
+	var hooks repository.ReceivePackHooks
+	if h.preReceiveHookFunc != nil {
+		hooks.PreReceive = func(ctx context.Context, updates []receive.RefUpdate) error {
+			if len(updates) == 0 {
+				return nil
+			}
+			if ok, err := h.preReceiveHookFunc(ctx, repoName, updates); err != nil {
+				return fmt.Errorf("%w: %v", errPreReceiveDenied, err)
+			} else if !ok {
+				return errPreReceiveDenied
+			}
+			return nil
+		}
 	}
+	hooks.PostReceive = func(ctx context.Context, updates []receive.RefUpdate) {
+		h.afterReceivePack(ctx, repoName, updates)
+	}
+	return hooks
 }
 
 func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates []receive.RefUpdate) {

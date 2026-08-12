@@ -1,15 +1,12 @@
 package receive
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"os/exec"
-	"strconv"
 	"strings"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 // ZeroHash is the zero hash used for ref create/delete operations.
@@ -129,64 +126,6 @@ func (r refUpdate) String() string {
 	}
 }
 
-// ParseRefUpdates reads the pkt-line formatted ref update commands from the
-// beginning of a git receive-pack input stream. It returns the parsed updates
-// and a new reader that replays the consumed bytes followed by the remaining input.
-func ParseRefUpdates(r io.Reader, repoPath string) ([]RefUpdate, io.Reader) {
-	var buf bytes.Buffer
-	tee := io.TeeReader(r, &buf)
-
-	var updates []RefUpdate
-
-	for {
-		// Read 4-byte hex length prefix
-		lenBuf := make([]byte, 4)
-		if _, err := io.ReadFull(tee, lenBuf); err != nil {
-			break
-		}
-
-		pktLen, err := strconv.ParseUint(string(lenBuf), 16, 16)
-		if err != nil {
-			break
-		}
-
-		// Flush packet (0000) marks end of commands
-		if pktLen == 0 {
-			break
-		}
-
-		if pktLen < 4 {
-			break
-		}
-
-		// Read the payload (length includes the 4-byte header)
-		payload := make([]byte, pktLen-4)
-		if _, err := io.ReadFull(tee, payload); err != nil {
-			break
-		}
-
-		line := string(payload)
-		line = strings.TrimRight(line, "\n")
-
-		// Remove capabilities after null byte
-		if idx := strings.IndexByte(line, 0); idx >= 0 {
-			line = line[:idx]
-		}
-
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) == 3 {
-			updates = append(updates, refUpdate{
-				oldRev:   parts[0],
-				newRev:   parts[1],
-				refName:  parts[2],
-				repoPath: repoPath,
-			})
-		}
-	}
-
-	return updates, io.MultiReader(&buf, r)
-}
-
 // isForce checks if a branch update is a non-fast-forward (force) push.
 // Returns false for creates, deletes, tags, and non-branch refs.
 // repoPath is the filesystem path to the bare git repository.
@@ -200,19 +139,23 @@ func isForce(ctx context.Context, repoPath string, r RefUpdate) (bool, error) {
 		return false, nil
 	}
 
-	cmd := utils.Command(ctx, "git", "merge-base", "--is-ancestor", oldRev, newRev)
-	cmd.Dir = repoPath
-	err := cmd.Run()
-	if err == nil {
-		return false, nil // oldRev is an ancestor of newRev, not a force push
+	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
+	if err != nil {
+		return false, fmt.Errorf("failed to check force push: %w", err)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if exitErr.ExitCode() == 1 {
-			return true, nil // oldRev is not an ancestor of newRev, this is a force push
-		}
+	oldCommit, err := repo.CommitObject(plumbing.NewHash(oldRev))
+	if err != nil {
+		return false, fmt.Errorf("failed to check force push: %w", err)
 	}
-	return false, fmt.Errorf("failed to check force push: %w", err)
-
+	newCommit, err := repo.CommitObject(plumbing.NewHash(newRev))
+	if err != nil {
+		return false, fmt.Errorf("failed to check force push: %w", err)
+	}
+	isAncestor, err := oldCommit.IsAncestor(newCommit)
+	if err != nil {
+		return false, fmt.Errorf("failed to check force push: %w", err)
+	}
+	return !isAncestor, nil
 }
 
 // DiffRefs computes ref updates by comparing before and after ref snapshots.

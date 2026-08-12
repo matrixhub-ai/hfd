@@ -1,102 +1,12 @@
 package receive
 
 import (
-	"bytes"
-	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestParseRefUpdates(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    []RefUpdate
-		wantErr bool
-	}{
-		{
-			name:  "single branch push",
-			input: pktLine("abc123 def456 refs/heads/main\n") + "0000" + "PACKDATA",
-			want: []RefUpdate{
-				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
-			},
-		},
-		{
-			name:  "single branch push with capabilities",
-			input: pktLine("abc123 def456 refs/heads/main\x00report-status side-band-64k\n") + "0000" + "PACKDATA",
-			want: []RefUpdate{
-				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
-			},
-		},
-		{
-			name: "multiple ref updates",
-			input: pktLine("abc123 def456 refs/heads/main\x00report-status\n") +
-				pktLine("111111 222222 refs/heads/feature\n") +
-				pktLine(ZeroHash+" 333333 refs/tags/v1.0\n") +
-				"0000" + "PACKDATA",
-			want: []RefUpdate{
-				refUpdate{oldRev: "abc123", newRev: "def456", refName: "refs/heads/main"},
-				refUpdate{oldRev: "111111", newRev: "222222", refName: "refs/heads/feature"},
-				refUpdate{oldRev: ZeroHash, newRev: "333333", refName: "refs/tags/v1.0"},
-			},
-		},
-		{
-			name:  "branch create (old is zeros)",
-			input: pktLine(ZeroHash+" def456 refs/heads/new-branch\n") + "0000",
-			want: []RefUpdate{
-				refUpdate{oldRev: ZeroHash, newRev: "def456", refName: "refs/heads/new-branch"},
-			},
-		},
-		{
-			name:  "branch delete (new is zeros)",
-			input: pktLine("abc123 "+ZeroHash+" refs/heads/old-branch\n") + "0000",
-			want: []RefUpdate{
-				refUpdate{oldRev: "abc123", newRev: ZeroHash, refName: "refs/heads/old-branch"},
-			},
-		},
-		{
-			name:  "empty input",
-			input: "0000",
-			want:  nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := strings.NewReader(tt.input)
-			got, newReader := ParseRefUpdates(r, "test-repo-path")
-
-			if len(got) != len(tt.want) {
-				t.Fatalf("ParseRefUpdates() got %d updates, want %d", len(got), len(tt.want))
-			}
-
-			for i, w := range tt.want {
-				if got[i].OldRev() != w.OldRev() {
-					t.Errorf("update[%d].OldRev = %q, want %q", i, got[i].OldRev(), w.OldRev())
-				}
-				if got[i].NewRev() != w.NewRev() {
-					t.Errorf("update[%d].NewRev = %q, want %q", i, got[i].NewRev(), w.NewRev())
-				}
-				if got[i].RefName() != w.RefName() {
-					t.Errorf("update[%d].RefName = %q, want %q", i, got[i].RefName(), w.RefName())
-				}
-			}
-
-			// Verify that the new reader replays the full input
-			all, err := io.ReadAll(newReader)
-			if err != nil {
-				t.Fatalf("reading new reader: %v", err)
-			}
-			if string(all) != tt.input {
-				t.Errorf("new reader content = %q, want %q", string(all), tt.input)
-			}
-		})
-	}
-}
 
 func TestRawRefUpdateMethods(t *testing.T) {
 	tests := []struct {
@@ -382,34 +292,6 @@ func TestRefUpdate_String(t *testing.T) {
 				t.Errorf("String() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-// pktLine helper for tests - formats a string as a git pkt-line
-func pktLine(s string) string {
-	return fmt.Sprintf("%04x%s", len(s)+4, s)
-}
-
-func TestParseRefUpdatesReaderReplay(t *testing.T) {
-	// Verify that the returned reader can replay all the original content
-	input := pktLine("abc123 def456 refs/heads/main\x00report-status\n") +
-		pktLine(ZeroHash+" 333333 refs/tags/v1.0\n") +
-		"0000" +
-		"PACKbinarydata\x00\x01\x02\x03"
-
-	updates, newReader := ParseRefUpdates(strings.NewReader(input), "test-repo-path")
-
-	if len(updates) != 2 {
-		t.Fatalf("expected 2 updates, got %d", len(updates))
-	}
-
-	all, err := io.ReadAll(newReader)
-	if err != nil {
-		t.Fatalf("reading new reader: %v", err)
-	}
-
-	if !bytes.Equal([]byte(input), all) {
-		t.Errorf("replayed content does not match original\ngot:  %q\nwant: %q", string(all), input)
 	}
 }
 

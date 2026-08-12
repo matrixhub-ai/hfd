@@ -3,11 +3,10 @@ package repository
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // SuperSquash squashes all commits in the given rev into a single root commit
@@ -17,46 +16,37 @@ func (r *Repository) SuperSquash(ctx context.Context, rev string, message string
 		rev = r.DefaultBranch()
 	}
 
-	refName := "refs/heads/" + rev
+	refName := plumbing.NewBranchReferenceName(rev)
 
-	env := append(os.Environ(),
-		"GIT_DIR="+r.repoPath,
-	)
-
-	// Get the current tree hash for this rev
-	treeCmd := utils.Command(ctx, "git", "rev-parse", refName+"^{tree}")
-	treeCmd.Env = env
-	treeOutput, err := treeCmd.Output()
+	tipHash, err := r.repo.ResolveRevision(plumbing.Revision(refName))
 	if err != nil {
 		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, err)
 	}
-	treeHash := strings.TrimSpace(string(treeOutput))
+	tipCommit, err := r.repo.CommitObject(*tipHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, err)
+	}
 
 	// Create a new root commit (no parents) with the same tree
-	now := time.Now()
-	commitEnv := append(append([]string{}, env...),
-		"GIT_AUTHOR_NAME="+authorName,
-		"GIT_AUTHOR_EMAIL="+authorEmail,
-		"GIT_AUTHOR_DATE="+now.Format(time.RFC3339),
-		"GIT_COMMITTER_NAME="+authorName,
-		"GIT_COMMITTER_EMAIL="+authorEmail,
-		"GIT_COMMITTER_DATE="+now.Format(time.RFC3339),
-	)
-
-	commitCmd := utils.Command(ctx, "git", "commit-tree", treeHash, "-m", message)
-	commitCmd.Env = commitEnv
-	commitOutput, err := commitCmd.Output()
+	signature := object.Signature{
+		Name:  authorName,
+		Email: authorEmail,
+		When:  time.Now(),
+	}
+	commitHash, err := r.storeCommit(&object.Commit{
+		Author:    signature,
+		Committer: signature,
+		Message:   message,
+		TreeHash:  tipCommit.TreeHash,
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create squash commit: %w", err)
 	}
-	commitHash := strings.TrimSpace(string(commitOutput))
 
 	// Force update the ref to point to the new root commit
-	updateCmd := utils.Command(ctx, "git", "update-ref", refName, commitHash)
-	updateCmd.Env = env
-	if err := updateCmd.Run(); err != nil {
+	if err := r.repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)); err != nil {
 		return "", fmt.Errorf("failed to update ref: %w", err)
 	}
 
-	return commitHash, nil
+	return commitHash.String(), nil
 }

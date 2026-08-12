@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -149,7 +149,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 // runGitCmdE2E runs a git command in the given directory, using the provided env.
 func runGitCmdE2E(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

@@ -10,11 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
@@ -25,9 +25,9 @@ import (
 // runGitCmd runs a git command in the specified directory.
 func runGitCmd(t *testing.T, dir string, env []string, args ...string) string {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
@@ -282,7 +282,7 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 		}
 
 		cloneDir := filepath.Join(clientDir, "clone-bad-auth")
-		cmd := utils.Command(t.Context(), "git", "clone", sshURL, cloneDir)
+		cmd := exec.CommandContext(t.Context(), "git", "clone", sshURL, cloneDir)
 		cmd.Env = append(os.Environ(), badEnv...)
 		output, err := cmd.CombinedOutput()
 		if err == nil {
@@ -732,7 +732,7 @@ func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
 		}
 
 		cloneDir := filepath.Join(clientDir, "clone-bad-pk-auth")
-		cmd := utils.Command(t.Context(), "git", "clone", sshURL, cloneDir)
+		cmd := exec.CommandContext(t.Context(), "git", "clone", sshURL, cloneDir)
 		cmd.Env = append(os.Environ(), badEnv...)
 		output, err := cmd.CombinedOutput()
 		if err == nil {

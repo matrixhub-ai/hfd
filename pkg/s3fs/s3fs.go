@@ -4,8 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"os/exec"
 )
 
 // Mount mounts the specified S3 bucket to the given mount point using s3fs.
@@ -50,7 +49,7 @@ func Mount(ctx context.Context, point, endpoint, accessKey, secretKey, bucket, p
 		args = append(args, "-o", "use_path_request_style")
 	}
 
-	cmd := utils.Command(ctx, "s3fs", args...)
+	cmd := exec.CommandContext(ctx, "s3fs", args...)
 	if output, err := cmd.Output(); err != nil {
 		return fmt.Errorf("s3fs mount error: %v, output: %s", err, string(output))
 	}
@@ -60,7 +59,7 @@ func Mount(ctx context.Context, point, endpoint, accessKey, secretKey, bucket, p
 
 // Unmount unmounts the S3 bucket from the given mount point.
 func Unmount(ctx context.Context, point string) error {
-	cmd := utils.Command(ctx, "umount", point)
+	cmd := exec.CommandContext(ctx, "umount", point)
 	if output, err := cmd.Output(); err != nil {
 		return fmt.Errorf("s3fs unmount error: %v, output: %s", err, string(output))
 	}

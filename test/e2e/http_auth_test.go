@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -192,7 +192,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 
 	t.Run("CloneWithAuth", func(t *testing.T) {
 		cloneDir := filepath.Join(clientDir, "clone-auth")
-		cmd := utils.Command(t.Context(), "git", "clone", authURL+"/git-auth-user/auth-git-model.git", cloneDir)
+		cmd := exec.CommandContext(t.Context(), "git", "clone", authURL+"/git-auth-user/auth-git-model.git", cloneDir)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		output, err := cmd.Output()
 		if err != nil {
@@ -212,7 +212,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 			{"config", "user.email", "test@test.com"},
 			{"config", "user.name", "Test User"},
 		} {
-			cmd := utils.Command(t.Context(), "git", args...)
+			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
 			cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			if output, err := cmd.Output(); err != nil {
@@ -230,7 +230,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 			{"commit", "-m", "Commit with auth"},
 			{"push", "origin", "main"},
 		} {
-			cmd := utils.Command(t.Context(), "git", args...)
+			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
 			cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			if output, err := cmd.Output(); err != nil {
@@ -242,7 +242,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 	t.Run("CloneWithWrongAuth", func(t *testing.T) {
 		wrongURL := strings.Replace(endpoint, "http://", "http://gituser:wrongpass@", 1)
 		cloneDir := filepath.Join(clientDir, "clone-wrong-auth")
-		cmd := utils.Command(t.Context(), "git", "clone", wrongURL+"/git-auth-user/auth-git-model.git", cloneDir)
+		cmd := exec.CommandContext(t.Context(), "git", "clone", wrongURL+"/git-auth-user/auth-git-model.git", cloneDir)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		output, err := cmd.Output()
 		// With anonymous fallback, wrong credentials cause 401 but git retries

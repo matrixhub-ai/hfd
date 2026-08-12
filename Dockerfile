@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM ${IMAGE_PREFIX}library/alpine:${ALPINE_VERSION} AS hfd
 
 RUN --mount=type=cache,target=/var/cache/apk \
-    apk add ca-certificates git s3fs-fuse && \
+    apk add ca-certificates s3fs-fuse && \
     update-ca-certificates
 
 COPY --from=builder /hfd /usr/local/bin/hfd

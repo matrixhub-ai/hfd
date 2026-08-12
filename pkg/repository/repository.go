@@ -14,7 +14,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
-	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 var (
@@ -73,8 +72,8 @@ func IsValidGitProtocol(value string) bool {
 
 // Init initializes a new git repository at the given path with the specified default branch.
 func Init(ctx context.Context, repoPath string, defaultBranch string) (*Repository, error) {
-	cmd := utils.Command(ctx, "git", "init", "--bare", repoPath, "--initial-branch", defaultBranch)
-	if err := cmd.Run(); err != nil {
+	_, err := git.PlainInit(repoPath, true, git.WithDefaultBranch(plumbing.NewBranchReferenceName(defaultBranch)))
+	if err != nil {
 		_ = os.RemoveAll(repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
 	}

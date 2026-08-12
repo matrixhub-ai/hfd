@@ -282,10 +282,6 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		opt.Output = m.gitOutputFunc(logctx, repoName)
 	}
 
-	if opt.Output != nil {
-		logctx = utils.WithCommandOutput(logctx, opt.Output)
-	}
-
 	if opt.SourceURL == "" {
 		sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
 		if err != nil {
@@ -329,7 +325,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 
 			defer m.markSynced(repoPath)
 
-			err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+			err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output)
 			if err != nil {
 				return nil, err
 			}
@@ -352,7 +348,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 	_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
 		defer m.markSynced(repoPath)
 
-		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs)
+		err = m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output)
 		if err != nil {
 			return nil, err
 		}
@@ -387,10 +383,6 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 		ui, _ := authenticate.GetUserInfo(ctx)
 		logctx = authenticate.WithContext(logctx, ui)
 		opt.Output = m.gitOutputFunc(logctx, repoName)
-	}
-
-	if opt.Output != nil {
-		ctx = utils.WithCommandOutput(ctx, opt.Output)
 	}
 
 	if opt.DestinationURL == "" {
@@ -445,7 +437,7 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 			}
 		}
 
-		if err := repo.PushMirrorRefs(ctx, opt.DestinationURL, refspecs, prune); err != nil {
+		if err := repo.PushMirrorRefs(ctx, opt.DestinationURL, refspecs, prune, opt.Output); err != nil {
 			return nil, err
 		}
 
@@ -646,7 +638,7 @@ func keys(m map[string]string) []string {
 }
 
 // syncMirror syncs a mirror and fires post-receive hooks for any ref changes.
-func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, refs []string) error {
+func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, refs []string, progress io.Writer) error {
 	remoteRefsMap, err := repository.GetRemoteRefs(ctx, sourceURL)
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
@@ -684,7 +676,7 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 		}
 	}
 
-	if err := repo.SyncMirrorRefs(ctx, sourceURL, refsFilter); err != nil {
+	if err := repo.PullMirrorRefs(ctx, sourceURL, refsFilter, progress); err != nil {
 		return fmt.Errorf("failed to sync mirror refs: %w", err)
 	}
 
