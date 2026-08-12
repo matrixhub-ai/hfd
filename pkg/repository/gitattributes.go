@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"strings"
 
-	"github.com/go-git/go-git/v5/plumbing/format/gitattributes"
+	"github.com/go-git/go-git/v6/plumbing/format/gitattributes"
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 

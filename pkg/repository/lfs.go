@@ -3,7 +3,7 @@ package repository
 import (
 	"fmt"
 
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/git-lfs/git-lfs/v3/lfshttp"
-	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
 )
 
 // batchRequest represents a request to the LFS batch API

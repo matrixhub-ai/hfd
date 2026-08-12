@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
