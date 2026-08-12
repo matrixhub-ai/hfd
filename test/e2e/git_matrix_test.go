@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -270,7 +270,7 @@ func testCloneEmptyRepo(t *testing.T, cloneURL string, env []string) {
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	cmd := utils.Command(t.Context(), "git", "clone", cloneURL, cloneDir)
+	cmd := exec.CommandContext(t.Context(), "git", "clone", cloneURL, cloneDir)
 	cmd.Env = append(os.Environ(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Clone failed: %v\n%s", err, output)
@@ -506,7 +506,7 @@ func testDeleteTag(t *testing.T, cloneURL string, env []string) {
 
 func runGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

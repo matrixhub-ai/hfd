@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 func TestLFSTrackPushPull(t *testing.T) {
@@ -41,7 +39,7 @@ func TestLFSTrackPushPull(t *testing.T) {
 
 	// Clone the repo
 	cloneDir := filepath.Join(clientDir, "lfs-clone")
-	cmd := utils.Command(t.Context(), "git", "clone", httpGitURL, cloneDir)
+	cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, cloneDir)
 	cmd.Env = append(os.Environ(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Clone failed: %v\n%s", err, output)
@@ -52,7 +50,7 @@ func TestLFSTrackPushPull(t *testing.T) {
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test User"},
 	} {
-		gitCmd := utils.Command(t.Context(), "git", args...)
+		gitCmd := exec.CommandContext(t.Context(), "git", args...)
 		gitCmd.Dir = cloneDir
 		gitCmd.Env = append(os.Environ(), env...)
 		if output, err := gitCmd.Output(); err != nil {
@@ -61,7 +59,7 @@ func TestLFSTrackPushPull(t *testing.T) {
 	}
 
 	// Track .bin files with LFS
-	trackCmd := utils.Command(t.Context(), "git", "lfs", "track", "*.bin")
+	trackCmd := exec.CommandContext(t.Context(), "git", "lfs", "track", "*.bin")
 	trackCmd.Dir = cloneDir
 	trackCmd.Env = append(os.Environ(), env...)
 	if output, err := trackCmd.Output(); err != nil {
@@ -91,7 +89,7 @@ func TestLFSTrackPushPull(t *testing.T) {
 		{"commit", "-m", "Add LFS tracked file and README"},
 		{"push", "origin", "main"},
 	} {
-		gitCmd := utils.Command(t.Context(), "git", args...)
+		gitCmd := exec.CommandContext(t.Context(), "git", args...)
 		gitCmd.Dir = cloneDir
 		gitCmd.Env = append(os.Environ(), env...)
 		if output, err := gitCmd.Output(); err != nil {
@@ -101,14 +99,14 @@ func TestLFSTrackPushPull(t *testing.T) {
 
 	// Clone into a new directory and verify LFS content
 	verifyDir := filepath.Join(clientDir, "lfs-verify")
-	verifyCmd := utils.Command(t.Context(), "git", "clone", httpGitURL, verifyDir)
+	verifyCmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, verifyDir)
 	verifyCmd.Env = append(os.Environ(), env...)
 	if output, err := verifyCmd.Output(); err != nil {
 		t.Fatalf("Verify clone failed: %v\n%s", err, output)
 	}
 
 	// Pull LFS content
-	lfsPullCmd := utils.Command(t.Context(), "git", "lfs", "pull")
+	lfsPullCmd := exec.CommandContext(t.Context(), "git", "lfs", "pull")
 	lfsPullCmd.Dir = verifyDir
 	lfsPullCmd.Env = append(os.Environ(), env...)
 	if output, err := lfsPullCmd.Output(); err != nil {
@@ -167,7 +165,7 @@ func TestLFSMultipleFiles(t *testing.T) {
 	env := []string{"GIT_TERMINAL_PROMPT=0"}
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	cmd := utils.Command(t.Context(), "git", "clone", httpGitURL, cloneDir)
+	cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, cloneDir)
 	cmd.Env = append(os.Environ(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Clone failed: %v\n%s", err, output)
@@ -177,7 +175,7 @@ func TestLFSMultipleFiles(t *testing.T) {
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test User"},
 	} {
-		gitCmd := utils.Command(t.Context(), "git", args...)
+		gitCmd := exec.CommandContext(t.Context(), "git", args...)
 		gitCmd.Dir = cloneDir
 		gitCmd.Env = append(os.Environ(), env...)
 		if output, err := gitCmd.Output(); err != nil {
@@ -187,7 +185,7 @@ func TestLFSMultipleFiles(t *testing.T) {
 
 	// Track multiple file types
 	for _, pattern := range []string{"*.bin", "*.weights", "*.safetensors"} {
-		trackCmd := utils.Command(t.Context(), "git", "lfs", "track", pattern)
+		trackCmd := exec.CommandContext(t.Context(), "git", "lfs", "track", pattern)
 		trackCmd.Dir = cloneDir
 		trackCmd.Env = append(os.Environ(), env...)
 		if output, err := trackCmd.Output(); err != nil {
@@ -220,7 +218,7 @@ func TestLFSMultipleFiles(t *testing.T) {
 		{"commit", "-m", "Add multiple LFS files"},
 		{"push", "origin", "main"},
 	} {
-		gitCmd := utils.Command(t.Context(), "git", args...)
+		gitCmd := exec.CommandContext(t.Context(), "git", args...)
 		gitCmd.Dir = cloneDir
 		gitCmd.Env = append(os.Environ(), env...)
 		if output, err := gitCmd.Output(); err != nil {
@@ -230,13 +228,13 @@ func TestLFSMultipleFiles(t *testing.T) {
 
 	// Clone and verify
 	verifyDir := filepath.Join(clientDir, "verify")
-	verifyCloneCmd := utils.Command(t.Context(), "git", "clone", httpGitURL, verifyDir)
+	verifyCloneCmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, verifyDir)
 	verifyCloneCmd.Env = append(os.Environ(), env...)
 	if output, err := verifyCloneCmd.Output(); err != nil {
 		t.Fatalf("Verify clone failed: %v\n%s", err, output)
 	}
 
-	lfsPullCmd := utils.Command(t.Context(), "git", "lfs", "pull")
+	lfsPullCmd := exec.CommandContext(t.Context(), "git", "lfs", "pull")
 	lfsPullCmd.Dir = verifyDir
 	lfsPullCmd.Env = append(os.Environ(), env...)
 	if output, err := lfsPullCmd.Output(); err != nil {

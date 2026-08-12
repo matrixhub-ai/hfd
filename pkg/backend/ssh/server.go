@@ -3,18 +3,16 @@ package ssh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -273,7 +271,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 
-	var envs []string
+	var gitProtocol string
 
 	for req := range requests {
 		switch req.Type {
@@ -289,7 +287,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 			switch env.Name {
 			case "GIT_PROTOCOL":
 				if repository.IsValidGitProtocol(env.Value) {
-					envs = append(envs, "GIT_PROTOCOL="+env.Value)
+					gitProtocol = env.Value
 				}
 				_ = req.Reply(true, nil)
 			default:
@@ -321,7 +319,7 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 			case repository.GitLFSTransfer:
 				sendExitStatus(channel, 1, "git-lfs-transfer is not supported\n")
 			default:
-				s.executeCommand(ctx, channel, cmd.service, cmd.repoName, envs...)
+				s.executeCommand(ctx, channel, cmd.service, cmd.repoName, gitProtocol)
 			}
 			return
 		case "auth-agent-req@openssh.com":
@@ -334,8 +332,8 @@ func (s *Server) handleSession(ctx context.Context, channel ssh.Channel, request
 	}
 }
 
-// executeCommand runs a git service command and pipes I/O through the SSH channel.
-func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoName string, env ...string) {
+// executeCommand serves a git service in-process, reading and writing the SSH channel.
+func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoName string, gitProtocol string) {
 	repoPath := s.storage.ResolvePath(repoName)
 	if repoPath == "" {
 		sendExitStatus(channel, 1, "repository not found\n")
@@ -386,7 +384,7 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		}
 	}
 
-	_, err := s.openRepo(ctx, repoPath, repoName, service)
+	repo, err := s.openRepo(ctx, repoPath, repoName, service)
 	if err != nil {
 		if err == repository.ErrRepositoryNotExists {
 			sendExitStatus(channel, 1, "repository not found\n")
@@ -397,99 +395,48 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		return
 	}
 
-	// For receive-pack with permission/receive hooks: use pipe-based approach
-	// to intercept pkt-line commands for permission checking before the push completes.
-	if service == repository.GitReceivePack && (s.preReceiveHookFunc != nil || s.postReceiveHookFunc != nil || s.mirror != nil) {
-		s.executeReceivePackWithHooks(ctx, channel, service, repoName, repoPath, env...)
-		return
-	}
-
-	cmd := utils.Command(ctx, service, ".")
-	cmd.Dir = repoPath
-	cmd.Stdin = channel
-	cmd.Stdout = channel
-	cmd.Stderr = channel.Stderr()
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
-
-	if err := cmd.Run(); err != nil {
-		slog.ErrorContext(ctx, "ssh protocol: command failed", "service", service, "error", err)
-		sendExitStatus(channel, 1, "")
-		return
-	}
-
-	exitCode := cmd.ProcessState.ExitCode()
-	sendExitStatus(channel, uint32(exitCode), "")
-}
-
-// executeReceivePackWithHooks handles git-receive-pack using a pipe to intercept
-// pkt-line ref update commands. This allows the permission hook to inspect and
-// reject pushes before git-receive-pack processes the pack data.
-func (s *Server) executeReceivePackWithHooks(ctx context.Context, channel ssh.Channel, service string, repoName, repoPath string, env ...string) {
-	pr, pw := io.Pipe()
-	defer pr.Close()
-
-	cmd := utils.Command(ctx, service, ".")
-	cmd.Dir = repoPath
-	cmd.Stdin = pr
-	cmd.Stdout = channel
-	cmd.Stderr = channel.Stderr()
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
-
-	if err := cmd.Start(); err != nil {
-		pw.Close()
-		slog.ErrorContext(ctx, "ssh protocol: command start failed", "service", service, "error", err)
-		sendExitStatus(channel, 1, "")
-		return
-	}
-
-	// After git-receive-pack sends the ref advertisement through stdout→channel,
-	// the client sends pkt-line commands back through the channel. ParseRefUpdates
-	// reads these commands and returns a replay reader for forwarding.
-	updates, replay := receive.ParseRefUpdates(channel, repoPath)
-
-	// Pre-receive hook — can reject the push before pack data is processed.
-	if s.preReceiveHookFunc != nil && len(updates) > 0 {
-		if ok, err := s.preReceiveHookFunc(ctx, repoName, updates); err != nil {
+	err = repo.Serve(ctx, channel, service, gitProtocol, s.receivePackHooks(repoName))
+	if err != nil {
+		// A pre-receive rejection has already been reported to the client
+		// in-protocol via report-status.
+		if errors.Is(err, errPreReceiveDenied) {
 			slog.WarnContext(ctx, "ssh protocol: pre-receive hook denied push", "repo", repoName, "error", err)
-			cmd.Process.Kill()
-			pw.Close()
-			_ = cmd.Wait()
 			sendExitStatus(channel, 1, "")
 			return
-		} else if !ok {
-			slog.WarnContext(ctx, "ssh protocol: pre-receive hook denied push", "repo", repoName)
-			cmd.Process.Kill()
-			pw.Close()
-			_ = cmd.Wait()
-			sendExitStatus(channel, 1, "pre-receive denied")
-			return
 		}
-	}
-
-	// Permission granted — forward the buffered pkt-line data and remaining
-	// channel input to git-receive-pack through the pipe.
-	go func() {
-		defer pw.Close()
-		if _, err := io.Copy(pw, replay); err != nil {
-			slog.WarnContext(ctx, "ssh protocol: error forwarding data to receive-pack", "repo", repoName, "error", err)
-		}
-	}()
-
-	if err := cmd.Wait(); err != nil {
 		slog.ErrorContext(ctx, "ssh protocol: command failed", "service", service, "error", err)
 		sendExitStatus(channel, 1, "")
 		return
 	}
 
-	// Fire post-receive hook with the ref updates.
-	s.afterReceivePack(ctx, repoName, updates)
+	sendExitStatus(channel, 0, "")
+}
 
-	exitCode := cmd.ProcessState.ExitCode()
-	sendExitStatus(channel, uint32(exitCode), "")
+// errPreReceiveDenied marks a push rejected by the pre-receive hook; the
+// rejection is reported to the client in-protocol via report-status.
+var errPreReceiveDenied = errors.New("pre-receive hook denied the push")
+
+// receivePackHooks wires the server's pre/post-receive hook functions into
+// the go-git receive-pack serving path.
+func (s *Server) receivePackHooks(repoName string) repository.ReceivePackHooks {
+	var hooks repository.ReceivePackHooks
+	if s.preReceiveHookFunc != nil {
+		hooks.PreReceive = func(ctx context.Context, updates []receive.RefUpdate) error {
+			if len(updates) == 0 {
+				return nil
+			}
+			if ok, err := s.preReceiveHookFunc(ctx, repoName, updates); err != nil {
+				return fmt.Errorf("%w: %v", errPreReceiveDenied, err)
+			} else if !ok {
+				return errPreReceiveDenied
+			}
+			return nil
+		}
+	}
+	hooks.PostReceive = func(ctx context.Context, updates []receive.RefUpdate) {
+		s.afterReceivePack(ctx, repoName, updates)
+	}
+	return hooks
 }
 
 func (s *Server) afterReceivePack(ctx context.Context, repoName string, updates []receive.RefUpdate) {

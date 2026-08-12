@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/matrixhub-ai/hfd/internal/utils"
 )
 
 // TestLFSOperationsMatrix tests LFS operations across different scenarios
@@ -159,7 +157,7 @@ func makeBinaryData(size int, seed byte) []byte {
 // runLFSGitCmd runs a git command for LFS tests
 func runLFSGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := utils.Command(t.Context(), "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
