@@ -20,12 +20,12 @@ import (
 // to keep the remote destination in sync with local changes.
 // If mirrorDestinationFunc is not set, the function returns nil.
 // A nil opts uses the Mirror's configured callbacks.
-func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, opts *SyncOptions) error {
+func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, opts *PushOptions) error {
 	if m.mirrorDestinationFunc == nil {
 		return nil
 	}
 
-	var opt SyncOptions
+	var opt PushOptions
 	if opts != nil {
 		opt = *opts
 	}
@@ -68,7 +68,7 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 // resolvePushDestination fills in the destination URL and embedded credentials
 // from the configured callbacks when not overridden by the caller. It returns
 // false when the repository is not configured as a push mirror.
-func (m *Mirror) resolvePushDestination(ctx context.Context, repoName string, opt *SyncOptions) (bool, error) {
+func (m *Mirror) resolvePushDestination(ctx context.Context, repoName string, opt *PushOptions) (bool, error) {
 	if opt.DestinationURL == "" {
 		destURL, isPushMirror, err := m.mirrorDestinationFunc(ctx, repoName)
 		if err != nil {

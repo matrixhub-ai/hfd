@@ -253,7 +253,7 @@ func TestPushToRemoteSpecificRefsOnly(t *testing.T) {
 
 	m := mirror.NewMirror(mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
 	err := m.PushToRemote(context.Background(), localPath, "org/repo",
-		&mirror.SyncOptions{Refs: []string{"refs/heads/main"}})
+		&mirror.PushOptions{Refs: []string{"refs/heads/main"}})
 	if err != nil {
 		t.Fatalf("push to remote: %v", err)
 	}

@@ -208,16 +208,27 @@ func (m *Mirror) IsMirrorDestination(ctx context.Context, repoName string) (bool
 	return isMirror, err
 }
 
-// SyncOptions carries per-call overrides for mirror sync operations.
+// PullOptions carries per-call overrides for PullFromRemote.
 // The zero value uses the Mirror's configured callbacks for every field.
-type SyncOptions struct {
-	// SourceURL overrides the mirrorSourceFunc lookup for pull operations.
+type PullOptions struct {
+	// SourceURL overrides the mirrorSourceFunc lookup.
 	SourceURL string
-	// DestinationURL overrides the mirrorDestinationFunc lookup for push operations.
-	DestinationURL string
 	// Refs restricts the sync to the given refs, overriding the mirrorRefFilterFunc.
 	Refs []string
 	// UserInfo sets credentials for the sync, overriding the SyncUserInfoFunc.
+	UserInfo *url.Userinfo
+	// Output captures git command output, overriding the GitOutputFunc.
+	Output io.Writer
+}
+
+// PushOptions carries per-call overrides for PushToRemote.
+// The zero value uses the Mirror's configured callbacks for every field.
+type PushOptions struct {
+	// DestinationURL overrides the mirrorDestinationFunc lookup.
+	DestinationURL string
+	// Refs restricts the push to the given refs; empty mirrors all branches and tags with pruning.
+	Refs []string
+	// UserInfo sets credentials for the push, overriding the SyncUserInfoFunc.
 	UserInfo *url.Userinfo
 	// Output captures git command output, overriding the GitOutputFunc.
 	Output io.Writer

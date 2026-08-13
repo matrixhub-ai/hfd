@@ -14,8 +14,8 @@ import (
 // PullFromRemote syncs the mirror repository at repoPath with the source URL, firing hooks for any ref changes.
 // If the repository does not exist, it is initialized as a mirror and then synced.
 // A nil opts uses the Mirror's configured callbacks.
-func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, opts *SyncOptions) error {
-	var opt SyncOptions
+func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, opts *PullOptions) error {
+	var opt PullOptions
 	if opts != nil {
 		opt = *opts
 	}
@@ -60,7 +60,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 
 // resolvePullSource fills in the source URL and embedded credentials from the
 // configured callbacks when not overridden by the caller.
-func (m *Mirror) resolvePullSource(ctx context.Context, repoName string, opt *SyncOptions) error {
+func (m *Mirror) resolvePullSource(ctx context.Context, repoName string, opt *PullOptions) error {
 	if opt.SourceURL == "" {
 		if m.mirrorSourceFunc == nil {
 			return fmt.Errorf("no mirror source configured for repository %q", repoName)
@@ -97,7 +97,7 @@ func (m *Mirror) resolvePullSource(ctx context.Context, repoName string, opt *Sy
 // initMirrorAndSync initializes the mirror repository and performs the first sync.
 // Initialization failures are reported as ErrRepositoryNotExists so callers treat
 // the repository as absent.
-func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, repoPath, repoName string, opt SyncOptions) error {
+func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, repoPath, repoName string, opt PullOptions) error {
 	_, err, _ := m.pullGroup.Do(repoPath, func() (any, error) {
 		repo, err := repository.InitMirror(logctx, repoPath, opt.SourceURL)
 		if err != nil {
