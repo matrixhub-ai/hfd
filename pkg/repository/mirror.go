@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/cache"
 	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/protocol"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/storage/filesystem"
@@ -77,6 +78,9 @@ func getRemoteAdvertisedRefs(ctx context.Context, sourceURL string) (*transport.
 	sess, err := client.New(mirrorClientOptions...).Handshake(ctx, &transport.Request{
 		URL:     u,
 		Command: transport.UploadPackService,
+		// Prefer wire protocol v2 like the git binary: v0/v1 advertisements
+		// cannot express an unborn HEAD symref.
+		Protocol: protocol.V2,
 	})
 	if err != nil {
 		return nil, err
@@ -113,6 +117,11 @@ func GetRemoteDefaultBranch(ctx context.Context, sourceURL string) (string, erro
 func GetRemoteRefs(ctx context.Context, sourceURL string) (map[string]string, error) {
 	remoteRefs, err := getRemoteAdvertisedRefs(ctx, sourceURL)
 	if err != nil {
+		// Match `git ls-remote --refs`: an empty repository lists no refs
+		// instead of failing.
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			return map[string]string{}, nil
+		}
 		return nil, fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
@@ -143,7 +152,8 @@ func (r *Repository) mirrorRemote(url string) *git.Remote {
 // PushMirrorRefs pushes the specified refspecs to the destination URL.
 // Each refspec should be "+src:dst" for create/update or ":dst" for delete.
 // When prune is true, remote refs matching the refspecs that do not exist
-// locally are removed. Server progress messages are written to progress if non-nil.
+// locally are removed, matching `git push --prune` semantics.
+// Server progress messages are written to progress if non-nil.
 func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refs []string, prune bool, progress io.Writer) error {
 	if len(refs) == 0 {
 		return nil
@@ -154,11 +164,23 @@ func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refs []
 		specs = append(specs, gitconfig.RefSpec(refspec))
 	}
 
+	// Compute prune deletions ourselves instead of using go-git's
+	// PushOptions.Prune: its refspec reversal keeps the force prefix on the
+	// destination side, so local-existence lookups never match and every
+	// matching remote ref gets deleted. It also removes local refs that are
+	// missing on the remote, which push must never do.
+	if prune {
+		deletes, err := r.pushPruneRefSpecs(ctx, destURL, specs)
+		if err != nil {
+			return fmt.Errorf("failed to compute remote refs to prune: %w", err)
+		}
+		specs = append(specs, deletes...)
+	}
+
 	err := r.mirrorRemote(destURL).PushContext(ctx, &git.PushOptions{
 		RemoteName:    "mirror",
 		RemoteURL:     destURL,
 		RefSpecs:      specs,
-		Prune:         prune,
 		Progress:      progress,
 		ClientOptions: mirrorClientOptions,
 	})
@@ -167,6 +189,55 @@ func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refs []
 	}
 
 	return nil
+}
+
+// pushPruneRefSpecs returns delete refspecs (":dst") for remote refs that
+// match the destination side of specs but no longer have a local counterpart,
+// like `git push --prune`.
+func (r *Repository) pushPruneRefSpecs(ctx context.Context, destURL string, specs []gitconfig.RefSpec) ([]gitconfig.RefSpec, error) {
+	remoteRefs, err := GetRemoteRefs(ctx, destURL)
+	if err != nil {
+		return nil, err
+	}
+	localRefs, err := r.Refs()
+	if err != nil {
+		return nil, err
+	}
+
+	// Reverse the specs manually (dst:src, force prefix stripped) so remote
+	// names can be mapped back to their local source refs.
+	reversed := make([]gitconfig.RefSpec, 0, len(specs))
+	for _, spec := range specs {
+		if spec.IsDelete() {
+			continue
+		}
+		raw := strings.TrimPrefix(spec.String(), "+")
+		src, dst, ok := strings.Cut(raw, ":")
+		if !ok {
+			dst = src
+		}
+		reversed = append(reversed, gitconfig.RefSpec(dst+":"+src))
+	}
+
+	var deletes []gitconfig.RefSpec
+	for remoteName := range remoteRefs {
+		name := plumbing.ReferenceName(remoteName)
+		matched, hasLocal := false, false
+		for _, rev := range reversed {
+			if !rev.Match(name) {
+				continue
+			}
+			matched = true
+			if _, ok := localRefs[rev.Dst(name).String()]; ok {
+				hasLocal = true
+				break
+			}
+		}
+		if matched && !hasLocal {
+			deletes = append(deletes, gitconfig.RefSpec(":"+remoteName))
+		}
+	}
+	return deletes, nil
 }
 
 // PullMirrorRefs fetches the specified refs from the sourceURL and updates the local mirror repository.

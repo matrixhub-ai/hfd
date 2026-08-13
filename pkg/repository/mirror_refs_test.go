@@ -213,6 +213,91 @@ func TestPushMirrorRefs(t *testing.T) {
 	}
 }
 
+func TestPushMirrorRefsPrune(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+
+	local, work := buildParityUpstream(t, root)
+	repo, err := Open(local)
+	if err != nil {
+		t.Fatalf("open local repository: %v", err)
+	}
+
+	wildcard := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+
+	destA := filepath.Join(root, "dest-a.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", destA)
+
+	// pushPrune pushes with prune=true and asserts local refs are never
+	// touched: go-git's own prune implementation deleted local refs that
+	// were missing on the remote.
+	pushPrune := func(t *testing.T, dest string, refspecs []string) {
+		t.Helper()
+		before := gitLocalRefs(t, local)
+		if err := repo.PushMirrorRefs(ctx, dest, refspecs, true, nil); err != nil {
+			t.Fatalf("PushMirrorRefs with prune: %v", err)
+		}
+		requireSameRefs(t, "local refs must survive a prune push", gitLocalRefs(t, local), before)
+	}
+
+	t.Run("InitialPushToEmptyDestination", func(t *testing.T) {
+		// destA is empty here: prune must tolerate an empty remote.
+		pushPrune(t, destA, wildcard)
+		requireSameRefs(t, "destination after initial push", gitLocalRefs(t, destA), gitLocalRefs(t, local))
+	})
+
+	t.Run("RepushKeepsExistingRefs", func(t *testing.T) {
+		// Regression: a second pruning push used to delete every remote ref
+		// that still existed locally.
+		commitFile(t, work, "file.txt", "advance\n", "advance")
+		runGit(t, work, "push", "origin", "main")
+
+		pushPrune(t, destA, wildcard)
+		requireSameRefs(t, "destination after repush", gitLocalRefs(t, destA), gitLocalRefs(t, local))
+	})
+
+	t.Run("MappedWildcardRefspec", func(t *testing.T) {
+		destB := filepath.Join(root, "dest-b.git")
+		runGit(t, "", "init", "--bare", "--initial-branch=main", destB)
+
+		mapped := []string{"+refs/heads/*:refs/mirror/*"}
+		pushPrune(t, destB, mapped)
+
+		localRefs := gitLocalRefs(t, local)
+		want := map[string]string{
+			"refs/mirror/main":         localRefs["refs/heads/main"],
+			"refs/mirror/topic/nested": localRefs["refs/heads/topic/nested"],
+		}
+		requireSameRefs(t, "mapped destination refs", gitLocalRefs(t, destB), want)
+
+		// A destination ref outside the refspec patterns must survive prune.
+		runGit(t, destB, "update-ref", "refs/heads/standalone", localRefs["refs/heads/main"])
+
+		runGit(t, local, "update-ref", "-d", "refs/heads/topic/nested")
+		pushPrune(t, destB, mapped)
+
+		want = map[string]string{
+			"refs/mirror/main":     localRefs["refs/heads/main"],
+			"refs/heads/standalone": localRefs["refs/heads/main"],
+		}
+		requireSameRefs(t, "mapped destination refs after prune", gitLocalRefs(t, destB), want)
+	})
+
+	t.Run("PrunesRefsDeletedLocally", func(t *testing.T) {
+		// topic/nested was deleted above; also drop a tag. Both must be
+		// pruned from destA while an unrelated destination ref survives.
+		runGit(t, local, "update-ref", "-d", "refs/tags/v1")
+		keepHash := gitLocalRefs(t, local)["refs/heads/main"]
+		runGit(t, destA, "update-ref", "refs/keep/x", keepHash)
+
+		pushPrune(t, destA, wildcard)
+
+		want := gitLocalRefs(t, local)
+		want["refs/keep/x"] = keepHash
+		requireSameRefs(t, "destination after pruning deleted refs", gitLocalRefs(t, destA), want)
+	})
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)
