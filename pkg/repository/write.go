@@ -40,53 +40,85 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 	}
 	refName := plumbing.NewBranchReferenceName(rev)
 
-	// Load the current tree entries from the branch tip (empty for new branches).
-	entries := make(map[string]object.TreeEntry)
-	var currentTip string
-	var oldRef *plumbing.Reference
-	var parents []plumbing.Hash
-	if ref, err := r.repo.Storer.Reference(refName); err == nil && !ref.Hash().IsZero() {
-		oldRef = ref
-		currentTip = ref.Hash().String()
-		parents = append(parents, ref.Hash())
-
-		commit, err := r.repo.CommitObject(ref.Hash())
-		if err != nil {
-			return "", fmt.Errorf("failed to read branch tip commit: %w", err)
-		}
-		tree, err := commit.Tree()
-		if err != nil {
-			return "", fmt.Errorf("failed to read branch tip tree: %w", err)
-		}
-		walker := object.NewTreeWalker(tree, true, nil)
-		defer walker.Close()
-		for {
-			name, entry, err := walker.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return "", fmt.Errorf("failed to walk branch tip tree: %w", err)
-			}
-			if entry.Mode == filemode.Dir {
-				continue
-			}
-			entries[name] = entry
-		}
+	entries, oldRef, err := r.loadBranchTip(refName)
+	if err != nil {
+		return "", err
 	}
 
 	// If parentCommit is specified, verify it matches the current tip
+	var currentTip string
+	var parents []plumbing.Hash
+	if oldRef != nil {
+		currentTip = oldRef.Hash().String()
+		parents = append(parents, oldRef.Hash())
+	}
 	if parentCommit != "" && currentTip != parentCommit {
 		return "", fmt.Errorf("expected parent commit %s but branch tip is %s", parentCommit, currentTip)
 	}
 
-	// Apply operations
+	if err := r.applyCommitOperations(entries, ops); err != nil {
+		return "", err
+	}
+
+	commitHash, err := r.persistCommit(entries, message, authorName, authorEmail, parents)
+	if err != nil {
+		return "", err
+	}
+
+	// Update ref atomically: provide old value to prevent lost updates
+	newRef := plumbing.NewHashReference(refName, commitHash)
+	if err := r.repo.Storer.CheckAndSetReference(newRef, oldRef); err != nil {
+		return "", fmt.Errorf("failed to update rev: %w", err)
+	}
+
+	return commitHash.String(), nil
+}
+
+// loadBranchTip returns the flat path → entry map of the branch tip tree and
+// the tip reference. A missing or unborn branch yields an empty map and a nil ref.
+func (r *Repository) loadBranchTip(refName plumbing.ReferenceName) (map[string]object.TreeEntry, *plumbing.Reference, error) {
+	entries := make(map[string]object.TreeEntry)
+
+	ref, err := r.repo.Storer.Reference(refName)
+	if err != nil || ref.Hash().IsZero() {
+		return entries, nil, nil
+	}
+
+	commit, err := r.repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read branch tip commit: %w", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read branch tip tree: %w", err)
+	}
+	walker := object.NewTreeWalker(tree, true, nil)
+	defer walker.Close()
+	for {
+		name, entry, err := walker.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to walk branch tip tree: %w", err)
+		}
+		if entry.Mode == filemode.Dir {
+			continue
+		}
+		entries[name] = entry
+	}
+	return entries, ref, nil
+}
+
+// applyCommitOperations applies add/delete operations to the entries map,
+// storing blobs for added files.
+func (r *Repository) applyCommitOperations(entries map[string]object.TreeEntry, ops []CommitOperation) error {
 	for _, op := range ops {
 		switch op.Type {
 		case CommitOperationAdd:
 			blobHash, err := r.storeBlob(op.Content)
 			if err != nil {
-				return "", fmt.Errorf("failed to create blob for %s: %w", op.Path, err)
+				return fmt.Errorf("failed to create blob for %s: %w", op.Path, err)
 			}
 			entries[op.Path] = object.TreeEntry{
 				Name: op.Path,
@@ -96,14 +128,17 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 		case CommitOperationDelete:
 			delete(entries, op.Path)
 		default:
-			return "", fmt.Errorf("unsupported operation type: %s", op.Type)
+			return fmt.Errorf("unsupported operation type: %s", op.Type)
 		}
 	}
+	return nil
+}
 
-	// Write tree
+// persistCommit writes the tree and commit objects and returns the commit hash.
+func (r *Repository) persistCommit(entries map[string]object.TreeEntry, message, authorName, authorEmail string, parents []plumbing.Hash) (plumbing.Hash, error) {
 	treeHash, err := r.storeTree(entries)
 	if err != nil {
-		return "", fmt.Errorf("failed to write tree: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("failed to write tree: %w", err)
 	}
 
 	signature := object.Signature{
@@ -119,16 +154,9 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 		ParentHashes: parents,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("failed to create commit: %w", err)
 	}
-
-	// Update ref atomically: provide old value to prevent lost updates
-	newRef := plumbing.NewHashReference(refName, commitHash)
-	if err := r.repo.Storer.CheckAndSetReference(newRef, oldRef); err != nil {
-		return "", fmt.Errorf("failed to update rev: %w", err)
-	}
-
-	return commitHash.String(), nil
+	return commitHash, nil
 }
 
 // storeBlob writes content as a blob object and returns its hash.
