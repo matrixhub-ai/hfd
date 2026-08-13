@@ -25,6 +25,12 @@ type s3Storage struct {
 	checksumAlgorithm string
 }
 
+var (
+	_ Storage    = (*s3Storage)(nil)
+	_ SignGetter = (*s3Storage)(nil)
+	_ SignPutter = (*s3Storage)(nil)
+)
+
 // NewS3 creates a new S3-backed Store. The basePath is a prefix for all object keys in the bucket.
 func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathStyle bool, s3SignEndpoint string) Storage {
 	sess := session.Must(session.NewSession(&aws.Config{
