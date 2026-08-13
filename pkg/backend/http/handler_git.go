@@ -54,43 +54,11 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mirror != nil {
-		switch service {
-		case repository.GitUploadPack:
-			isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
-			if err != nil {
-				responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
-				return
-			}
-			if !isMirrorSrc {
-				responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
-				return
-			}
-		case repository.GitReceivePack:
-			isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
-			if err != nil {
-				responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
-				return
-			}
-			if !isMirrorDest {
-				responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
-				return
-			}
-		}
+	if !h.checkMirrorAccess(w, r, repoName, service) {
+		return
 	}
-
-	if h.permissionHookFunc != nil {
-		op := permission.OperationReadRepo
-		if service == repository.GitReceivePack {
-			op = permission.OperationUpdateRepo
-		}
-		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseText(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseText(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	if !h.checkPermission(w, r, repoName, service) {
+		return
 	}
 
 	repoPath := h.storage.ResolvePath(repoName)
@@ -99,21 +67,15 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
-			return
-		}
-		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+	repo, ok := h.openRepoChecked(w, r, repoPath, repoName, service)
+	if !ok {
 		return
 	}
 
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-advertisement", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.AdvertiseRefs(r.Context(), w, service, gitProtocol(r))
-	if err != nil {
+	if err := repo.AdvertiseRefs(r.Context(), w, service, gitProtocol(r)); err != nil {
 		responseText(w, fmt.Sprintf("Failed to get info refs for %q: %v", repoName, err), http.StatusInternalServerError)
 		return
 	}
@@ -140,52 +102,15 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
-	if h.mirror != nil {
-		switch service {
-		case repository.GitUploadPack:
-			isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
-			if err != nil {
-				responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
-				return
-			}
-			if !isMirrorSrc {
-				responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
-				return
-			}
-		case repository.GitReceivePack:
-			isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
-			if err != nil {
-				responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
-				return
-			}
-			if !isMirrorDest {
-				responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
-				return
-			}
-		}
+	if !h.checkMirrorAccess(w, r, repoName, service) {
+		return
+	}
+	if !h.checkPermission(w, r, repoName, service) {
+		return
 	}
 
-	if h.permissionHookFunc != nil {
-		op := permission.OperationReadRepo
-		if service == repository.GitReceivePack {
-			op = permission.OperationUpdateRepo
-		}
-		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseText(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseText(w, "permission denied", http.StatusForbidden)
-			return
-		}
-	}
-
-	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
-			return
-		}
-		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+	repo, ok := h.openRepoChecked(w, r, repoPath, repoName, service)
+	if !ok {
 		return
 	}
 
@@ -259,6 +184,74 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 		return nil, err
 	}
 	return repository.Open(repoPath)
+}
+
+// checkMirrorAccess enforces mirror-only access rules, writing the failure
+// response. It returns true when the request may proceed.
+func (h *Handler) checkMirrorAccess(w http.ResponseWriter, r *http.Request, repoName, service string) bool {
+	if h.mirror == nil {
+		return true
+	}
+	switch service {
+	case repository.GitUploadPack:
+		isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
+		if err != nil {
+			responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
+			return false
+		}
+		if !isMirrorSrc {
+			responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
+			return false
+		}
+	case repository.GitReceivePack:
+		isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
+		if err != nil {
+			responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
+			return false
+		}
+		if !isMirrorDest {
+			responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
+			return false
+		}
+	}
+	return true
+}
+
+// checkPermission runs the permission hook for the service, writing the
+// failure response. It returns true when the request may proceed.
+func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, repoName, service string) bool {
+	if h.permissionHookFunc == nil {
+		return true
+	}
+	op := permission.OperationReadRepo
+	if service == repository.GitReceivePack {
+		op = permission.OperationUpdateRepo
+	}
+	ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{})
+	if err != nil {
+		slog.ErrorContext(r.Context(), "permission hook error", "service", service, "repo", repoName, "error", err)
+		responseText(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	if !ok {
+		responseText(w, "permission denied", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// openRepoChecked opens the repository, mapping open errors to HTTP responses.
+func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPath, repoName, service string) (*repository.Repository, bool) {
+	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
+	if err != nil {
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
+			return nil, false
+		}
+		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+		return nil, false
+	}
+	return repo, true
 }
 
 func (h *Handler) preOpenHook(ctx context.Context, repoName string, write bool) error {
