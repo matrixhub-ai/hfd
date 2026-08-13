@@ -1,9 +1,11 @@
 package backend
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -22,6 +24,18 @@ func gitProtocol(r *http.Request) string {
 		return ""
 	}
 	return value
+}
+
+// requestBody returns the request body, transparently inflating it when the
+// client sent Content-Encoding: gzip. Git clients gzip-compress smart-HTTP
+// request bodies larger than 1KiB (remote-curl.c post_rpc), and git
+// http-backend inflates them the same way (http-backend.c inflate_request).
+func requestBody(r *http.Request) (io.ReadCloser, error) {
+	switch r.Header.Get("Content-Encoding") {
+	case "gzip", "x-gzip":
+		return gzip.NewReader(r.Body)
+	}
+	return r.Body, nil
 }
 
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.
@@ -175,10 +189,19 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
+	body, err := requestBody(r)
+	if err != nil {
+		responseText(w, fmt.Sprintf("Failed to read request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer func() {
+		_ = body.Close()
+	}()
+
 	w.Header().Set("Content-Type", fmt.Sprintf("application/x-%s-result", service))
 	w.Header().Set("Cache-Control", "no-cache")
 
-	err = repo.Stateless(r.Context(), w, r.Body, service, gitProtocol(r), h.receivePackHooks(repoName))
+	err = repo.Stateless(r.Context(), w, body, service, gitProtocol(r), h.receivePackHooks(repoName))
 	if err != nil {
 		// A pre-receive rejection has already been reported to the client
 		// in-protocol via report-status.
@@ -186,6 +209,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 			slog.WarnContext(r.Context(), "pre-receive hook denied push", "repo", repoName, "error", err)
 			return
 		}
+		slog.ErrorContext(r.Context(), "failed to serve git service", "service", service, "repo", repoName, "error", err)
 		responseText(w, fmt.Sprintf("Failed to serve %s for %q: %v", service, repoName, err), http.StatusInternalServerError)
 		return
 	}
