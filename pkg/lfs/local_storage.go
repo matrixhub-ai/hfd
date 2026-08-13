@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
 var (
@@ -15,8 +18,9 @@ var (
 	errSizeMismatch = errors.New("content size does not match")
 )
 
-// localStorage provides a simple file system based storage.
+// localStorage provides a billy filesystem based storage.
 type localStorage struct {
+	fs       billy.Filesystem
 	basePath string
 }
 
@@ -28,7 +32,8 @@ var (
 
 // NewLocal creates a new local file system based Store. The basePath is the root directory where objects will be stored.
 func NewLocal(basePath string) Storage {
-	return &localStorage{basePath: basePath}
+	// The host-wide filesystem lets MovePut rename sources located outside basePath.
+	return &localStorage{fs: osfs.Default, basePath: basePath}
 }
 
 // Get takes a Meta object and retreives the content from the store, returning
@@ -36,12 +41,13 @@ func NewLocal(basePath string) Storage {
 func (s *localStorage) Get(oid string) (io.ReadSeekCloser, os.FileInfo, error) {
 	path := filepath.Join(s.basePath, transformKey(oid))
 
-	f, err := os.Open(path)
+	f, err := s.fs.Open(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	stat, err := os.Stat(path)
+	stat, err := f.Stat()
 	if err != nil {
+		_ = f.Close()
 		return nil, nil, err
 	}
 	return f, stat, nil
@@ -49,19 +55,17 @@ func (s *localStorage) Get(oid string) (io.ReadSeekCloser, os.FileInfo, error) {
 
 // Put takes a Meta object and an io.Reader and writes the content to the store.
 func (s *localStorage) Put(oid string, r io.Reader, size int64) error {
-	path := filepath.Join(s.basePath, transformKey(oid))
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	tmpDir := filepath.Join(s.basePath, "tmp")
+	if err := s.fs.MkdirAll(tmpDir, 0750); err != nil {
 		return err
 	}
-
-	file, err := os.CreateTemp(dir, "lfsd_tmp_")
+	tmpPath := filepath.Join(tmpDir, oid)
+	file, err := s.fs.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = os.Remove(file.Name())
+		_ = s.fs.Remove(tmpPath)
 	}()
 
 	hash := sha256.New()
@@ -83,7 +87,14 @@ func (s *localStorage) Put(oid string, r io.Reader, size int64) error {
 		return errHashMismatch
 	}
 
-	if err := os.Rename(file.Name(), path); err != nil {
+	path := filepath.Join(s.basePath, transformKey(oid))
+
+	dir := filepath.Dir(path)
+	if err := s.fs.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+
+	if err := s.fs.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	return nil
@@ -92,22 +103,19 @@ func (s *localStorage) Put(oid string, r io.Reader, size int64) error {
 // MovePut moves a file from the given path to the location determined by the OID.
 func (s *localStorage) MovePut(oid, path string) error {
 	destPath := filepath.Join(s.basePath, transformKey(oid))
-	dir := filepath.Dir(destPath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
+	if err := s.fs.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return err
 	}
-	return os.Rename(path, destPath)
+	return s.fs.Rename(path, destPath)
 }
 
 func (s *localStorage) Info(oid string) (os.FileInfo, error) {
-	path := filepath.Join(s.basePath, transformKey(oid))
-	return os.Stat(path)
+	return s.fs.Stat(filepath.Join(s.basePath, transformKey(oid)))
 }
 
 // Exists returns true if the object exists in the content store.
 func (s *localStorage) Exists(oid string) bool {
-	path := filepath.Join(s.basePath, transformKey(oid))
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := s.fs.Stat(filepath.Join(s.basePath, transformKey(oid))); os.IsNotExist(err) {
 		return false
 	}
 	return true
