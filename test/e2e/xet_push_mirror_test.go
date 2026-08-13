@@ -202,7 +202,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
 		repoPath := sourceStorage.ResolvePath(name)
-		return sharedMirror.PushToRemote(ctx, repoPath, name)
+		return sharedMirror.PushToRemote(ctx, repoPath, name, nil)
 	}
 
 	var sourceHandler http.Handler

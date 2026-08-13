@@ -203,7 +203,7 @@ func main() {
 			return nil
 		}
 
-		return sharedMirror.PullFromRemote(context.Background(), repoPath, repoName)
+		return sharedMirror.PullFromRemote(context.Background(), repoPath, repoName, nil)
 	}
 
 	preReceiveHookFunc := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
@@ -244,7 +244,7 @@ func main() {
 			return nil
 		}
 
-		if err := sharedMirror.PushToRemote(context.Background(), repoPath, repoName); err != nil {
+		if err := sharedMirror.PushToRemote(context.Background(), repoPath, repoName, nil); err != nil {
 			return err
 		}
 		return nil
