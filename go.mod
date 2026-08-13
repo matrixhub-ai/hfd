@@ -3,8 +3,11 @@ module github.com/matrixhub-ai/hfd
 go 1.25.0
 
 require (
-	github.com/aws/aws-sdk-go v1.55.8
+	github.com/aws/aws-sdk-go-v2 v1.43.5
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1
 	github.com/git-lfs/git-lfs/v3 v3.7.1
+	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
@@ -22,6 +25,15 @@ require (
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74 // indirect
 	github.com/avast/retry-go v2.4.2+incompatible // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.17 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.16 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.29 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.36 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.37 // indirect
+	github.com/aws/smithy-go v1.27.7 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/dpotapov/go-spnego v0.0.0-20210315154721-298b63a54430 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
@@ -31,7 +43,6 @@ require (
 	github.com/git-lfs/pktline v0.0.0-20210330133718-06e9096e2825 // indirect
 	github.com/git-lfs/wildmatch/v2 v2.0.1 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
-	github.com/go-git/go-billy/v6 v6.0.0-alpha.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/hashicorp/go-uuid v1.0.2 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
@@ -40,7 +51,6 @@ require (
 	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect
 	github.com/jcmturner/gokrb5/v8 v8.4.2 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
-	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jmhodges/clock v1.2.0 // indirect
 	github.com/kevinburke/ssh_config v1.6.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

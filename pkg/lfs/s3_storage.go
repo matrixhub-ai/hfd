@@ -1,8 +1,10 @@
 package lfs
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,19 +12,21 @@ import (
 	"path"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"             //nolint:staticcheck
-	"github.com/aws/aws-sdk-go/aws/credentials" //nolint:staticcheck
-	"github.com/aws/aws-sdk-go/aws/session"     //nolint:staticcheck
-	"github.com/aws/aws-sdk-go/service/s3"      //nolint:staticcheck
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type s3Storage struct {
-	s3                *s3.S3
-	signS3            *s3.S3
+	client            *s3.Client
+	presign           *s3.PresignClient
+	signPresign       *s3.PresignClient
 	basePath          string
 	bucket            string
 	expire            time.Duration
-	checksumAlgorithm string
+	checksumAlgorithm types.ChecksumAlgorithm
 }
 
 var (
@@ -33,45 +37,46 @@ var (
 
 // NewS3 creates a new S3-backed Store. The basePath is a prefix for all object keys in the bucket.
 func NewS3(basePath, endpoint, accessKey, secretKey, bucket string, forcePathStyle bool, s3SignEndpoint string) Storage {
-	sess := session.Must(session.NewSession(&aws.Config{
-		Endpoint:         &endpoint,
-		Region:           aws.String("us-east-1"),
-		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
-		S3ForcePathStyle: &forcePathStyle,
-	}))
+	cfg := aws.Config{
+		Region:      "us-east-1",
+		Credentials: credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+	}
+
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = forcePathStyle
+	})
 
 	if s3SignEndpoint == "" {
 		s3SignEndpoint = endpoint
 	}
 
-	signSess := session.Must(session.NewSession(&aws.Config{
-		Endpoint:         &s3SignEndpoint,
-		Region:           aws.String("us-east-1"),
-		Credentials:      credentials.NewStaticCredentials(accessKey, secretKey, ""),
-		S3ForcePathStyle: &forcePathStyle,
-	}))
+	signClient := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(s3SignEndpoint)
+		o.UsePathStyle = forcePathStyle
+	})
 
 	return &s3Storage{
 		basePath:          basePath,
-		s3:                s3.New(sess),
-		signS3:            s3.New(signSess),
+		client:            client,
+		presign:           s3.NewPresignClient(client),
+		signPresign:       s3.NewPresignClient(signClient),
 		bucket:            bucket,
 		expire:            60 * time.Minute,
-		checksumAlgorithm: "SHA256",
+		checksumAlgorithm: types.ChecksumAlgorithmSha256,
 	}
 }
 
 func (s *s3Storage) SignGet(oid string) (string, error) {
 	key := path.Join(s.basePath, transformKey(oid))
-	req, _ := s.signS3.GetObjectRequest(&s3.GetObjectInput{
+	req, err := s.signPresign.PresignGetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
-	})
-	urlStr, err := req.Presign(s.expire)
+	}, s3.WithPresignExpires(s.expire))
 	if err != nil {
 		return "", err
 	}
-	return urlStr, nil
+	return req.URL, nil
 }
 
 func hexToBase64(hexStr string) (string, error) {
@@ -88,17 +93,16 @@ func (s *s3Storage) SignPut(oid string) (string, error) {
 		return "", err
 	}
 	key := path.Join(s.basePath, transformKey(oid))
-	req, _ := s.signS3.PutObjectRequest(&s3.PutObjectInput{
+	req, err := s.signPresign.PresignPutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:            &s.bucket,
 		Key:               &key,
-		ChecksumAlgorithm: &s.checksumAlgorithm,
+		ChecksumAlgorithm: s.checksumAlgorithm,
 		ChecksumSHA256:    &sha256,
-	})
-	urlStr, err := req.Presign(s.expire)
+	}, s3.WithPresignExpires(s.expire))
 	if err != nil {
 		return "", err
 	}
-	return urlStr, nil
+	return req.URL, nil
 }
 
 func (s *s3Storage) Put(oid string, r io.Reader, size int64) error {
@@ -108,21 +112,26 @@ func (s *s3Storage) Put(oid string, r io.Reader, size int64) error {
 	}
 
 	key := path.Join(s.basePath, transformKey(oid))
-	req, _ := s.s3.PutObjectRequest(&s3.PutObjectInput{
+	req, err := s.presign.PresignPutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:            &s.bucket,
 		Key:               &key,
 		ContentLength:     &size,
-		ChecksumAlgorithm: &s.checksumAlgorithm,
+		ChecksumAlgorithm: s.checksumAlgorithm,
 		ChecksumSHA256:    &sha256,
-	})
-	urlStr, err := req.Presign(s.expire)
+	}, s3.WithPresignExpires(s.expire))
 	if err != nil {
 		return err
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPut, urlStr, r)
+	httpReq, err := http.NewRequest(http.MethodPut, req.URL, r)
 	if err != nil {
 		return err
+	}
+	// the presigned URL is only valid when all signed headers are sent
+	for k, vs := range req.SignedHeader {
+		for _, v := range vs {
+			httpReq.Header.Add(k, v)
+		}
 	}
 	httpReq.ContentLength = size
 	resp, err := http.DefaultClient.Do(httpReq)
@@ -140,7 +149,7 @@ func (s *s3Storage) Put(oid string, r io.Reader, size int64) error {
 
 func (s *s3Storage) Info(oid string) (os.FileInfo, error) {
 	key := path.Join(s.basePath, transformKey(oid))
-	output, err := s.s3.HeadObject(&s3.HeadObjectInput{
+	output, err := s.client.HeadObject(context.Background(), &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
@@ -152,8 +161,8 @@ func (s *s3Storage) Info(oid string) (os.FileInfo, error) {
 	}
 	return &s3FileInfo{
 		key:          key,
-		size:         *output.ContentLength,
-		lastModified: *output.LastModified,
+		size:         aws.ToInt64(output.ContentLength),
+		lastModified: aws.ToTime(output.LastModified),
 	}, nil
 }
 
@@ -194,10 +203,11 @@ func (s *s3Storage) Exists(oid string) bool {
 }
 
 func isNotFoundError(err error) bool {
-	if aerr, ok := err.(s3.RequestFailure); ok {
-		if aerr.StatusCode() == 404 {
-			return true
-		}
+	var nf *types.NotFound
+	if errors.As(err, &nf) {
+		return true
 	}
-	return false
+	// S3-compatible stores may return a bare 404 without the NotFound error code
+	var re *awshttp.ResponseError
+	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusNotFound
 }
