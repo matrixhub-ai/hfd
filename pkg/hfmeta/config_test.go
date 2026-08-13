@@ -1,14 +1,14 @@
-package hf_test
+package hfmeta_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/pkg/hf"
+	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
 )
 
 func TestParseConfigData_ModelType(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type": "bert"}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type": "bert"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestParseConfigData_ModelType(t *testing.T) {
 }
 
 func TestParseConfigData_UnknownFieldsIgnored(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type":"gpt2","hidden_size":768,"vocab_size":50257}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type":"gpt2","hidden_size":768,"vocab_size":50257}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestParseConfigData_UnknownFieldsIgnored(t *testing.T) {
 }
 
 func TestParseConfigData_NoModelType(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"hidden_size":768}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"hidden_size":768}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestParseConfigData_NoModelType(t *testing.T) {
 }
 
 func TestConfigData_Tags_Single(t *testing.T) {
-	cfg := &hf.ConfigData{ModelType: "llama"}
+	cfg := &hfmeta.ConfigData{ModelType: "llama"}
 	tags := cfg.Tags()
 	if len(tags) != 1 || tags[0] != "llama" {
 		t.Errorf("expected [llama], got %v", tags)
@@ -49,14 +49,14 @@ func TestConfigData_Tags_Single(t *testing.T) {
 }
 
 func TestConfigData_Tags_Empty(t *testing.T) {
-	cfg := &hf.ConfigData{}
+	cfg := &hfmeta.ConfigData{}
 	if tags := cfg.Tags(); len(tags) != 0 {
 		t.Errorf("expected no tags for empty config, got %v", tags)
 	}
 }
 
 func TestParseConfigData_NoQuantizationConfig(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type":"bert"}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type":"bert"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestParseConfigData_NoQuantizationConfig(t *testing.T) {
 }
 
 func TestParseConfigData_EmptyQuantType(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type":"bert","quantization_config":{}}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type":"bert","quantization_config":{}}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,14 +82,14 @@ func TestParseConfigData_EmptyQuantType(t *testing.T) {
 }
 
 func TestParseConfigData_InvalidJSON(t *testing.T) {
-	_, err := hf.ParseConfigData(strings.NewReader(`not json`))
+	_, err := hfmeta.ParseConfigData(strings.NewReader(`not json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
 }
 
 func TestParseConfigData_TrustRemoteCodeFalse(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type":"bert","trust_remote_code":false}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type":"bert","trust_remote_code":false}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestParseConfigData_TrustRemoteCodeFalse(t *testing.T) {
 }
 
 func TestParseConfigData_TrustRemoteCodeAbsent(t *testing.T) {
-	cfg, err := hf.ParseConfigData(strings.NewReader(`{"model_type":"bert"}`))
+	cfg, err := hfmeta.ParseConfigData(strings.NewReader(`{"model_type":"bert"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

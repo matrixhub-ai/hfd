@@ -2,12 +2,14 @@ package hf
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -211,6 +213,84 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string, write
 	return repository.Open(repoPath)
 }
 
+// checkPermission runs the permission hook and writes the failure response.
+// It returns true when the operation may proceed.
+func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string, permCtx permission.Context) bool {
+	if h.permissionHookFunc == nil {
+		return true
+	}
+	ok, err := h.permissionHookFunc(r.Context(), op, repoName, permCtx)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "permission hook error", "op", op, "repo", repoName, "error", err)
+		responseJSON(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	if !ok {
+		responseJSON(w, "permission denied", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// resolveRepoPath resolves storageName to its storage path, writing a 404
+// naming displayName when it cannot be resolved.
+func (h *Handler) resolveRepoPath(w http.ResponseWriter, storageName, displayName string) (string, bool) {
+	repoPath := h.storage.ResolvePath(storageName)
+	if repoPath == "" {
+		responseJSON(w, fmt.Errorf("repository %q not found", displayName), http.StatusNotFound)
+		return "", false
+	}
+	return repoPath, true
+}
+
+// openRepoChecked opens the repository via the pre-open hook, mapping open
+// errors to HTTP responses.
+func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPath, repoName string, write bool) (*repository.Repository, bool) {
+	repo, err := h.openRepo(r.Context(), repoPath, repoName, write)
+	if err != nil {
+		respondOpenRepoError(w, repoName, err)
+		return nil, false
+	}
+	return repo, true
+}
+
+// openRepoDirect opens the repository without the pre-open hook, for
+// operations that must not trigger a mirror sync (delete/move/squash).
+func (h *Handler) openRepoDirect(w http.ResponseWriter, repoPath, displayName string) (*repository.Repository, bool) {
+	repo, err := repository.Open(repoPath)
+	if err != nil {
+		respondOpenRepoError(w, displayName, err)
+		return nil, false
+	}
+	return repo, true
+}
+
+func respondOpenRepoError(w http.ResponseWriter, repoName string, err error) {
+	if errors.Is(err, repository.ErrRepositoryNotExists) {
+		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
+		return
+	}
+	responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
+}
+
+// checkPreReceive runs the pre-receive hook and writes the failure response.
+// It returns true when the ref updates may proceed.
+func (h *Handler) checkPreReceive(w http.ResponseWriter, r *http.Request, repoName string, updates []receive.RefUpdate, denyMsg string) bool {
+	if h.preReceiveHookFunc == nil {
+		return true
+	}
+	ok, err := h.preReceiveHookFunc(r.Context(), repoName, updates)
+	if err != nil {
+		responseJSON(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	if !ok {
+		responseJSON(w, denyMsg, http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) preOpenHook(ctx context.Context, repoName string, write bool) error {
 	if h.preOpenHookFunc == nil {
 		return nil
@@ -231,40 +311,5 @@ func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {
-	header := w.Header()
-	if header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "application/json; charset=utf-8")
-	}
-
-	if sc >= http.StatusBadRequest {
-		header.Del("Content-Length")
-		header.Set("X-Content-Type-Options", "nosniff")
-	}
-
-	if sc != 0 {
-		w.WriteHeader(sc)
-	}
-
-	if data == nil {
-		_, _ = w.Write([]byte("{}"))
-		return
-	}
-
-	switch t := data.(type) {
-	case error:
-		var dataErr struct {
-			Error string `json:"error"`
-		}
-		dataErr.Error = t.Error()
-		data = dataErr
-	case string:
-		var dataErr struct {
-			Error string `json:"error"`
-		}
-		dataErr.Error = t
-		data = dataErr
-	}
-
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(data)
+	httpapi.RespondJSON(w, data, sc)
 }

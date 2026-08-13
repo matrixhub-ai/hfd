@@ -1,12 +1,12 @@
 package lfs
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -118,40 +118,5 @@ func (h *Handler) registryLFSLock(r *mux.Router) {
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {
-	header := w.Header()
-	if header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "application/json; charset=utf-8")
-	}
-
-	if sc >= http.StatusBadRequest {
-		header.Del("Content-Length")
-		header.Set("X-Content-Type-Options", "nosniff")
-	}
-
-	if sc != 0 {
-		w.WriteHeader(sc)
-	}
-
-	if data == nil {
-		_, _ = w.Write([]byte("{}"))
-		return
-	}
-
-	switch t := data.(type) {
-	case error:
-		var dataErr struct {
-			Error string `json:"error"`
-		}
-		dataErr.Error = t.Error()
-		data = dataErr
-	case string:
-		var dataErr struct {
-			Error string `json:"error"`
-		}
-		dataErr.Error = t
-		data = dataErr
-	}
-
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(data)
+	httpapi.RespondJSON(w, data, sc)
 }

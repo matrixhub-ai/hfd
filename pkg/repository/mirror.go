@@ -22,21 +22,6 @@ import (
 	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
-// MirrorSourceFunc defines a function type for determining the source URL of a repository mirror.
-// It receives the repository name and returns the source URL, a boolean indicating whether
-// the mirror should be enabled for this repository, and an error if any occurs during the process.
-type MirrorSourceFunc func(ctx context.Context, repoName string) (string, bool, error)
-
-// MirrorDestinationFunc defines a function type for determining the destination URL of a repository push mirror.
-// It receives the repository name and returns the destination URL, a boolean indicating whether
-// push mirroring is enabled for this repository, and an error if any occurs during the process.
-type MirrorDestinationFunc func(ctx context.Context, repoName string) (string, bool, error)
-
-// MirrorRefFilterFunc filters which refs should be synced during mirror operations.
-// It receives the repository name and a list of remote ref names (e.g. "refs/heads/main",
-// "refs/tags/v1.0") and returns the filtered list of refs to sync.
-type MirrorRefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
-
 // InitMirror initializes a new bare git repository at repoPath.
 // The returned Repository is ready to be used as a mirror of the source repository.
 func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {

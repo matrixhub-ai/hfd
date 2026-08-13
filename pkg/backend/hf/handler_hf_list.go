@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/matrixhub-ai/hfd/pkg/hf"
+	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -215,7 +215,7 @@ func collectRepoMetadata(repo *repository.Repository, rev string) repoMetadata {
 	// README.md YAML front matter
 	if blob, err := repo.Blob(rev, "README.md"); err == nil {
 		if rc, err := blob.NewReader(); err == nil {
-			if rm, err := hf.ParseReadme(rc); err == nil {
+			if rm, err := hfmeta.ParseReadme(rc); err == nil {
 				for _, tag := range rm.Tags() {
 					addTag(tag)
 				}
@@ -230,7 +230,7 @@ func collectRepoMetadata(repo *repository.Repository, rev string) repoMetadata {
 	// config.json
 	if blob, err := repo.Blob(rev, "config.json"); err == nil {
 		if rc, err := blob.NewReader(); err == nil {
-			if cfg, err := hf.ParseConfigData(rc); err == nil {
+			if cfg, err := hfmeta.ParseConfigData(rc); err == nil {
 				for _, tag := range cfg.Tags() {
 					addTag(tag)
 				}

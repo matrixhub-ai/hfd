@@ -12,7 +12,7 @@ import (
 func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
 	blobIter, err := r.repo.BlobObjects()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get blob objects: %v", err)
+		return nil, fmt.Errorf("failed to get blob objects: %w", err)
 	}
 
 	result := []*lfs.Pointer{}

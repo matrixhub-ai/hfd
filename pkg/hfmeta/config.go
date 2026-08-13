@@ -1,4 +1,4 @@
-package hf
+package hfmeta
 
 import (
 	"encoding/json"

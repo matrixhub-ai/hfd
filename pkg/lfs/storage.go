@@ -1,3 +1,9 @@
+// Package-level storage interfaces follow the capability pattern: Storage is
+// the base contract, and backends advertise optional capabilities through the
+// narrow interfaces below. Callers select behavior with type assertions:
+//
+//	local (NewLocal): Getter + MovePutter — direct content access
+//	S3 (NewS3):       SignGetter + SignPutter — presigned URL redirection
 package lfs
 
 import (
@@ -6,7 +12,7 @@ import (
 )
 
 // Storage is the base interface for LFS storage backends.
-// Both file system (Content) and S3 backends implement this interface.
+// Both the local filesystem and S3 backends implement this interface.
 type Storage interface {
 	Put(oid string, r io.Reader, size int64) error
 	Info(oid string) (os.FileInfo, error)
@@ -14,7 +20,7 @@ type Storage interface {
 }
 
 // Getter is implemented by stores that support direct content retrieval.
-// Content storage implements this; S3 does not — use SignGetter instead.
+// The local backend implements this; S3 does not — use SignGetter instead.
 type Getter interface {
 	Get(oid string) (io.ReadSeekCloser, os.FileInfo, error)
 }

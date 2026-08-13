@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/netutil"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/wzshiming/dl"
 	"github.com/wzshiming/ioswmr"
@@ -99,9 +99,9 @@ func newTeeCache(storage lfs.Storage, concurrency int, enablePullXET, enablePush
 	}
 
 	p := &teeCache{
-		httpClient:         utils.HTTPClient,
+		httpClient:         netutil.HTTPClient,
 		storage:            storage,
-		lfsClient:          lfs.NewClient(utils.HTTPClient),
+		lfsClient:          lfs.NewClient(netutil.HTTPClient),
 		enablePullXET:      enablePullXET,
 		enablePushXET:      enablePushXET,
 		concurrency:        concurrency,

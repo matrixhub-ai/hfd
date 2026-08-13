@@ -1,10 +1,10 @@
-package hf_test
+package hfmeta_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/matrixhub-ai/hfd/pkg/hf"
+	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
 )
 
 func TestReadme_RepoTags_EvalResults(t *testing.T) {
@@ -25,7 +25,7 @@ func TestReadme_RepoTags_EvalResults(t *testing.T) {
 		"---\n" +
 		"# Model\n"
 
-	rm, err := hf.ParseReadme(strings.NewReader(readme))
+	rm, err := hfmeta.ParseReadme(strings.NewReader(readme))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestReadme_RepoTags_NoEvalResults(t *testing.T) {
 		"---\n" +
 		"# Model\n"
 
-	rm, err := hf.ParseReadme(strings.NewReader(readme))
+	rm, err := hfmeta.ParseReadme(strings.NewReader(readme))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestReadme_RepoTags_AllSources(t *testing.T) {
 		"# My Model\n\n" +
 		"See https://arxiv.org/abs/2310.06825 for details.\n"
 
-	rm, err := hf.ParseReadme(strings.NewReader(readme))
+	rm, err := hfmeta.ParseReadme(strings.NewReader(readme))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -20,6 +20,12 @@ type localStorage struct {
 	basePath string
 }
 
+var (
+	_ Storage    = (*localStorage)(nil)
+	_ Getter     = (*localStorage)(nil)
+	_ MovePutter = (*localStorage)(nil)
+)
+
 // NewLocal creates a new local file system based Store. The basePath is the root directory where objects will be stored.
 func NewLocal(basePath string) Storage {
 	return &localStorage{basePath: basePath}

@@ -8,7 +8,7 @@
 //   - https://huggingface.co/docs/hub/en/model-cards
 //   - https://huggingface.co/docs/hub/en/datasets-cards
 //   - https://github.com/huggingface/hub-docs/blob/main/modelcard.md
-package hf
+package hfmeta
 
 import (
 	"bytes"

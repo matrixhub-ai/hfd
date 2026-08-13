@@ -25,7 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func newMirrorSourceFunc(baseURL string) repository.MirrorSourceFunc {
+func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	return func(ctx context.Context, repoName string) (string, bool, error) {
 		return baseURL + "/" + repoName, true, nil
@@ -50,7 +50,7 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror, storage *storage.Storage)
 		if repoPath == "" {
 			return fmt.Errorf("repository path not found for %s", repoName)
 		}
-		return sharedMirror.PullFromRemote(ctx, repoPath, repoName)
+		return sharedMirror.PullFromRemote(ctx, repoPath, repoName, nil)
 	}
 }
 
@@ -340,7 +340,7 @@ func TestSSHProxyMirror(t *testing.T) {
 
 // setupProxyServerWithRefFilter creates a proxy HTTP server that mirrors repositories
 // from upstreamURL on demand, applying the given ref filter.
-func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter repository.MirrorRefFilterFunc) (*httptest.Server, string) {
+func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter mirror.RefFilterFunc) (*httptest.Server, string) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "proxy-ref-filter-e2e-data")

@@ -2,11 +2,11 @@ package backend
 
 import (
 	"context"
-	"io"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -119,23 +119,5 @@ func (h *Handler) registryGit(r *mux.Router) {
 }
 
 func responseText(w http.ResponseWriter, text string, sc int) {
-	header := w.Header()
-	if header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "text/plain; charset=utf-8")
-	}
-
-	if sc >= http.StatusBadRequest {
-		header.Del("Content-Length")
-		header.Set("X-Content-Type-Options", "nosniff")
-	}
-
-	if sc != 0 {
-		w.WriteHeader(sc)
-	}
-
-	if text == "" {
-		return
-	}
-
-	_, _ = io.WriteString(w, text)
+	httpapi.RespondText(w, text, sc)
 }
