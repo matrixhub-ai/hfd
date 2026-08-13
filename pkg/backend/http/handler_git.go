@@ -31,10 +31,11 @@ func gitProtocol(r *http.Request) string {
 // request bodies larger than 1KiB (remote-curl.c post_rpc), and git
 // http-backend inflates them the same way (http-backend.c inflate_request).
 func requestBody(r *http.Request) (io.ReadCloser, error) {
-	if r.Header.Get("Content-Encoding") != "gzip" {
-		return r.Body, nil
+	switch r.Header.Get("Content-Encoding") {
+	case "gzip", "x-gzip":
+		return gzip.NewReader(r.Body)
 	}
-	return gzip.NewReader(r.Body)
+	return r.Body, nil
 }
 
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.

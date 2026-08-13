@@ -43,6 +43,12 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 	}
 }
 
+// maxUploadPackRequestSize caps a buffered v0 upload-pack request body,
+// matching git http-backend's http.maxRequestBuffer default. Negotiation
+// bodies are small (wants plus replayed haves); the cap guards against
+// oversized or decompression-bomb payloads on this unauthenticated path.
+const maxUploadPackRequestSize = 10 << 20
+
 // serveStatelessUploadPackV0 serves one stateless-RPC git-upload-pack request
 // for wire protocol v0/v1.
 //
@@ -53,9 +59,12 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 // without "done" are therefore answered here with a single ACK/NAK round,
 // exactly like git http-backend; final rounds are delegated to go-git.
 func (r *Repository) serveStatelessUploadPackV0(ctx context.Context, output io.Writer, input io.Reader, gitProtocol string) error {
-	body, err := io.ReadAll(input)
+	body, err := io.ReadAll(io.LimitReader(input, maxUploadPackRequestSize+1))
 	if err != nil {
 		return fmt.Errorf("reading upload-pack request: %w", err)
+	}
+	if len(body) > maxUploadPackRequestSize {
+		return fmt.Errorf("upload-pack request larger than maximum size %d", maxUploadPackRequestSize)
 	}
 
 	if uploadPackRequestHasDone(body) {
@@ -87,7 +96,8 @@ func uploadPackRequestHasDone(body []byte) bool {
 // serveUploadPackNegotiationRound answers a single v0/v1 negotiation round
 // that did not conclude with "done": common objects are acknowledged
 // according to the negotiated multi_ack capability and the round is closed
-// with NAK, mirroring git upload-pack's get_common_commits.
+// with NAK. Unlike C git, the NAK is sent even when commons were found;
+// fetch-pack treats NAK as the round terminator either way.
 func (r *Repository) serveUploadPackNegotiationRound(body io.Reader, output io.Writer) error {
 	rd := bufio.NewReader(body)
 

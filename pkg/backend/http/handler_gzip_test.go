@@ -98,6 +98,9 @@ func TestHTTPGitGzipRequestBody(t *testing.T) {
 			t.Fatalf("gzip close: %v", err)
 		}
 		requirePackResponse(t, post(t, bytes.NewReader(compressed.Bytes()), "gzip"))
+
+		// http-backend.c accepts the legacy x-gzip alias as well.
+		requirePackResponse(t, post(t, bytes.NewReader(compressed.Bytes()), "x-gzip"))
 	})
 
 	t.Run("CorruptGzipBodyRejected", func(t *testing.T) {

@@ -86,6 +86,27 @@ func TestUploadPackRequestHasDone(t *testing.T) {
 	}
 }
 
+func TestStatelessUploadPackRequestSizeLimit(t *testing.T) {
+	ctx := t.Context()
+	root := t.TempDir()
+
+	bare, _ := buildParityUpstream(t, root)
+	repo, err := Open(bare)
+	if err != nil {
+		t.Fatalf("open repository: %v", err)
+	}
+
+	oversized := bytes.NewReader(make([]byte, maxUploadPackRequestSize+1))
+	var out bytes.Buffer
+	err = repo.Stateless(ctx, &out, oversized, GitUploadPack, "", ReceivePackHooks{})
+	if err == nil || !strings.Contains(err.Error(), "maximum size") {
+		t.Fatalf("oversized request should be rejected, got err=%v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("oversized request should produce no output, got %d bytes", out.Len())
+	}
+}
+
 func TestStatelessUploadPackNegotiationRound(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
