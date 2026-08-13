@@ -277,7 +277,7 @@ func TestPushMirrorRefsPrune(t *testing.T) {
 		pushPrune(t, destB, mapped)
 
 		want = map[string]string{
-			"refs/mirror/main":     localRefs["refs/heads/main"],
+			"refs/mirror/main":      localRefs["refs/heads/main"],
 			"refs/heads/standalone": localRefs["refs/heads/main"],
 		}
 		requireSameRefs(t, "mapped destination refs after prune", gitLocalRefs(t, destB), want)
