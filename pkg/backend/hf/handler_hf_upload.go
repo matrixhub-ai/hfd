@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -76,14 +75,8 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationCreateRepo, storageName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	if !h.checkPermission(w, r, permission.OperationCreateRepo, storageName, permission.Context{}) {
+		return
 	}
 
 	user, ok := authenticate.GetUserInfo(r.Context())
@@ -156,14 +149,8 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
+		return
 	}
 
 	var req preuploadRequest
@@ -172,19 +159,12 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := h.storage.ResolvePath(ri.RepoName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository not found"), http.StatusNotFound)
+	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
+	if !ok {
 		return
 	}
-
-	repo, err := repository.Open(repoPath)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+	repo, ok := h.openRepoDirect(w, repoPath, ri.RepoName)
+	if !ok {
 		return
 	}
 
@@ -219,16 +199,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationUpdateRepo, ri.RepoName, permission.Context{
-			Ref: rev,
-		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
+		return
 	}
 
 	user, ok := authenticate.GetUserInfo(r.Context())
@@ -239,9 +211,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	repoPath := h.storage.ResolvePath(ri.RepoName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
+	if !ok {
 		return
 	}
 
@@ -337,13 +308,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open the repository
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, true)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, true)
+	if !ok {
 		return
 	}
 
@@ -356,13 +322,9 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 				oldRev = receive.ZeroHash
 			}
 		}
-		if ok, err := h.preReceiveHookFunc(r.Context(), ri.RepoName, []receive.RefUpdate{
+		if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
 			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoName),
-		}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "pre-receive hook denied the commit", http.StatusForbidden)
+		}, "pre-receive hook denied the commit") {
 			return
 		}
 	}

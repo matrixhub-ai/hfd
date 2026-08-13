@@ -3,7 +3,6 @@ package hf
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,29 +28,15 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
-	}
-
-	repoPath := h.storage.ResolvePath(ri.RepoName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
+	if !ok {
+		return
+	}
+	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, false)
+	if !ok {
 		return
 	}
 
@@ -114,29 +99,15 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
-	}
-
-	repoPath := h.storage.ResolvePath(ri.RepoName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
+	if !ok {
+		return
+	}
+	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, false)
+	if !ok {
 		return
 	}
 
@@ -166,29 +137,15 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if h.permissionHookFunc != nil {
-		if ok, err := h.permissionHookFunc(r.Context(), permission.OperationReadRepo, ri.RepoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
-	}
-
-	repoPath := h.storage.ResolvePath(ri.RepoName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-
-	repo, err := h.openRepo(r.Context(), repoPath, ri.RepoName, false)
-	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
-			responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
+	if !ok {
+		return
+	}
+	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, false)
+	if !ok {
 		return
 	}
 
