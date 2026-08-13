@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/matrixhub-ai/hfd/internal/utils"
+	"github.com/matrixhub-ai/hfd/internal/netutil"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -483,7 +483,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 		return nil
 	}
 
-	lfsClient := lfs.NewClient(utils.HTTPClient)
+	lfsClient := lfs.NewClient(netutil.HTTPClient)
 
 	// When XET is enabled and the xet client is initialized, advertise the xet transfer
 	// protocol so the remote can select it. Fall back to a basic-only request on error.
@@ -543,7 +543,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 			continue
 		}
 
-		resp, err := utils.HTTPClient.Do(req)
+		resp, err := netutil.HTTPClient.Do(req)
 		_ = content.Close()
 		if err != nil {
 			slog.WarnContext(ctx, "LFS push mirror: failed to upload object", "oid", obj.Oid, "error", err)
@@ -564,7 +564,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 				continue
 			}
 			verifyReq.Method = http.MethodPost
-			verifyResp, err := utils.HTTPClient.Do(verifyReq)
+			verifyResp, err := netutil.HTTPClient.Do(verifyReq)
 			if err != nil {
 				slog.WarnContext(ctx, "LFS push mirror: failed to verify object", "oid", obj.Oid, "error", err)
 				continue
@@ -603,7 +603,7 @@ func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, veri
 			return nil
 		}
 		verifyReq.Method = http.MethodPost
-		verifyResp, err := utils.HTTPClient.Do(verifyReq)
+		verifyResp, err := netutil.HTTPClient.Do(verifyReq)
 		if err != nil {
 			slog.WarnContext(ctx, "LFS push mirror: failed to verify XET upload", "oid", oid, "error", err)
 			return nil
