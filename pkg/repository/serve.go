@@ -231,7 +231,18 @@ func (r *Repository) transportHooks(hooks ReceivePackHooks) transport.ReceivePac
 func (r *Repository) refUpdates(commands []*packp.Command) []receive.RefUpdate {
 	updates := make([]receive.RefUpdate, 0, len(commands))
 	for _, cmd := range commands {
-		updates = append(updates, receive.NewRefUpdate(cmd.Old.String(), cmd.New.String(), cmd.Name.String(), r.repoPath))
+		updates = append(updates, r.RefUpdate(cmd.Old.String(), cmd.New.String(), cmd.Name.String()))
 	}
 	return updates
+}
+
+// RefUpdate returns a receive.RefUpdate bound to this repository for
+// force-push detection.
+func (r *Repository) RefUpdate(oldRev, newRev, refName string) receive.RefUpdate {
+	return receive.NewRefUpdate(oldRev, newRev, refName, r.repo)
+}
+
+// DiffRefs computes ref updates of this repository between two ref snapshots.
+func (r *Repository) DiffRefs(before, after map[string]string) []receive.RefUpdate {
+	return receive.DiffRefs(before, after, r.repo)
 }

@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
 // gitOut runs git and returns its stdout, failing the test on error.
@@ -458,7 +460,7 @@ func TestGitParityPullMirrorRefs(t *testing.T) {
 			sourceURL := tr.url(bare)
 
 			goGitMirror := filepath.Join(root, "gogit-mirror.git")
-			repo, err := InitMirror(ctx, goGitMirror, sourceURL)
+			repo, err := InitMirror(ctx, osfs.Default, goGitMirror, sourceURL)
 			if err != nil {
 				t.Fatalf("init go-git mirror: %v", err)
 			}
@@ -585,7 +587,7 @@ func TestGitParityPushMirrorRefs(t *testing.T) {
 			// The local repository whose refs are mirrored outward; the
 			// upstream fixture doubles as that local repository here.
 			localBare, work := buildParityUpstream(t, root)
-			repo, err := Open(localBare)
+			repo, err := Open(osfs.Default, localBare)
 			if err != nil {
 				t.Fatalf("open local repository: %v", err)
 			}

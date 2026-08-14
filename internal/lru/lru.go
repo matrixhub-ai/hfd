@@ -53,7 +53,7 @@ func (c *Cache[K, V]) Add(key K, value V) {
 	ele := c.ll.PushFront(&entry[K, V]{key, value})
 	c.cache[key] = ele
 	if c.MaxEntries != 0 && c.ll.Len() > c.MaxEntries {
-		c.RemoveOldest()
+		c.removeOldestLocked()
 	}
 }
 
@@ -92,7 +92,7 @@ func (c *Cache[K, V]) GetOrNew(key K, newFunc func() (V, bool)) (value V, ok boo
 	ele := c.ll.PushFront(&entry[K, V]{key, value})
 	c.cache[key] = ele
 	if c.MaxEntries != 0 && c.ll.Len() > c.MaxEntries {
-		c.RemoveOldest()
+		c.removeOldestLocked()
 	}
 	return value, true
 }
@@ -115,6 +115,11 @@ func (c *Cache[K, V]) RemoveOldest() {
 	c.mut.Lock()
 	defer c.mut.Unlock()
 
+	c.removeOldestLocked()
+}
+
+// removeOldestLocked removes the oldest item; the caller holds the mutex.
+func (c *Cache[K, V]) removeOldestLocked() {
 	if c.cache == nil {
 		return
 	}

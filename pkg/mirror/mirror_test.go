@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -17,7 +18,7 @@ import (
 func initSourceRepo(t *testing.T, root, name string) (*repository.Repository, string) {
 	t.Helper()
 	path := filepath.Join(root, name+".git")
-	repo, err := repository.Init(context.Background(), path, "main")
+	repo, err := repository.Init(context.Background(), osfs.Default, path, "main")
 	if err != nil {
 		t.Fatalf("init source repo: %v", err)
 	}
@@ -37,7 +38,7 @@ func addCommit(t *testing.T, repo *repository.Repository, rev, file, content str
 
 func refsAt(t *testing.T, path string) map[string]string {
 	t.Helper()
-	repo, err := repository.Open(path)
+	repo, err := repository.Open(osfs.Default, path)
 	if err != nil {
 		t.Fatalf("open repo %s: %v", path, err)
 	}
@@ -220,7 +221,7 @@ func TestPushToRemotePushesAllRefs(t *testing.T) {
 	addCommit(t, local, "dev", "dev.txt", "dev\n")
 
 	destPath := filepath.Join(root, "dest.git")
-	if _, err := repository.Init(context.Background(), destPath, "main"); err != nil {
+	if _, err := repository.Init(context.Background(), osfs.Default, destPath, "main"); err != nil {
 		t.Fatalf("init dest repo: %v", err)
 	}
 
@@ -247,7 +248,7 @@ func TestPushToRemoteSpecificRefsOnly(t *testing.T) {
 	addCommit(t, local, "dev", "dev.txt", "dev\n")
 
 	destPath := filepath.Join(root, "dest.git")
-	if _, err := repository.Init(context.Background(), destPath, "main"); err != nil {
+	if _, err := repository.Init(context.Background(), osfs.Default, destPath, "main"); err != nil {
 		t.Fatalf("init dest repo: %v", err)
 	}
 

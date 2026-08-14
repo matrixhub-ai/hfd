@@ -45,7 +45,7 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 		return nil
 	}
 
-	repo, err := repository.Open(repoPath)
+	repo, err := repository.Open(m.repositoriesFS, repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}

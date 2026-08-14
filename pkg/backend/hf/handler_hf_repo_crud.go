@@ -71,13 +71,13 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPath := h.storage.ResolvePath(fromName)
+	fromPath := repository.ResolvePath(fromName)
 	if fromPath == "" {
 		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
 		return
 	}
 
-	toPath := h.storage.ResolvePath(toName)
+	toPath := repository.ResolvePath(toName)
 	if toPath == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
 		return
@@ -89,7 +89,7 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check that destination doesn't already exist
-	if repository.IsRepository(toPath) {
+	if repository.IsRepository(h.storage.RepositoriesFS(), toPath) {
 		responseJSON(w, fmt.Errorf("destination repository %q already exists", req.ToRepo), http.StatusConflict)
 		return
 	}
@@ -114,7 +114,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !repository.IsRepository(repoPath) {
+	if !repository.IsRepository(h.storage.RepositoriesFS(), repoPath) {
 		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
 		return
 	}

@@ -16,20 +16,15 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "hf-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "hf-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStorage := lfs.NewLocal(storage.LFSDir())
+	storage := newTestStorage(t, dataDir)
+	lfsStorage := lfs.New(storage.LFSFS())
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler

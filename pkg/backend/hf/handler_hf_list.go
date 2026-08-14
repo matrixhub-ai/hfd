@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/go-git/go-billy/v6"
 	"github.com/gorilla/mux"
 	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -56,16 +56,15 @@ func parseRepoListFilter(r *http.Request) repoListFilter {
 func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoType string) {
 	f := parseRepoListFilter(r)
 
-	reposDir := h.storage.RepositoriesDir()
 	isModel := repoType == "models"
 
-	baseDir := reposDir
+	baseDir := "/"
 	if !isModel {
-		baseDir = filepath.Join(reposDir, repoType)
+		baseDir = filepath.Join("/", repoType)
 	}
 
-	entries := discoverRepos(baseDir, isModel, f.author)
-	items := buildRepoListItems(entries, isModel, f.search, f.filterTags)
+	entries := discoverRepos(h.storage.RepositoriesFS(), baseDir, isModel, f.author)
+	items := buildRepoListItems(h.storage.RepositoriesFS(), entries, isModel, f.search, f.filterTags)
 
 	// Sort results
 	sortRepoItems(items, f.sortField)
@@ -101,11 +100,11 @@ type repoEntry struct {
 
 // discoverRepos walks the base directory and returns all valid repository entries,
 // applying namespace-level filters (author, skipping non-model prefixes).
-func discoverRepos(baseDir string, isModel bool, author string) []repoEntry {
+func discoverRepos(fs billy.Filesystem, baseDir string, isModel bool, author string) []repoEntry {
 	if author != "" {
-		return discoverReposInNamespace(filepath.Join(baseDir, author), author)
+		return discoverReposInNamespace(fs, filepath.Join(baseDir, author), author)
 	}
-	namespaces, err := os.ReadDir(baseDir)
+	namespaces, err := fs.ReadDir(baseDir)
 	if err != nil {
 		return nil
 	}
@@ -121,14 +120,14 @@ func discoverRepos(baseDir string, isModel bool, author string) []repoEntry {
 		if isModel && (nsName == "datasets" || nsName == "spaces") {
 			continue
 		}
-		entries = append(entries, discoverReposInNamespace(filepath.Join(baseDir, nsName), nsName)...)
+		entries = append(entries, discoverReposInNamespace(fs, filepath.Join(baseDir, nsName), nsName)...)
 	}
 	return entries
 }
 
 // discoverReposInNamespace returns all valid repository entries within a single namespace directory.
-func discoverReposInNamespace(nsPath, nsName string) []repoEntry {
-	repos, err := os.ReadDir(nsPath)
+func discoverReposInNamespace(fs billy.Filesystem, nsPath, nsName string) []repoEntry {
+	repos, err := fs.ReadDir(nsPath)
 	if err != nil {
 		return nil
 	}
@@ -139,7 +138,7 @@ func discoverReposInNamespace(nsPath, nsName string) []repoEntry {
 			continue
 		}
 		repoPath := filepath.Join(nsPath, repoDir.Name())
-		if !repository.IsRepository(repoPath) {
+		if !repository.IsRepository(fs, repoPath) {
 			continue
 		}
 		name := strings.TrimSuffix(repoDir.Name(), ".git")
@@ -153,7 +152,7 @@ func discoverReposInNamespace(nsPath, nsName string) []repoEntry {
 
 // buildRepoListItems converts discovered repo entries into list items,
 // applying search and tag filters and reading metadata from each repository.
-func buildRepoListItems(entries []repoEntry, isModel bool, search string, filterTags []string) []repoListItem {
+func buildRepoListItems(fs billy.Filesystem, entries []repoEntry, isModel bool, search string, filterTags []string) []repoListItem {
 	var items []repoListItem
 	for _, e := range entries {
 		if search != "" && !strings.Contains(strings.ToLower(e.fullName), strings.ToLower(search)) {
@@ -167,7 +166,7 @@ func buildRepoListItems(entries []repoEntry, isModel bool, search string, filter
 			item.ModelID = e.fullName
 		}
 
-		if repo, err := repository.Open(e.repoPath); err == nil {
+		if repo, err := repository.Open(fs, e.repoPath); err == nil {
 			meta := collectRepoMetadata(repo, repo.DefaultBranch())
 			item.Tags = meta.tags
 			item.PipelineTag = meta.pipelineTag

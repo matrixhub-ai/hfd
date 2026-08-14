@@ -10,8 +10,13 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/helper/chroot"
+	"github.com/go-git/go-billy/v6/util"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/storage/filesystem"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -35,16 +40,22 @@ const (
 // Repository represents a Git repository and provides methods to interact with it.
 type Repository struct {
 	repo          *git.Repository
+	fs            billy.Filesystem
 	repoPath      string
 	defaultBranch atomic.Pointer[string]
 }
 
+// newStorer returns a go-git storer for the bare repository at repoPath on fs.
+func newStorer(fs billy.Filesystem, repoPath string) *filesystem.Storage {
+	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), cache.NewObjectLRUDefault(), filesystem.Options{})
+}
+
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
-func IsRepository(repoPath string) bool {
-	if _, ok := lruCache.Get(repoPath); ok {
+func IsRepository(fs billy.Filesystem, repoPath string) bool {
+	if _, ok := lruCache.Get(cacheKey{fs, repoPath}); ok {
 		return true
 	}
-	stat, err := os.Stat(filepath.Join(repoPath, "HEAD"))
+	stat, err := fs.Stat(filepath.Join(repoPath, "HEAD"))
 	if err == nil && stat.Size() != 0 {
 		return true
 	}
@@ -70,35 +81,42 @@ func IsValidGitProtocol(value string) bool {
 	return true
 }
 
-// Init initializes a new git repository at the given path with the specified default branch.
-func Init(ctx context.Context, repoPath string, defaultBranch string) (*Repository, error) {
-	_, err := git.PlainInit(repoPath, true, git.WithDefaultBranch(plumbing.NewBranchReferenceName(defaultBranch)))
+// Init initializes a new git repository on fs at the given path with the specified default branch.
+func Init(ctx context.Context, fs billy.Filesystem, repoPath string, defaultBranch string) (*Repository, error) {
+	_, err := git.Init(newStorer(fs, repoPath), git.WithDefaultBranch(plumbing.NewBranchReferenceName(defaultBranch)))
 	if err != nil {
-		_ = os.RemoveAll(repoPath)
+		_ = util.RemoveAll(fs, repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
 	}
 
-	repo, err := Open(repoPath)
+	repo, err := Open(fs, repoPath)
 	if err != nil {
-		_ = os.RemoveAll(repoPath)
+		_ = util.RemoveAll(fs, repoPath)
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	return repo, nil
 }
 
-var lruCache = lru.New[string, *Repository](128) // Cache up to 128 repositories in memory
+// cacheKey identifies an open repository by its filesystem and path.
+type cacheKey struct {
+	fs   billy.Filesystem
+	path string
+}
 
-// Open opens an existing git repository at the given path.
-func Open(repoPath string) (repo *Repository, err error) {
-	repo, ok := lruCache.GetOrNew(repoPath, func() (*Repository, bool) {
+var lruCache = lru.New[cacheKey, *Repository](128) // Cache up to 128 repositories in memory
+
+// Open opens an existing git repository on fs at the given path.
+func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
+	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
 		var r *git.Repository
-		r, err = git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
+		r, err = git.Open(newStorer(fs, repoPath), nil)
 		if err != nil {
 			return nil, false
 		}
 		return &Repository{
 			repo:     r,
+			fs:       fs,
 			repoPath: repoPath,
 		}, true
 
@@ -107,11 +125,6 @@ func Open(repoPath string) (repo *Repository, err error) {
 		return repo, nil
 	}
 	return nil, err
-}
-
-// RepoPath returns the filesystem path of the repository.
-func (r *Repository) RepoPath() string {
-	return r.repoPath
 }
 
 // SplitRevisionAndPath splits a refpath into a revision (branch or tag) and a file path.
@@ -161,7 +174,7 @@ func (r *Repository) DefaultBranch() string {
 
 func (r *Repository) parseDefaultBranch() string {
 	head := filepath.Join(r.repoPath, "HEAD")
-	data, err := os.ReadFile(head)
+	data, err := util.ReadFile(r.fs, head)
 	if err != nil {
 		return "main"
 	}
@@ -198,8 +211,8 @@ func (r *Repository) Branches() ([]string, error) {
 
 // Remove deletes the repository directory and all its contents from disk.
 func (r *Repository) Remove() error {
-	lruCache.Remove(r.repoPath)
-	return os.RemoveAll(r.repoPath)
+	lruCache.Remove(cacheKey{r.fs, r.repoPath})
+	return util.RemoveAll(r.fs, r.repoPath)
 }
 
 // validateRefName checks if a git rev name component is valid.
@@ -371,12 +384,12 @@ func (r *Repository) RefHash(refName plumbing.ReferenceName) (string, error) {
 
 // Move renames the repository directory to newPath.
 func (r *Repository) Move(newPath string) error {
-	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+	if err := r.fs.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
 		return err
 	}
-	lruCache.Remove(r.repoPath)
-	lruCache.Remove(newPath)
-	return os.Rename(r.repoPath, newPath)
+	lruCache.Remove(cacheKey{r.fs, r.repoPath})
+	lruCache.Remove(cacheKey{r.fs, newPath})
+	return r.fs.Rename(r.repoPath, newPath)
 }
 
 // DiskUsage returns the total disk usage of the repository in bytes.
@@ -384,7 +397,7 @@ func (r *Repository) Move(newPath string) error {
 // declared sizes of any LFS-tracked objects (from their pointer files).
 func (r *Repository) DiskUsage() (int64, error) {
 	var total int64
-	err := filepath.Walk(r.repoPath, func(_ string, info os.FileInfo, err error) error {
+	err := util.Walk(r.fs, r.repoPath, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

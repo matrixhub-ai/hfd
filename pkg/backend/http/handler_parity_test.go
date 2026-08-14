@@ -96,7 +96,7 @@ func newServeParityFixture(t *testing.T) *serveParityFixture {
 
 	// Production go-git handler on its own storage root.
 	goGitStorage := storage.NewStorage(storage.WithRootDir(filepath.Join(root, "gogit")))
-	goGitRepo := filepath.Join(goGitStorage.RepositoriesDir(), "repo.git")
+	goGitRepo := filepath.Join(root, "gogit", "repositories", "repo.git")
 	if err := os.MkdirAll(filepath.Dir(goGitRepo), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

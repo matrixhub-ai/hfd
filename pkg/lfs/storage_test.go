@@ -6,8 +6,9 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
 
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
@@ -19,7 +20,7 @@ func TestContentStorage(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	storage := lfs.NewLocal(dir)
+	storage := lfs.New(osfs.New(dir))
 
 	data := []byte("hello world")
 	hash := sha256.Sum256(data)
@@ -76,7 +77,7 @@ func oidOf(data []byte) string {
 }
 
 func TestPutSizeMismatch(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	oid := oidOf(data)
@@ -90,7 +91,7 @@ func TestPutSizeMismatch(t *testing.T) {
 }
 
 func TestPutHashMismatch(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	wrongOid := oidOf([]byte("other content"))
@@ -104,7 +105,7 @@ func TestPutHashMismatch(t *testing.T) {
 }
 
 func TestPutOverwriteIsIdempotent(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	oid := oidOf(data)
@@ -121,44 +122,8 @@ func TestPutOverwriteIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestMovePut(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
-
-	data := []byte("move me")
-	oid := oidOf(data)
-
-	src := filepath.Join(t.TempDir(), "upload.tmp")
-	if err := os.WriteFile(src, data, 0o644); err != nil {
-		t.Fatalf("write source file: %v", err)
-	}
-
-	if err := storage.(lfs.MovePutter).MovePut(oid, src); err != nil {
-		t.Fatalf("MovePut failed: %v", err)
-	}
-
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Fatalf("source file must be moved away, stat err = %v", err)
-	}
-	if !storage.Exists(oid) {
-		t.Fatal("object must exist after MovePut")
-	}
-
-	reader, _, err := storage.(lfs.Getter).Get(oid)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	defer reader.Close()
-	got, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("ReadAll failed: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("Get data = %q, want %q", got, data)
-	}
-}
-
 func TestGetAndInfoMissingObject(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	oid := oidOf([]byte("never stored"))
 	if _, _, err := storage.(lfs.Getter).Get(oid); err == nil {

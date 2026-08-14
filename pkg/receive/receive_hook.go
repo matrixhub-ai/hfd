@@ -37,21 +37,23 @@ type RefUpdate interface {
 	String() string
 }
 
-// NewRefUpdate creates a new RefUpdate instance with the given parameters.
-func NewRefUpdate(oldRev, newRev, refName, repoPath string) RefUpdate {
+// NewRefUpdate creates a new RefUpdate instance. repo is the repository the
+// update applies to, used for force-push detection; it may be nil when force
+// detection is not needed.
+func NewRefUpdate(oldRev, newRev, refName string, repo *git.Repository) RefUpdate {
 	return refUpdate{
-		oldRev:   oldRev,
-		newRev:   newRev,
-		refName:  refName,
-		repoPath: repoPath,
+		oldRev:  oldRev,
+		newRev:  newRev,
+		refName: refName,
+		repo:    repo,
 	}
 }
 
 type refUpdate struct {
-	oldRev   string
-	newRev   string
-	refName  string
-	repoPath string
+	oldRev  string
+	newRev  string
+	refName string
+	repo    *git.Repository
 }
 
 func (r refUpdate) OldRev() string {
@@ -97,15 +99,15 @@ func (r refUpdate) Name() string {
 	return r.refName
 }
 
-// IsForce checks if this ref update is a non-fast-forward (force) push by invoking the git merge-base command.
+// IsForce checks if this ref update is a non-fast-forward (force) push.
 func (r refUpdate) IsForce(ctx context.Context) (bool, error) {
 	if r.oldRev == BreakHash && r.newRev == BreakHash {
 		return true, nil
 	}
-	if r.repoPath == "" {
-		return false, fmt.Errorf("repo path is empty")
+	if r.repo == nil {
+		return false, fmt.Errorf("repository is nil")
 	}
-	return isForce(ctx, r.repoPath, r)
+	return isForce(ctx, r.repo, r)
 }
 
 // String returns a human-readable description of the ref update, e.g. "branch_create:main".
@@ -128,8 +130,7 @@ func (r refUpdate) String() string {
 
 // isForce checks if a branch update is a non-fast-forward (force) push.
 // Returns false for creates, deletes, tags, and non-branch refs.
-// repoPath is the filesystem path to the bare git repository.
-func isForce(ctx context.Context, repoPath string, r RefUpdate) (bool, error) {
+func isForce(ctx context.Context, repo *git.Repository, r RefUpdate) (bool, error) {
 	if r.IsCreate() || r.IsDelete() || !r.IsBranch() {
 		return false, nil
 	}
@@ -139,10 +140,6 @@ func isForce(ctx context.Context, repoPath string, r RefUpdate) (bool, error) {
 		return false, nil
 	}
 
-	repo, err := git.PlainOpenWithOptions(repoPath, &git.PlainOpenOptions{})
-	if err != nil {
-		return false, fmt.Errorf("failed to check force push: %w", err)
-	}
 	oldCommit, err := repo.CommitObject(plumbing.NewHash(oldRev))
 	if err != nil {
 		return false, fmt.Errorf("failed to check force push: %w", err)
@@ -160,7 +157,7 @@ func isForce(ctx context.Context, repoPath string, r RefUpdate) (bool, error) {
 
 // DiffRefs computes ref updates by comparing before and after ref snapshots.
 // before and after are maps of full ref name (e.g. "refs/heads/main") to commit hash.
-func DiffRefs(before, after map[string]string, repoPath string) []RefUpdate {
+func DiffRefs(before, after map[string]string, repo *git.Repository) []RefUpdate {
 	var updates []RefUpdate
 
 	// Detect new and changed refs
@@ -168,17 +165,17 @@ func DiffRefs(before, after map[string]string, repoPath string) []RefUpdate {
 		oldHash, existed := before[refName]
 		if !existed {
 			updates = append(updates, refUpdate{
-				oldRev:   ZeroHash,
-				newRev:   newHash,
-				refName:  refName,
-				repoPath: repoPath,
+				oldRev:  ZeroHash,
+				newRev:  newHash,
+				refName: refName,
+				repo:    repo,
 			})
 		} else if oldHash != newHash {
 			updates = append(updates, refUpdate{
-				oldRev:   oldHash,
-				newRev:   newHash,
-				refName:  refName,
-				repoPath: repoPath,
+				oldRev:  oldHash,
+				newRev:  newHash,
+				refName: refName,
+				repo:    repo,
 			})
 		}
 	}
@@ -187,10 +184,10 @@ func DiffRefs(before, after map[string]string, repoPath string) []RefUpdate {
 	for refName, oldHash := range before {
 		if _, exists := after[refName]; !exists {
 			updates = append(updates, refUpdate{
-				oldRev:   oldHash,
-				newRev:   ZeroHash,
-				refName:  refName,
-				repoPath: repoPath,
+				oldRev:  oldHash,
+				newRev:  ZeroHash,
+				refName: refName,
+				repo:    repo,
 			})
 		}
 	}

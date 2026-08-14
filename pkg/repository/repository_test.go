@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
 func TestDiskUsage(t *testing.T) {
@@ -14,7 +16,7 @@ func TestDiskUsage(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	repo, err := Init(context.Background(), dir, "main")
+	repo, err := Init(context.Background(), osfs.Default, dir, "main")
 	if err != nil {
 		t.Fatalf("Failed to init repo: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	repo, err := Init(context.Background(), dir, "main")
+	repo, err := Init(context.Background(), osfs.Default, dir, "main")
 	if err != nil {
 		t.Fatalf("Failed to init repo: %v", err)
 	}

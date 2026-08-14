@@ -5,11 +5,13 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
 func initTestRepo(t *testing.T) *Repository {
 	t.Helper()
-	repo, err := Init(context.Background(), t.TempDir(), "main")
+	repo, err := Init(context.Background(), osfs.Default, t.TempDir(), "main")
 	if err != nil {
 		t.Fatalf("init repo: %v", err)
 	}

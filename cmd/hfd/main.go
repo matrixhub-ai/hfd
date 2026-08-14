@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/gorilla/handlers"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 func main() {
@@ -18,20 +19,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	st, err := buildStorage(cfg)
+	st, err := buildStorage(ctx, cfg)
 	if err != nil {
 		slog.ErrorContext(ctx, "Error preparing storage", "error", err)
 		os.Exit(1)
 	}
 
-	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", st.RootDir())
+	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
-	lfsStorage, cleanup, err := buildLFSStorage(ctx, cfg, st)
-	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing LFS storage", "error", err)
-		os.Exit(1)
-	}
-	defer cleanup()
+	lfsStorage := lfs.New(st.LFSFS())
 
 	hooks := &serverHooks{
 		storage:    st,

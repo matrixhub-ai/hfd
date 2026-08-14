@@ -10,6 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3fs "github.com/wzshiming/go-billy-s3fs"
+
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -17,13 +22,51 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/s3fs"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
-// buildStorage resolves the data directory and creates the storage layout.
-func buildStorage(cfg *config) (*storage.Storage, error) {
+// s3Configured reports whether the S3 storage backend is configured.
+func s3Configured(cfg *config) bool {
+	return cfg.S3Endpoint != "" && cfg.S3Bucket != ""
+}
+
+// newS3Filesystem returns a billy filesystem rooted at the S3 bucket, holding
+// both git repositories and LFS objects. Metadata and small object bodies are
+// kept in a local write-through cache; writes from other processes become
+// visible after the TTL. The presign client lets LFS hand out URLs for direct
+// content transfers, signed against the sign endpoint when it differs.
+func newS3Filesystem(cfg *config) *s3fs.S3FS {
+	awsCfg := aws.Config{
+		Region:      "us-east-1",
+		Credentials: credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, ""),
+	}
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if cfg.S3Endpoint != "" {
+			o.BaseEndpoint = aws.String(cfg.S3Endpoint)
+		}
+		o.UsePathStyle = cfg.S3UsePathStyle
+		// only checksum when required, for S3-compatible stores (e.g. MinIO)
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+	})
+	var presignOpts []func(*s3.PresignOptions)
+	if cfg.S3SignEndpoint != "" {
+		presignOpts = append(presignOpts, s3fs.WithPresignEndpoint(cfg.S3SignEndpoint))
+	}
+	return s3fs.New(cfg.S3Bucket,
+		s3fs.WithClient(client),
+		s3fs.WithPresignClient(s3.NewPresignClient(client, presignOpts...)),
+		s3fs.WithMemCache(256<<20, time.Minute),
+	)
+}
+
+// buildStorage resolves the data directory and creates the storage layout,
+// backed by S3 when configured and by the local data directory otherwise.
+func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
+	if (cfg.S3Endpoint != "") != (cfg.S3Bucket != "") {
+		return nil, fmt.Errorf("S3 storage requires both --s3-endpoint and --s3-bucket (endpoint %q, bucket %q)", cfg.S3Endpoint, cfg.S3Bucket)
+	}
 	absRootDir, err := filepath.Abs(cfg.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve data directory %q: %w", cfg.DataDir, err)
@@ -31,53 +74,12 @@ func buildStorage(cfg *config) (*storage.Storage, error) {
 	if err := os.MkdirAll(absRootDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data directory %q: %w", absRootDir, err)
 	}
-	return storage.NewStorage(storage.WithRootDir(absRootDir)), nil
-}
-
-// buildLFSStorage selects the LFS backend (S3 when configured, local otherwise)
-// and mounts the S3 repositories filesystem when requested. The returned cleanup
-// unmounts S3 and must be called on shutdown.
-func buildLFSStorage(ctx context.Context, cfg *config, st *storage.Storage) (lfs.Storage, func(), error) {
-	cleanup := func() {}
-
-	if cfg.S3Endpoint == "" || cfg.S3Bucket == "" {
-		return lfs.NewLocal(st.LFSDir()), cleanup, nil
+	opts := []storage.Option{storage.WithRootDir(absRootDir)}
+	if s3Configured(cfg) {
+		slog.InfoContext(ctx, "Using S3-backed storage filesystem", "bucket", cfg.S3Bucket)
+		opts = append(opts, storage.WithFilesystem(newS3Filesystem(cfg)))
 	}
-
-	if cfg.S3Repositories {
-		repositoriesDir := st.RepositoriesDir()
-		slog.InfoContext(ctx, "Mounting S3 bucket", "bucket", cfg.S3Bucket, "path", repositoriesDir)
-		err := s3fs.Mount(
-			context.Background(),
-			repositoriesDir,
-			cfg.S3Endpoint,
-			cfg.S3AccessKey,
-			cfg.S3SecretKey,
-			cfg.S3Bucket,
-			"/repositories/",
-			cfg.S3UsePathStyle,
-		)
-		if err != nil {
-			return nil, cleanup, fmt.Errorf("mount S3 bucket %q at %q: %w", cfg.S3Bucket, repositoriesDir, err)
-		}
-		cleanup = func() {
-			slog.InfoContext(ctx, "Unmounting S3 bucket", "path", repositoriesDir)
-			if err := s3fs.Unmount(context.Background(), repositoriesDir); err != nil {
-				slog.ErrorContext(ctx, "Error unmounting S3 bucket", "path", repositoriesDir, "error", err)
-			}
-		}
-	}
-
-	lfsStorage := lfs.NewS3(
-		"lfs",
-		cfg.S3Endpoint,
-		cfg.S3AccessKey,
-		cfg.S3SecretKey,
-		cfg.S3Bucket,
-		cfg.S3UsePathStyle,
-		cfg.S3SignEndpoint,
-	)
-	return lfsStorage, cleanup, nil
+	return storage.NewStorage(opts...), nil
 }
 
 // buildMirror creates the shared mirror when pull or push mirroring is
@@ -91,6 +93,7 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 		mirror.WithPreReceiveHookFunc(hooks.preReceive),
 		mirror.WithPostReceiveHookFunc(hooks.postReceive),
 		mirror.WithLFSStorage(lfsStorage),
+		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithPullXET(cfg.PullMirrorXET),
 		mirror.WithPushXET(cfg.PushMirrorXET),
 		mirror.WithXETIdleEvictMaxBytes(cfg.ProxyXETEvictMaxBytes),
@@ -101,7 +104,7 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 			return time.Now().Add(-cfg.ProxyXETEvictBefore)
 		}),
 		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
-		mirror.WithCacheDir(st.TmpDir()),
+		mirror.WithCacheDir(filepath.Join(cfg.DataDir, "tmp")),
 		mirror.WithGitOutputFunc(hooks.gitOutput),
 		mirror.WithSyncUserInfoFunc(hooks.syncUserInfo),
 		mirror.WithTTL(cfg.ProxyCacheTTL),
@@ -216,7 +219,7 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 func loadOrGenerateHostKey(ctx context.Context, cfg *config, st *storage.Storage) (pkgssh.Signer, error) {
 	hostKeyPath := cfg.SSHHostKeyFile
 	if hostKeyPath == "" {
-		hostKeyPath = filepath.Join(st.RootDir(), "ssh_host_rsa_key")
+		hostKeyPath = filepath.Join(cfg.DataDir, "ssh_host_rsa_key")
 	}
 	data, err := os.ReadFile(hostKeyPath)
 	if err == nil {

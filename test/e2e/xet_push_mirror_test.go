@@ -19,7 +19,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 )
@@ -144,8 +144,8 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// ------------------------------------------------------------------ //
 	// 2.  Destination HFD server (git backend + XET-aware LFS batch)       //
 	// ------------------------------------------------------------------ //
-	destStorage := storage.NewStorage(storage.WithRootDir(filepath.Join(root, "dest")))
-	destLFSStorage := lfs.NewLocal(destStorage.LFSDir())
+	destStorage := newTestStorage(t, newDataDir(t, "xet-mirror-dest"))
+	destLFSStorage := lfs.New(destStorage.LFSFS())
 
 	var destHandler http.Handler
 	destHandler = backendhf.NewHandler(
@@ -188,20 +188,21 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// 3.  Source HFD server with a post-receive hook that calls             //
 	//     Mirror.PushToRemote with XET enabled.                            //
 	// ------------------------------------------------------------------ //
-	sourceStorage := storage.NewStorage(storage.WithRootDir(filepath.Join(root, "source")))
-	sourceLFSStorage := lfs.NewLocal(sourceStorage.LFSDir())
+	sourceStorage := newTestStorage(t, newDataDir(t, "xet-mirror-source"))
+	sourceLFSStorage := lfs.New(sourceStorage.LFSFS())
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorDestinationFunc(func(_ context.Context, name string) (string, bool, error) {
 			return destServer.URL + "/" + name, true, nil
 		}),
 		mirror.WithLFSStorage(sourceLFSStorage),
+		mirror.WithRepositoriesFS(sourceStorage.RepositoriesFS()),
 		mirror.WithPushXET(true),
 		mirror.WithCacheDir(filepath.Join(root, "xet-cache")),
 	)
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
-		repoPath := sourceStorage.ResolvePath(name)
+		repoPath := repository.ResolvePath(name)
 		return sharedMirror.PushToRemote(ctx, repoPath, name, nil)
 	}
 

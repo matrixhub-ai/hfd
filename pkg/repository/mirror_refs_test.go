@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
 func TestPullMirrorRefs(t *testing.T) {
@@ -16,7 +18,7 @@ func TestPullMirrorRefs(t *testing.T) {
 	upstream := setupMirrorSyncUpstream(t, root)
 
 	mirrorPath := filepath.Join(root, "mirror.git")
-	repo, err := InitMirror(ctx, mirrorPath, upstream)
+	repo, err := InitMirror(ctx, osfs.Default, mirrorPath, upstream)
 	if err != nil {
 		t.Fatalf("init mirror: %v", err)
 	}
@@ -156,7 +158,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	runGit(t, work, "remote", "add", "local", local)
 	runGit(t, work, "push", "-u", "local", "main")
 
-	repo, err := Open(local)
+	repo, err := Open(osfs.Default, local)
 	if err != nil {
 		t.Fatalf("open local repo: %v", err)
 	}
@@ -218,7 +220,7 @@ func TestPushMirrorRefsPrune(t *testing.T) {
 	root := t.TempDir()
 
 	local, work := buildParityUpstream(t, root)
-	repo, err := Open(local)
+	repo, err := Open(osfs.Default, local)
 	if err != nil {
 		t.Fatalf("open local repository: %v", err)
 	}

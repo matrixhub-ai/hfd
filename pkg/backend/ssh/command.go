@@ -55,7 +55,7 @@ func parseCommand(cmdLine string) (*parsedCommand, error) {
 
 // executeCommand serves a git service in-process, reading and writing the SSH channel.
 func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoName string, gitProtocol string) {
-	repoPath := s.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		sendExitStatus(channel, 1, "repository not found\n")
 		return
@@ -186,7 +186,7 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 	if err := s.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
-	return repository.Open(repoPath)
+	return repository.Open(s.storage.RepositoriesFS(), repoPath)
 }
 
 func (s *Server) preOpenHook(ctx context.Context, repoName string, write bool) error {

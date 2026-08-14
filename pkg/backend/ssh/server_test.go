@@ -58,7 +58,7 @@ func TestSSHProtocolServer(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate a host key for the SSH server
@@ -220,7 +220,7 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "auth-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key and authorized client key
@@ -384,7 +384,7 @@ func TestSSHLFSAuthenticate(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "lfs-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key
@@ -522,7 +522,7 @@ func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
 	storage := storage.NewStorage(storage.WithRootDir(repoDir))
 
 	repoName := "lfs-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	hostKey, err := generateHostKey()
@@ -588,7 +588,7 @@ func TestSSHPasswordAuth(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "pwd-auth-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key
@@ -670,7 +670,7 @@ func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "pk-auth-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key and client key
@@ -755,7 +755,7 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 
 	// Create a bare repository
 	repoName := "lfs-auth-test-repo.git"
-	repoPath := filepath.Join(storage.RepositoriesDir(), repoName)
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
 	runGitCmd(t, "", nil, "init", "--bare", repoPath)
 
 	// Generate host key

@@ -51,7 +51,7 @@ func TestHTTPHandler(t *testing.T) {
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
-	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
+	repoPath := filepath.Join(upstreamDir, "repositories", repoName+".git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
 		t.Fatalf("Failed to create repos dir: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
-	repoPath := filepath.Join(upstreamStorage.RepositoriesDir(), repoName+".git")
+	repoPath := filepath.Join(upstreamDir, "repositories", repoName+".git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
 		t.Fatalf("Failed to create repos dir: %v", err)
 	}

@@ -1,5 +1,5 @@
 ARG ALPINE_VERSION=3.23
-ARG GOLANG_VERSION=1.25
+ARG GOLANG_VERSION=1.26
 
 ARG IMAGE_PREFIX=docker.io/
 ARG GOPROXY=https://proxy.golang.org,direct
@@ -8,28 +8,23 @@ ARG GOPROXY=https://proxy.golang.org,direct
 
 FROM ${IMAGE_PREFIX}library/golang:${GOLANG_VERSION}-alpine${ALPINE_VERSION} AS builder
 
-WORKDIR /app
-
 ARG GOPROXY
-ENV GOPROXY=${GOPROXY}
+WORKDIR /src
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=bind,source=./go.mod,target=/app/go.mod \
-    --mount=type=bind,source=./go.sum,target=/app/go.sum \
+    --mount=type=bind,source=./go.mod,target=/src/go.mod \
+    --mount=type=bind,source=./go.sum,target=/src/go.sum \
     go mod download
 
-COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 go build -o /hfd ./cmd/hfd
+    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=bind,source=./,target=/src/ \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/...
 
 ##########################################
 
 FROM ${IMAGE_PREFIX}library/alpine:${ALPINE_VERSION} AS hfd
 
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add ca-certificates s3fs-fuse && \
-    update-ca-certificates
-
-COPY --from=builder /hfd /usr/local/bin/hfd
+COPY --from=builder /out/hfd /usr/local/bin/hfd
 
 EXPOSE 8080
 EXPOSE 2222
