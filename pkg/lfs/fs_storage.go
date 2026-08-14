@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/helper/chroot"
-	"github.com/go-git/go-billy/v6/osfs"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
 )
 
@@ -44,15 +43,11 @@ var (
 // New creates a Storage rooted at the given filesystem. When fs is backed by
 // a presigning object store (go-billy-s3fs, possibly behind chroots), the
 // returned storage also implements SignGetter and SignPutter, redirecting
-// content transfers directly to the object store. When fs is host-backed it
-// implements MovePutter, adopting host files by rename instead of copy.
+// content transfers directly to the object store.
 func New(fs billy.Filesystem) Storage {
 	s := &fsStorage{fs: fs}
 	if p, prefix, ok := presignPrefix(fs); ok {
 		return &presignStorage{fsStorage: s, presigner: p, prefix: prefix}
-	}
-	if bound, ok := fs.(*osfs.BoundOS); ok {
-		return &moveStorage{fsStorage: s, root: bound.Root()}
 	}
 	return s
 }
@@ -150,24 +145,6 @@ func (s *fsStorage) Exists(oid string) bool {
 		return false
 	}
 	return true
-}
-
-// moveStorage extends fsStorage with host-path rename adoption; root is the
-// host directory the filesystem is bound to.
-type moveStorage struct {
-	*fsStorage
-	root string
-}
-
-var _ MovePutter = (*moveStorage)(nil)
-
-// MovePut moves a host file to the location determined by the OID.
-func (s *moveStorage) MovePut(oid, path string) error {
-	destPath := filepath.Join(s.root, transformKey(oid))
-	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
-		return err
-	}
-	return os.Rename(path, destPath)
 }
 
 // presignStorage extends fsStorage with presigned URL redirection.

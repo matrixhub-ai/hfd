@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/go-git/go-billy/v6/osfs"
@@ -132,45 +131,5 @@ func TestGetAndInfoMissingObject(t *testing.T) {
 	}
 	if _, err := storage.Info(oid); err == nil {
 		t.Fatal("expected error for missing object Info, got nil")
-	}
-}
-
-func TestMovePut(t *testing.T) {
-	storage := lfs.New(osfs.New(t.TempDir()))
-
-	data := []byte("move me")
-	oid := oidOf(data)
-
-	src := filepath.Join(t.TempDir(), "upload.tmp")
-	if err := os.WriteFile(src, data, 0o644); err != nil {
-		t.Fatalf("write source file: %v", err)
-	}
-
-	putter, ok := storage.(lfs.MovePutter)
-	if !ok {
-		t.Fatal("host-backed storage must implement MovePutter")
-	}
-	if err := putter.MovePut(oid, src); err != nil {
-		t.Fatalf("MovePut failed: %v", err)
-	}
-
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Fatalf("source file must be moved away, stat err = %v", err)
-	}
-	if !storage.Exists(oid) {
-		t.Fatal("object must exist after MovePut")
-	}
-
-	reader, _, err := storage.(lfs.Getter).Get(oid)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	defer reader.Close()
-	got, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatalf("ReadAll failed: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("Get data = %q, want %q", got, data)
 	}
 }

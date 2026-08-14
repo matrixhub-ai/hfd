@@ -515,17 +515,6 @@ func (m *teeCache) storeAndPersist(ctx context.Context, oid string, size int64, 
 					return
 				}
 
-				if putter, ok := m.storage.(lfs.MovePutter); ok {
-					err := putter.MovePut(oid, buffer.Name())
-					if err != nil {
-						m.cache.Delete(oid)
-						slog.ErrorContext(ctx, "LFS tee cache: failed to move file into storage", "oid", oid, "error", err)
-						return
-					}
-					m.cache.Delete(oid)
-					return
-				}
-
 				osFile, err := os.Open(buffer.Name())
 				if err != nil {
 					m.cache.Delete(oid)

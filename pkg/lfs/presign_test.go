@@ -65,10 +65,6 @@ func TestPresignRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("S3-backed storage must implement SignPutter")
 	}
-	// host renames cannot reach the bucket
-	if _, ok := storage.(lfs.MovePutter); ok {
-		t.Fatal("S3-backed storage must not implement MovePutter")
-	}
 	putURL, putHeader, err := putter.SignPut(oid)
 	if err != nil {
 		t.Fatalf("SignPut failed: %v", err)

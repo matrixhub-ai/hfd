@@ -48,10 +48,3 @@ type SignPutter interface {
 type PutVerifier interface {
 	VerifyPut(oid string, size int64) error
 }
-
-// MovePutter is implemented by stores that can adopt a host file by renaming
-// it into place instead of copying, present when the backing filesystem is
-// host-backed. The file must already hold the full verified content.
-type MovePutter interface {
-	MovePut(oid string, path string) error
-}
