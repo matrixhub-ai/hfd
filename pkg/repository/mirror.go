@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/go-git/go-git/v6"
 	gitconfig "github.com/go-git/go-git/v6/config"
@@ -22,9 +23,9 @@ import (
 	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
-// InitMirror initializes a new bare git repository at repoPath.
+// InitMirror initializes a new bare git repository on fs at repoPath.
 // The returned Repository is ready to be used as a mirror of the source repository.
-func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Repository, error) {
+func InitMirror(ctx context.Context, fs billy.Filesystem, repoPath string, sourceURL string) (*Repository, error) {
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
 	sourceURL = strings.TrimSuffix(sourceURL, ".git") + ".git"
 
@@ -33,7 +34,7 @@ func InitMirror(ctx context.Context, repoPath string, sourceURL string) (*Reposi
 		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
 
-	return Init(ctx, repoPath, defaultBranch)
+	return Init(ctx, fs, repoPath, defaultBranch)
 }
 
 // fileLoader resolves file:// URLs to bare repository storage using absolute

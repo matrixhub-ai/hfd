@@ -7,6 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/osfs"
+
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"golang.org/x/sync/singleflight"
@@ -37,6 +40,7 @@ type Mirror struct {
 	syncUserInfoFunc      SyncUserInfoFunc
 	gitOutputFunc         GitOutputFunc
 	lfsStorage            lfs.Storage
+	repositoriesFS        billy.Filesystem
 	concurrency           int
 	enablePullXET         bool
 	enablePushXET         bool
@@ -93,6 +97,14 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 func WithLFSStorage(storage lfs.Storage) Option {
 	return func(m *Mirror) {
 		m.lfsStorage = storage
+	}
+}
+
+// WithRepositoriesFS sets the filesystem used to access local mirror
+// repositories. The default is the host OS.
+func WithRepositoriesFS(fs billy.Filesystem) Option {
+	return func(m *Mirror) {
+		m.repositoriesFS = fs
 	}
 }
 
@@ -184,6 +196,9 @@ func NewMirror(opts ...Option) *Mirror {
 	}
 	if m.xetEvictBeforeFunc == nil {
 		m.xetEvictBeforeFunc = time.Now
+	}
+	if m.repositoriesFS == nil {
+		m.repositoriesFS = osfs.Default
 	}
 
 	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enablePullXET, m.enablePushXET, m.cacheDir, m.xetEvictMaxBytes, m.xetEvictBeforeFunc, m.progressFunc)

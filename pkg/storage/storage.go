@@ -2,24 +2,40 @@ package storage
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/helper/chroot"
+	"github.com/go-git/go-billy/v6/osfs"
 )
 
-// Storage manages the filesystem paths for repositories and LFS objects.
+// Storage manages the filesystems for repositories and LFS objects, carved
+// out of one backing filesystem.
 type Storage struct {
-	rootDir         string
-	repositoriesDir string
-	lfsDir          string
-	tmpDir          string
+	rootDir        string
+	fs             billy.Filesystem
+	repositoriesFS billy.Filesystem
+	lfsFS          billy.Filesystem
 }
 
 // Option defines a functional option for configuring the Storage.
 type Option func(*Storage)
 
-// WithRootDir sets the root directory for storage. The default is "./data".
+// WithRootDir sets the host root directory for storage. The default is
+// "./data". It roots the default filesystem.
 func WithRootDir(rootDir string) Option {
 	return func(h *Storage) {
 		h.rootDir = rootDir
+	}
+}
+
+// WithFilesystem sets the filesystem holding repositories and LFS objects,
+// e.g. an S3-backed one. The default is the host OS rooted at the root
+// directory.
+func WithFilesystem(fs billy.Filesystem) Option {
+	return func(h *Storage) {
+		h.fs = fs
 	}
 }
 
@@ -33,34 +49,42 @@ func NewStorage(opts ...Option) *Storage {
 		opt(h)
 	}
 
-	h.lfsDir = filepath.Join(h.rootDir, "lfs")
-	h.tmpDir = filepath.Join(h.rootDir, "tmp")
-	h.repositoriesDir = filepath.Join(h.rootDir, "repositories")
+	if h.fs == nil {
+		h.fs = osfs.New(h.rootDir)
+	}
+
+	h.repositoriesFS = chrootFS(h.fs, "/repositories")
+	h.lfsFS = chrootFS(h.fs, "/lfs")
 
 	return h
 }
 
-// RootDir returns the root directory for storage.
-func (s *Storage) RootDir() string {
-	return s.rootDir
+// chrootFS scopes fs to dir, preferring the filesystem's own Chroot.
+func chrootFS(fs billy.Filesystem, dir string) billy.Filesystem {
+	sub, err := fs.Chroot(dir)
+	if err != nil {
+		return chroot.New(fs, dir)
+	}
+	return sub
 }
 
-// RepositoriesDir returns the directory path for storing git repositories.
-func (s *Storage) RepositoriesDir() string {
-	return s.repositoriesDir
+// FS returns the filesystem holding repositories and LFS objects.
+func (s *Storage) FS() billy.Filesystem {
+	return s.fs
 }
 
-// LFSDir returns the directory path for storing LFS objects.
-func (s *Storage) LFSDir() string {
-	return s.lfsDir
+// RepositoriesFS returns the filesystem holding git repositories.
+func (s *Storage) RepositoriesFS() billy.Filesystem {
+	return s.repositoriesFS
 }
 
-// TmpDir returns the directory path for temporary files.
-func (s *Storage) TmpDir() string {
-	return s.tmpDir
+// LFSFS returns the filesystem holding LFS objects.
+func (s *Storage) LFSFS() billy.Filesystem {
+	return s.lfsFS
 }
 
-// ResolvePath resolves the given URL path to an absolute filesystem path within the repositories directory.
+// ResolvePath resolves the given URL path to a repository path within the
+// repositories filesystem.
 func (s *Storage) ResolvePath(urlPath string) string {
 	urlPath = strings.TrimPrefix(urlPath, "/")
 	if urlPath == "" {
@@ -71,14 +95,10 @@ func (s *Storage) ResolvePath(urlPath string) string {
 		urlPath += ".git"
 	}
 
-	fullPath := filepath.Join(s.repositoriesDir, urlPath)
-	fullPath = filepath.Clean(fullPath)
-
-	// Prevent path traversal outside the repositories directory
-	rel, err := filepath.Rel(s.repositoriesDir, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	// Prevent path traversal outside the repositories filesystem
+	if slices.Contains(strings.Split(urlPath, "/"), "..") {
 		return ""
 	}
 
-	return fullPath
+	return filepath.Join("/", urlPath)
 }

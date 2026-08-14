@@ -15,20 +15,15 @@ import (
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // setupAuthTestServer creates an HTTP test server with basic authentication enabled.
 func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Server, string) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "auth-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "auth-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	var handler http.Handler
 

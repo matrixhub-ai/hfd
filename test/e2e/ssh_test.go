@@ -18,7 +18,6 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,13 +26,9 @@ import (
 func setupSSHTestServer(t *testing.T, authorizedKeys []ssh.PublicKey) (*httptest.Server, net.Listener, string) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "ssh-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "ssh-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	// Set up HTTP handler chain (same order as main.go)
 	var handler http.Handler

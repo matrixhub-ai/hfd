@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -31,7 +30,7 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 	before = filterKeyFromMap(before, refsFilter)
 
 	remoteMap := filterKeyFromMap(remoteRefsMap, refsFilter)
-	preReceiveUpdates := receive.DiffRefs(before, remoteMap, repo.RepoPath())
+	preReceiveUpdates := repo.DiffRefs(before, remoteMap)
 	if len(preReceiveUpdates) == 0 {
 		return nil
 	}
@@ -78,7 +77,7 @@ func (m *Mirror) firePostReceive(ctx context.Context, repo *repository.Repositor
 		return fmt.Errorf("failed to get local refs after sync: %w", err)
 	}
 	after = filterKeyFromMap(after, refsFilter)
-	postReceiveUpdates := receive.DiffRefs(before, after, repo.RepoPath())
+	postReceiveUpdates := repo.DiffRefs(before, after)
 	if len(postReceiveUpdates) > 0 {
 		if err := m.postReceiveHookFunc(ctx, repoName, postReceiveUpdates); err != nil {
 			return fmt.Errorf("post-receive hook error: %w", err)

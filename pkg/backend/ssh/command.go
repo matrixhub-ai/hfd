@@ -186,7 +186,7 @@ func (s *Server) openRepo(ctx context.Context, repoPath, repoName, service strin
 	if err := s.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
-	return repository.Open(repoPath)
+	return repository.Open(s.storage.RepositoriesFS(), repoPath)
 }
 
 func (s *Server) preOpenHook(ctx context.Context, repoName string, write bool) error {

@@ -56,7 +56,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 			newRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(repo.DefaultBranch()))
 		}
 		if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev, repo.RepoPath()),
+			repo.RefUpdate(receive.ZeroHash, newRev, "refs/heads/"+rev),
 		}, "pre-receive hook denied the branch creation") {
 			return
 		}
@@ -70,7 +70,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 	hash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
 	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
-		receive.NewRefUpdate(receive.ZeroHash, hash, "refs/heads/"+rev, repo.RepoPath()),
+		repo.RefUpdate(receive.ZeroHash, hash, "refs/heads/"+rev),
 	})
 
 	w.WriteHeader(http.StatusOK)
@@ -114,7 +114,7 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	oldHash, _ := repo.RefHash(plumbing.NewBranchReferenceName(rev))
 
 	updates := []receive.RefUpdate{
-		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/heads/"+rev, repo.RepoPath()),
+		repo.RefUpdate(oldHash, receive.ZeroHash, "refs/heads/"+rev),
 	}
 
 	if !h.checkPreReceive(w, r, ri.RepoName, updates, "pre-receive hook denied the branch deletion") {
@@ -177,7 +177,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 		// Resolve the revision to a hash so the hook has the target commit
 		newRev, _ := repo.ResolveRevision(rev)
 		if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag, repo.RepoPath()),
+			repo.RefUpdate(receive.ZeroHash, newRev, "refs/tags/"+req.Tag),
 		}, "pre-receive hook denied the tag creation") {
 			return
 		}
@@ -190,7 +190,7 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 
 	hash, _ := repo.RefHash(plumbing.NewTagReferenceName(req.Tag))
 	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
-		receive.NewRefUpdate(receive.ZeroHash, hash, "refs/tags/"+req.Tag, repo.RepoPath()),
+		repo.RefUpdate(receive.ZeroHash, hash, "refs/tags/"+req.Tag),
 	})
 
 	w.WriteHeader(http.StatusOK)
@@ -228,7 +228,7 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	oldHash, _ := repo.RefHash(plumbing.NewTagReferenceName(rev))
 
 	updates := []receive.RefUpdate{
-		receive.NewRefUpdate(oldHash, receive.ZeroHash, "refs/tags/"+rev, repo.RepoPath()),
+		repo.RefUpdate(oldHash, receive.ZeroHash, "refs/tags/"+rev),
 	}
 
 	if !h.checkPreReceive(w, r, ri.RepoName, updates, "pre-receive hook denied the tag deletion") {

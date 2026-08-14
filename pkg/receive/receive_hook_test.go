@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-git/v6"
 )
 
 func TestRawRefUpdateMethods(t *testing.T) {
@@ -207,9 +209,14 @@ func TestIsForcePush(t *testing.T) {
 	}
 	divergent := strings.TrimSpace(string(divergentOut))
 
+	repo, err := git.PlainOpenWithOptions(repoDir, &git.PlainOpenOptions{})
+	if err != nil {
+		t.Fatalf("open bare repo: %v", err)
+	}
+
 	t.Run("fast-forward push", func(t *testing.T) {
 		update := refUpdate{oldRev: commit1, newRev: commit2, refName: "refs/heads/main"}
-		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+		if ok, err := isForce(t.Context(), repo, update); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if ok {
 			t.Error("expected IsForcePush=false for fast-forward push")
@@ -219,7 +226,7 @@ func TestIsForcePush(t *testing.T) {
 	t.Run("force push", func(t *testing.T) {
 		// divergent is NOT a descendant of commit2, so commit2->divergent is a force push
 		update := refUpdate{oldRev: commit2, newRev: divergent, refName: "refs/heads/main"}
-		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+		if ok, err := isForce(t.Context(), repo, update); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if !ok {
 			t.Error("expected IsForcePush=true for non-fast-forward push")
@@ -228,7 +235,7 @@ func TestIsForcePush(t *testing.T) {
 
 	t.Run("create is not force push", func(t *testing.T) {
 		update := refUpdate{oldRev: ZeroHash, newRev: commit1, refName: "refs/heads/new-branch"}
-		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+		if ok, err := isForce(t.Context(), repo, update); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if ok {
 			t.Error("expected IsForcePush=false for create")
@@ -237,7 +244,7 @@ func TestIsForcePush(t *testing.T) {
 
 	t.Run("delete is not force push", func(t *testing.T) {
 		update := refUpdate{oldRev: commit1, newRev: ZeroHash, refName: "refs/heads/old-branch"}
-		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+		if ok, err := isForce(t.Context(), repo, update); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if ok {
 			t.Error("expected IsForcePush=false for delete")
@@ -246,7 +253,7 @@ func TestIsForcePush(t *testing.T) {
 
 	t.Run("tag is not force push", func(t *testing.T) {
 		update := refUpdate{oldRev: commit1, newRev: commit2, refName: "refs/tags/v1.0"}
-		if ok, err := isForce(t.Context(), repoDir, update); err != nil {
+		if ok, err := isForce(t.Context(), repo, update); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if ok {
 			t.Error("expected IsForcePush=false for tag")
@@ -396,7 +403,7 @@ func TestDiffRefs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			updates := DiffRefs(tt.before, tt.after, "test-repo-path")
+			updates := DiffRefs(tt.before, tt.after, nil)
 
 			// Build a map of updates for easier comparison
 			got := make(map[string]string)

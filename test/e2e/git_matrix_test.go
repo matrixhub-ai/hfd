@@ -18,7 +18,6 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -32,12 +31,9 @@ type testProtocol struct {
 func setupHTTPProtocol(t *testing.T) (cloneURL string, env []string, cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "git-http-matrix-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "git-http-matrix-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	var handler http.Handler
 	handler = backendhf.NewHandler(
@@ -76,10 +72,7 @@ func setupHTTPProtocol(t *testing.T) (cloneURL string, env []string, cleanup fun
 func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "git-ssh-matrix-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "git-ssh-matrix-data")
 
 	clientDir, err := os.MkdirTemp("", "git-ssh-matrix-client")
 	if err != nil {
@@ -87,7 +80,7 @@ func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	// Set up HTTP handler for repo creation
 	var handler http.Handler

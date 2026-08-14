@@ -199,8 +199,12 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
-			url, err := signer.SignGet(ptr.OID())
+			url, _, err := signer.SignGet(ptr.OID())
 			if err != nil {
+				if os.IsNotExist(err) {
+					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
+					return
+				}
 				responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
 				return
 			}

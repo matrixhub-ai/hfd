@@ -1,3 +1,3 @@
-.git
-node_modules
-data
+.git/
+compose.*.yaml
+Dockerfile

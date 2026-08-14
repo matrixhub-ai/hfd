@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-git/go-billy/v6/osfs"
+
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
@@ -19,7 +21,7 @@ func TestContentStorage(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	storage := lfs.NewLocal(dir)
+	storage := lfs.New(osfs.New(dir))
 
 	data := []byte("hello world")
 	hash := sha256.Sum256(data)
@@ -76,7 +78,7 @@ func oidOf(data []byte) string {
 }
 
 func TestPutSizeMismatch(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	oid := oidOf(data)
@@ -90,7 +92,7 @@ func TestPutSizeMismatch(t *testing.T) {
 }
 
 func TestPutHashMismatch(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	wrongOid := oidOf([]byte("other content"))
@@ -104,7 +106,7 @@ func TestPutHashMismatch(t *testing.T) {
 }
 
 func TestPutOverwriteIsIdempotent(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("hello world")
 	oid := oidOf(data)
@@ -121,8 +123,20 @@ func TestPutOverwriteIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestGetAndInfoMissingObject(t *testing.T) {
+	storage := lfs.New(osfs.New(t.TempDir()))
+
+	oid := oidOf([]byte("never stored"))
+	if _, _, err := storage.(lfs.Getter).Get(oid); err == nil {
+		t.Fatal("expected error for missing object Get, got nil")
+	}
+	if _, err := storage.Info(oid); err == nil {
+		t.Fatal("expected error for missing object Info, got nil")
+	}
+}
+
 func TestMovePut(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
+	storage := lfs.New(osfs.New(t.TempDir()))
 
 	data := []byte("move me")
 	oid := oidOf(data)
@@ -132,7 +146,11 @@ func TestMovePut(t *testing.T) {
 		t.Fatalf("write source file: %v", err)
 	}
 
-	if err := storage.(lfs.MovePutter).MovePut(oid, src); err != nil {
+	putter, ok := storage.(lfs.MovePutter)
+	if !ok {
+		t.Fatal("host-backed storage must implement MovePutter")
+	}
+	if err := putter.MovePut(oid, src); err != nil {
 		t.Fatalf("MovePut failed: %v", err)
 	}
 
@@ -154,17 +172,5 @@ func TestMovePut(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatalf("Get data = %q, want %q", got, data)
-	}
-}
-
-func TestGetAndInfoMissingObject(t *testing.T) {
-	storage := lfs.NewLocal(t.TempDir())
-
-	oid := oidOf([]byte("never stored"))
-	if _, _, err := storage.(lfs.Getter).Get(oid); err == nil {
-		t.Fatal("expected error for missing object Get, got nil")
-	}
-	if _, err := storage.Info(oid); err == nil {
-		t.Fatal("expected error for missing object Info, got nil")
 	}
 }

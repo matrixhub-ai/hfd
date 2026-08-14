@@ -2,8 +2,9 @@
 // the base contract, and backends advertise optional capabilities through the
 // narrow interfaces below. Callers select behavior with type assertions:
 //
-//	local (NewLocal): Getter + MovePutter — direct content access
-//	S3 (NewS3):       SignGetter + SignPutter — presigned URL redirection
+//	Getter — direct content access (always available)
+//	SignGetter + SignPutter — presigned URL redirection, present when the
+//	backing filesystem hands out presigned URLs (go-billy-s3fs)
 package lfs
 
 import (
@@ -26,16 +27,31 @@ type Getter interface {
 }
 
 // SignGetter is implemented by stores that support presigned download URLs.
+// Download grants are self-contained: header is nil today, which callers
+// that redirect rely on.
 type SignGetter interface {
-	SignGet(oid string) (string, error)
+	SignGet(oid string) (url string, header map[string]string, err error)
 }
 
 // SignPutter is implemented by stores that support presigned upload URLs.
+// The grant only accepts content hashing to oid and lands it in a staging
+// area invisible to readers; the returned header must be sent verbatim with
+// the PUT, and PutVerifier moves the object into place afterwards.
 type SignPutter interface {
-	SignPut(oid string) (string, error)
+	SignPut(oid string) (url string, header map[string]string, err error)
 }
 
-// MovePutter is implemented by stores that support moving files within the storage backend.
+// PutVerifier is implemented by stores whose presigned uploads land in a
+// staging area: VerifyPut checks the staged object against the expected
+// size and moves it into place, making it visible to readers. It succeeds
+// when the object is already in place.
+type PutVerifier interface {
+	VerifyPut(oid string, size int64) error
+}
+
+// MovePutter is implemented by stores that can adopt a host file by renaming
+// it into place instead of copying, present when the backing filesystem is
+// host-backed. The file must already hold the full verified content.
 type MovePutter interface {
-	MovePut(oid, path string) error
+	MovePut(oid string, path string) error
 }

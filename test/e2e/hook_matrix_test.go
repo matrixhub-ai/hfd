@@ -21,7 +21,6 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -140,12 +139,9 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "hook-http-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "hook-http-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	var httpOpts []backendhttp.Option
 	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
@@ -188,10 +184,7 @@ func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHo
 func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "hook-ssh-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "hook-ssh-data")
 
 	clientDir, err := os.MkdirTemp("", "hook-ssh-client")
 	if err != nil {
@@ -199,7 +192,7 @@ func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHoo
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	// HTTP handler for repo creation
 	var handler http.Handler
@@ -563,12 +556,9 @@ func TestPermissionHookMatrix(t *testing.T) {
 func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "perm-http-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "perm-http-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	var httpOpts []backendhttp.Option
 	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
@@ -608,10 +598,7 @@ func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFun
 func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "perm-ssh-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	dataDir := newDataDir(t, "perm-ssh-data")
 
 	clientDir, err := os.MkdirTemp("", "perm-ssh-client")
 	if err != nil {
@@ -619,7 +606,7 @@ func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc
 		t.Fatalf("Failed to create client dir: %v", err)
 	}
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	// HTTP handler for repo creation
 	var handler http.Handler

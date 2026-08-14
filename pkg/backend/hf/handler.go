@@ -210,7 +210,7 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string, write
 	if err := h.preOpenHook(ctx, repoName, write); err != nil {
 		return nil, err
 	}
-	return repository.Open(repoPath)
+	return repository.Open(h.storage.RepositoriesFS(), repoPath)
 }
 
 // checkPermission runs the permission hook and writes the failure response.
@@ -257,7 +257,7 @@ func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPa
 // openRepoDirect opens the repository without the pre-open hook, for
 // operations that must not trigger a mirror sync (delete/move/squash).
 func (h *Handler) openRepoDirect(w http.ResponseWriter, repoPath, displayName string) (*repository.Repository, bool) {
-	repo, err := repository.Open(repoPath)
+	repo, err := repository.Open(h.storage.RepositoriesFS(), repoPath)
 	if err != nil {
 		respondOpenRepoError(w, displayName, err)
 		return nil, false

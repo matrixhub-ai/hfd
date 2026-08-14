@@ -168,7 +168,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
-		receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
+		repo.RefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev),
 	}, "pre-receive hook denied the super-squash operation") {
 		return
 	}
@@ -192,7 +192,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
-		receive.NewRefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev, repo.RepoPath()),
+		repo.RefUpdate(receive.BreakHash, receive.BreakHash, "refs/heads/"+rev),
 	})
 
 	w.WriteHeader(http.StatusOK)

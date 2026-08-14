@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -96,7 +95,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if repository already exists
-	if repository.IsRepository(repoPath) {
+	if repository.IsRepository(h.storage.RepositoriesFS(), repoPath) {
 		resp := createRepoResponse{
 			URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
 		}
@@ -105,7 +104,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create repository directory
-	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+	if err := h.storage.RepositoriesFS().MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
 		responseJSON(w, fmt.Errorf("failed to create repository directory: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -113,7 +112,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	defaultBranch := "main"
 
 	// Initialize bare repository
-	repo, err := repository.Init(r.Context(), repoPath, defaultBranch)
+	repo, err := repository.Init(r.Context(), h.storage.RepositoriesFS(), repoPath, defaultBranch)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to initialize repository: %v", err), http.StatusInternalServerError)
 		return
@@ -134,7 +133,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.afterReceivePack(r.Context(), storageName, []receive.RefUpdate{
-		receive.NewRefUpdate(receive.ZeroHash, commitHash, "refs/heads/"+defaultBranch, storageName),
+		repo.RefUpdate(receive.ZeroHash, commitHash, "refs/heads/"+defaultBranch),
 	})
 
 	resp := createRepoResponse{
@@ -323,7 +322,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
-			receive.NewRefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev, ri.RepoName),
+			repo.RefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev),
 		}, "pre-receive hook denied the commit") {
 			return
 		}
@@ -340,7 +339,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		oldRev = receive.ZeroHash
 	}
 	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
-		receive.NewRefUpdate(oldRev, commitHash, "refs/heads/"+rev, ri.RepoName),
+		repo.RefUpdate(oldRev, commitHash, "refs/heads/"+rev),
 	})
 
 	resp := commitResponse{

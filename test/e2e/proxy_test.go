@@ -59,17 +59,14 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror, storage *storage.Storage)
 func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, string) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "proxy-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "proxy-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStorage := lfs.NewLocal(storage.LFSDir())
+	storage := newTestStorage(t, dataDir)
+	lfsStorage := lfs.New(storage.LFSFS())
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
+		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
 	)
 
 	var handler http.Handler
@@ -105,13 +102,9 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "ssh-proxy-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "ssh-proxy-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newTestStorage(t, dataDir)
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -124,6 +117,7 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
+		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
 	)
 
 	sshServer := backendssh.NewServer(
@@ -340,49 +334,46 @@ func TestSSHProxyMirror(t *testing.T) {
 
 // setupProxyServerWithRefFilter creates a proxy HTTP server that mirrors repositories
 // from upstreamURL on demand, applying the given ref filter.
-func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter mirror.RefFilterFunc) (*httptest.Server, string) {
+func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter mirror.RefFilterFunc) (*httptest.Server, *storage.Storage) {
 	t.Helper()
 
-	dataDir, err := os.MkdirTemp("", "proxy-ref-filter-e2e-data")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dataDir) })
+	dataDir := newDataDir(t, "proxy-ref-filter-e2e-data")
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
-	lfsStorage := lfs.NewLocal(storage.LFSDir())
+	st := newTestStorage(t, dataDir)
+	lfsStorage := lfs.New(st.LFSFS())
 
 	sharedMirror := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 		mirror.WithMirrorRefFilterFunc(refFilter),
+		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 	)
 
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
+		backendhf.WithStorage(st),
 		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
+		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, st)),
 	)
 
 	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
+		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
 		backendlfs.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
+		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
 		backendhttp.WithMirror(sharedMirror),
-		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
+		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, st)),
 	)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })
 
-	return server, dataDir
+	return server, st
 }
 
 // TestHTTPProxyMirrorRefFilter verifies that cloning from a proxy server with
@@ -451,7 +442,7 @@ func TestHTTPProxyMirrorRefFilter(t *testing.T) {
 		return filtered, nil
 	}
 
-	proxy, proxyDataDir := setupProxyServerWithRefFilter(t, upstream.URL, onlyMainFilter)
+	proxy, proxyStorage := setupProxyServerWithRefFilter(t, upstream.URL, onlyMainFilter)
 	proxyGitURL := proxy.URL + "/" + org + "/" + name + ".git"
 
 	t.Run("CloneFromFilteredProxy", func(t *testing.T) {
@@ -469,8 +460,7 @@ func TestHTTPProxyMirrorRefFilter(t *testing.T) {
 
 	t.Run("FilteredBranchNotMirrored", func(t *testing.T) {
 		// The "feature" branch should not exist in the mirror.
-		repoPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
-		repo, err := repository.Open(repoPath)
+		repo, err := repository.Open(proxyStorage.RepositoriesFS(), proxyStorage.ResolvePath(org+"/"+name))
 		if err != nil {
 			t.Fatalf("Failed to open proxy mirror repo: %v", err)
 		}
@@ -487,8 +477,7 @@ func TestHTTPProxyMirrorRefFilter(t *testing.T) {
 
 	t.Run("FilteredTagNotMirrored", func(t *testing.T) {
 		// The "v1.0" tag should not exist in the mirror.
-		repoPath := filepath.Join(proxyDataDir, "repositories", org, name+".git")
-		repo, err := repository.Open(repoPath)
+		repo, err := repository.Open(proxyStorage.RepositoriesFS(), proxyStorage.ResolvePath(org+"/"+name))
 		if err != nil {
 			t.Fatalf("Failed to open proxy mirror repo: %v", err)
 		}

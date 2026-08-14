@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/go-git/go-git/v6/plumbing/format/pktline"
 )
 
@@ -91,7 +92,7 @@ func TestStatelessUploadPackRequestSizeLimit(t *testing.T) {
 	root := t.TempDir()
 
 	bare, _ := buildParityUpstream(t, root)
-	repo, err := Open(bare)
+	repo, err := Open(osfs.Default, bare)
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestStatelessUploadPackNegotiationRound(t *testing.T) {
 	root := t.TempDir()
 
 	bare, work := buildParityUpstream(t, root)
-	repo, err := Open(bare)
+	repo, err := Open(osfs.Default, bare)
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestStatelessUploadPackFullNegotiation(t *testing.T) {
 	root := t.TempDir()
 
 	bare, work := buildParityUpstream(t, root)
-	repo, err := Open(bare)
+	repo, err := Open(osfs.Default, bare)
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}

@@ -32,7 +32,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		return err
 	}
 
-	repo, err := repository.Open(repoPath)
+	repo, err := repository.Open(m.repositoriesFS, repoPath)
 	if err != nil {
 		if err != repository.ErrRepositoryNotExists {
 			return fmt.Errorf("failed to open mirror repository: %w", err)
@@ -99,7 +99,7 @@ func (m *Mirror) resolvePullSource(ctx context.Context, repoName string, opt *Pu
 // the repository as absent.
 func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, repoPath, repoName string, opt PullOptions) error {
 	_, err, _ := m.pullGroup.Do(repoPath, func() (any, error) {
-		repo, err := repository.InitMirror(logctx, repoPath, opt.SourceURL)
+		repo, err := repository.InitMirror(logctx, m.repositoriesFS, repoPath, opt.SourceURL)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
 			return nil, repository.ErrRepositoryNotExists

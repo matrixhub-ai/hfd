@@ -183,7 +183,7 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 	if err := h.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
-	return repository.Open(repoPath)
+	return repository.Open(h.storage.RepositoriesFS(), repoPath)
 }
 
 // checkMirrorAccess enforces mirror-only access rules, writing the failure

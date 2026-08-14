@@ -24,7 +24,7 @@ func TestHTTPGitGzipRequestBody(t *testing.T) {
 	root := t.TempDir()
 
 	st := storage.NewStorage(storage.WithRootDir(root))
-	repoPath := filepath.Join(st.RepositoriesDir(), "repo.git")
+	repoPath := filepath.Join(root, "repositories", "repo.git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
