@@ -12,6 +12,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -36,7 +37,7 @@ func (h *serverHooks) preOpen(ctx context.Context, repoName string, write bool) 
 	if h.mirror == nil {
 		return nil
 	}
-	repoPath := h.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
 		return nil
@@ -75,7 +76,7 @@ func (h *serverHooks) postReceive(ctx context.Context, repoName string, updates 
 		return nil
 	}
 
-	repoPath := h.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
 		return nil

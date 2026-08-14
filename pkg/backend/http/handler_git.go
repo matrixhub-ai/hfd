@@ -61,7 +61,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := h.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
 		return
@@ -96,7 +96,7 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	repoPath := h.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
 		return

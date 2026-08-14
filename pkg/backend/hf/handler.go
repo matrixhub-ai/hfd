@@ -235,7 +235,7 @@ func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op per
 // resolveRepoPath resolves storageName to its storage path, writing a 404
 // naming displayName when it cannot be resolved.
 func (h *Handler) resolveRepoPath(w http.ResponseWriter, storageName, displayName string) (string, bool) {
-	repoPath := h.storage.ResolvePath(storageName)
+	repoPath := repository.ResolvePath(storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("repository %q not found", displayName), http.StatusNotFound)
 		return "", false

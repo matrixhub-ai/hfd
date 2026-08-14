@@ -71,13 +71,13 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPath := h.storage.ResolvePath(fromName)
+	fromPath := repository.ResolvePath(fromName)
 	if fromPath == "" {
 		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
 		return
 	}
 
-	toPath := h.storage.ResolvePath(toName)
+	toPath := repository.ResolvePath(toName)
 	if toPath == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
 		return

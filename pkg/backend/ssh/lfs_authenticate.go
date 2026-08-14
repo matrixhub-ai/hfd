@@ -12,6 +12,7 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // lfsAuthResponse is the JSON response returned by git-lfs-authenticate.
@@ -44,7 +45,7 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		return
 	}
 
-	repoPath := s.storage.ResolvePath(repoName)
+	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		sendExitStatus(channel, 1, "repository not found")
 		return

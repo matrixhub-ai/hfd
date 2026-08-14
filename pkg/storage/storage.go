@@ -1,10 +1,6 @@
 package storage
 
 import (
-	"path/filepath"
-	"slices"
-	"strings"
-
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/helper/chroot"
 	"github.com/go-git/go-billy/v6/osfs"
@@ -81,24 +77,4 @@ func (s *Storage) RepositoriesFS() billy.Filesystem {
 // LFSFS returns the filesystem holding LFS objects.
 func (s *Storage) LFSFS() billy.Filesystem {
 	return s.lfsFS
-}
-
-// ResolvePath resolves the given URL path to a repository path within the
-// repositories filesystem.
-func (s *Storage) ResolvePath(urlPath string) string {
-	urlPath = strings.TrimPrefix(urlPath, "/")
-	if urlPath == "" {
-		return ""
-	}
-
-	if !strings.HasSuffix(urlPath, ".git") {
-		urlPath += ".git"
-	}
-
-	// Prevent path traversal outside the repositories filesystem
-	if slices.Contains(strings.Split(urlPath, "/"), "..") {
-		return ""
-	}
-
-	return filepath.Join("/", urlPath)
 }

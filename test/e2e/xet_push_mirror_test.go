@@ -19,6 +19,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 )
@@ -201,7 +202,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	)
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
-		repoPath := sourceStorage.ResolvePath(name)
+		repoPath := repository.ResolvePath(name)
 		return sharedMirror.PushToRemote(ctx, repoPath, name, nil)
 	}
 

@@ -46,7 +46,7 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror, storage *storage.Storage)
 			return nil
 		}
 
-		repoPath := storage.ResolvePath(repoName)
+		repoPath := repository.ResolvePath(repoName)
 		if repoPath == "" {
 			return fmt.Errorf("repository path not found for %s", repoName)
 		}
@@ -460,7 +460,7 @@ func TestHTTPProxyMirrorRefFilter(t *testing.T) {
 
 	t.Run("FilteredBranchNotMirrored", func(t *testing.T) {
 		// The "feature" branch should not exist in the mirror.
-		repo, err := repository.Open(proxyStorage.RepositoriesFS(), proxyStorage.ResolvePath(org+"/"+name))
+		repo, err := repository.Open(proxyStorage.RepositoriesFS(), repository.ResolvePath(org+"/"+name))
 		if err != nil {
 			t.Fatalf("Failed to open proxy mirror repo: %v", err)
 		}
@@ -477,7 +477,7 @@ func TestHTTPProxyMirrorRefFilter(t *testing.T) {
 
 	t.Run("FilteredTagNotMirrored", func(t *testing.T) {
 		// The "v1.0" tag should not exist in the mirror.
-		repo, err := repository.Open(proxyStorage.RepositoriesFS(), proxyStorage.ResolvePath(org+"/"+name))
+		repo, err := repository.Open(proxyStorage.RepositoriesFS(), repository.ResolvePath(org+"/"+name))
 		if err != nil {
 			t.Fatalf("Failed to open proxy mirror repo: %v", err)
 		}

@@ -88,7 +88,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 
 	urlName := "/" + storageName
 
-	repoPath := h.storage.ResolvePath(storageName)
+	repoPath := repository.ResolvePath(storageName)
 	if repoPath == "" {
 		responseJSON(w, fmt.Errorf("invalid repository name: %q", repoName), http.StatusBadRequest)
 		return
