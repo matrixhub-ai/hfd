@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/matrixhub-ai/hfd/internal/netutil"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -116,16 +115,11 @@ func buildPushRefspecs(refs []string) (refspecs []string, prune bool) {
 
 // pushMirrorLFS uploads LFS objects referenced by the repository to the remote LFS endpoint.
 func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) error {
-	if m.lfsStorage == nil {
+	if m.xetStorage == nil {
 		return nil
 	}
 
 	ctx := context.Background()
-
-	getter, ok := m.lfsStorage.(lfs.Getter)
-	if !ok {
-		return nil
-	}
 
 	lfsPointers, err := repo.ScanLFSPointers()
 	if err != nil {
@@ -138,7 +132,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 
 	objects := make([]lfs.LFSObject, 0, len(lfsPointers))
 	for _, ptr := range lfsPointers {
-		if m.lfsStorage.Exists(ptr.OID()) {
+		if m.HasObject(ctx, ptr.OID()) {
 			objects = append(objects, lfs.LFSObject{Oid: ptr.OID(), Size: ptr.Size()})
 		}
 	}
@@ -147,15 +141,12 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 		return nil
 	}
 
-	lfsClient := lfs.NewClient(netutil.HTTPClient)
+	lfsClient := lfs.NewClient(m.httpClient)
 
-	// When XET is enabled and the xet client is initialized, advertise the xet transfer
-	// protocol so the remote can select it. Fall back to a basic-only request on error.
+	// Advertise the xet transfer so the remote can select it; fall back to
+	// the basic transfer when the remote does not.
 	var batchResp *lfs.BatchResponse
-	var xetC *xetclient.Client
-	if m.enablePushXET && m.lfsTeeCache != nil {
-		xetC = m.lfsTeeCache.xetClient
-	}
+	xetC := m.xetClient
 	xetUpload := xetC != nil
 	if xetUpload {
 		batchResp, err = lfsClient.UploadBatch(ctx, destURL, lfs.TransferWithXETCapabilities, objects)
@@ -186,7 +177,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 		}
 
 		if xetUpload {
-			if err := m.doXETUpload(ctx, obj.Oid, uploadAction, obj.Actions["verify"], getter, xetC); err != nil {
+			if err := m.doXETUpload(ctx, obj.Oid, uploadAction, obj.Actions["verify"], xetC); err != nil {
 				slog.WarnContext(ctx, "LFS push mirror: XET upload failed", "oid", obj.Oid, "error", err)
 				continue
 			}
@@ -194,7 +185,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 			continue
 		}
 
-		if err := m.doBasicUpload(ctx, obj.Oid, uploadAction, obj.Actions, getter); err != nil {
+		if err := m.doBasicUpload(ctx, obj.Oid, uploadAction, obj.Actions); err != nil {
 			slog.WarnContext(ctx, "LFS push mirror: upload failed", "oid", obj.Oid, "error", err)
 			continue
 		}
@@ -207,19 +198,19 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 
 // doBasicUpload uploads an LFS object via the basic transfer protocol, then
 // fires the optional verify action.
-func (m *Mirror) doBasicUpload(ctx context.Context, oid string, uploadAction lfs.Action, actions map[string]lfs.Action, getter lfs.Getter) error {
-	content, info, err := getter.Get(oid)
+func (m *Mirror) doBasicUpload(ctx context.Context, oid string, uploadAction lfs.Action, actions map[string]lfs.Action) error {
+	content, size, err := m.OpenObject(ctx, oid)
 	if err != nil {
 		return fmt.Errorf("read local object: %w", err)
 	}
 
-	req, err := uploadAction.UploadRequest(ctx, content, info.Size())
+	req, err := uploadAction.UploadRequest(ctx, content, size)
 	if err != nil {
 		_ = content.Close()
 		return fmt.Errorf("build upload request: %w", err)
 	}
 
-	resp, err := netutil.HTTPClient.Do(req)
+	resp, err := m.httpClient.Do(req)
 	_ = content.Close()
 	if err != nil {
 		return fmt.Errorf("upload object: %w", err)
@@ -237,7 +228,7 @@ func (m *Mirror) doBasicUpload(ctx context.Context, oid string, uploadAction lfs
 			return fmt.Errorf("build verify request: %w", err)
 		}
 		verifyReq.Method = http.MethodPost
-		verifyResp, err := netutil.HTTPClient.Do(verifyReq)
+		verifyResp, err := m.httpClient.Do(verifyReq)
 		if err != nil {
 			return fmt.Errorf("verify object: %w", err)
 		}
@@ -249,13 +240,13 @@ func (m *Mirror) doBasicUpload(ctx context.Context, oid string, uploadAction lfs
 
 // doXETUpload uploads an LFS object to the remote XET CAS using the credentials
 // embedded in uploadAction.Header, then fires the optional verify action.
-func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, verifyAction lfs.Action, getter lfs.Getter, xetC *xetclient.Client) error {
+func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, verifyAction lfs.Action, xetC *xetclient.Client) error {
 	casURL := uploadAction.Header["X-Xet-Cas-Url"]
 	casToken := uploadAction.Header["X-Xet-Access-Token"]
 
 	provider := xetclient.StaticAuthProvider(casURL, casToken)
 
-	content, _, err := getter.Get(oid)
+	content, _, err := m.OpenObject(ctx, oid)
 	if err != nil {
 		return fmt.Errorf("read local object: %w", err)
 	}
@@ -272,7 +263,7 @@ func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, veri
 			return nil
 		}
 		verifyReq.Method = http.MethodPost
-		verifyResp, err := netutil.HTTPClient.Do(verifyReq)
+		verifyResp, err := m.httpClient.Do(verifyReq)
 		if err != nil {
 			slog.WarnContext(ctx, "LFS push mirror: failed to verify XET upload", "oid", oid, "error", err)
 			return nil

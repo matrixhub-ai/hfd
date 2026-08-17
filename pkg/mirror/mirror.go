@@ -2,17 +2,27 @@ package mirror
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
-
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/receive"
+	xetclient "github.com/wzshiming/xet/client"
+	xetmirror "github.com/wzshiming/xet/mirror"
+	xetserver "github.com/wzshiming/xet/server"
+	xetstorage "github.com/wzshiming/xet/storage"
+	xettoken "github.com/wzshiming/xet/token"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/matrixhub-ai/hfd/internal/stallguard"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
 )
 
 // SourceFunc determines the source URL of a repository mirror.
@@ -30,29 +40,49 @@ type DestinationFunc func(ctx context.Context, repoName string) (string, bool, e
 // "refs/tags/v1.0") and returns the filtered list of refs to sync.
 type RefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
 
-// Mirror handles repository mirror operations, including syncing from upstream and firing hooks for ref changes.
+// GitOutputFunc defines a function type for providing an io.Writer to capture git command output for a given repository.
+type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
+
+// SyncUserInfoFunc defines a function type for generating a sync token for a given repository, used to coordinate concurrent sync operations.
+type SyncUserInfoFunc func(ctx context.Context, repoName string) (*url.Userinfo, error)
+
+// Mirror handles repository mirror operations: git ref syncing (pull and
+// push) plus an xet-backed data plane that caches upstream file bytes as
+// xorbs/shards and serves them to both xet-capable and plain LFS clients.
 type Mirror struct {
 	mirrorSourceFunc      SourceFunc
 	mirrorDestinationFunc DestinationFunc
 	mirrorRefFilterFunc   RefFilterFunc
 	preReceiveHookFunc    receive.PreReceiveHookFunc
 	postReceiveHookFunc   receive.PostReceiveHookFunc
+	permissionHookFunc    permission.PermissionHookFunc
 	syncUserInfoFunc      SyncUserInfoFunc
 	gitOutputFunc         GitOutputFunc
-	lfsStorage            lfs.Storage
 	repositoriesFS        billy.Filesystem
 	concurrency           int
-	enablePullXET         bool
-	enablePushXET         bool
-	cacheDir              string
-	xetEvictMaxBytes      int64
-	xetEvictBeforeFunc    func() time.Time
-	lfsTeeCache           *teeCache
-	pullGroup             singleflight.Group
-	pushGroup             singleflight.Group
 	progressFunc          func(name string, downloaded, total int64)
 	ttl                   time.Duration
-	lastSync              sync.Map // map[string]time.Time, keyed by repoName
+	pullGroup             singleflight.Group
+	pushGroup             singleflight.Group
+	lastSync              sync.Map // map[string]time.Time, keyed by repoPath
+	background            sync.WaitGroup
+
+	// data plane
+	upstreamURL    string
+	upstreamToken  string
+	externalURL    string
+	dataDir        string
+	xetCacheSize   int64
+	xetStorage     xetstorage.Storage
+	xetClient      *xetclient.Client
+	issuer         *xettoken.Issuer
+	dataPlane      http.Handler
+	mirrorHandler  *xetmirror.Handler // nil without a pull upstream
+	httpClient     *http.Client       // LFS batch/upload/verify; no timeout, uploads may run long
+	downloadClient *http.Client       // object content downloads, resuming interrupted streams
+
+	oidIndex    sync.Map // oid -> resolveTarget, populated by pull syncs
+	prefetching sync.Map // oid -> struct{}, in-flight prefetch dedupe
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -93,10 +123,11 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	}
 }
 
-// WithLFSStorage configures the Mirror to use the provided LFS storage backend for caching fetched objects.
-func WithLFSStorage(storage lfs.Storage) Option {
+// WithPermissionHookFunc sets the permission hook enforced on the data
+// plane's user-credential routes (token minting and the sha256 bridge).
+func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	return func(m *Mirror) {
-		m.lfsStorage = storage
+		m.permissionHookFunc = fn
 	}
 }
 
@@ -108,39 +139,7 @@ func WithRepositoriesFS(fs billy.Filesystem) Option {
 	}
 }
 
-// WithPullXET enables or disables the use of XET for fetching LFS objects during mirror pull operations.
-// When enabled, LFS objects will be fetched directly to the configured storage backend, bypassing local disk caching.
-func WithPullXET(b bool) Option {
-	return func(m *Mirror) {
-		m.enablePullXET = b
-	}
-}
-
-// WithPushXET enables or disables the use of XET for fetching LFS objects during mirror push operations.
-// When enabled, LFS objects will be fetched directly to the configured storage backend, bypassing local disk caching.
-func WithPushXET(b bool) Option {
-	return func(m *Mirror) {
-		m.enablePushXET = b
-	}
-}
-
-// WithXETIdleEvictMaxBytes sets the maximum XET disk cache size after an idle cleanup pass.
-// A value of 0 evicts all eligible inactive entries.
-func WithXETIdleEvictMaxBytes(maxBytes int64) Option {
-	return func(m *Mirror) {
-		m.xetEvictMaxBytes = maxBytes
-	}
-}
-
-// WithXETIdleEvictBeforeFunc sets the cutoff time used for XET disk cache eviction when downloads become idle.
-// Entries updated before the returned time are eligible for eviction.
-func WithXETIdleEvictBeforeFunc(fn func() time.Time) Option {
-	return func(m *Mirror) {
-		m.xetEvictBeforeFunc = fn
-	}
-}
-
-// WithConcurrency sets the concurrency level for concurrent fetching of LFS objects during mirror syncs.
+// WithConcurrency sets the concurrency level for xet chunk transfers.
 func WithConcurrency(concurrency int) Option {
 	return func(m *Mirror) {
 		m.concurrency = concurrency
@@ -154,22 +153,12 @@ func WithProgressFunc(fn func(name string, downloaded, total int64)) Option {
 	}
 }
 
-// WithCacheDir sets the directory path for caching LFS objects during mirror syncs. If not set, a temporary directory will be used.
-func WithCacheDir(dir string) Option {
-	return func(m *Mirror) {
-		m.cacheDir = dir
-	}
-}
-
-// WithTTL sets the time-to-live duration for cached LFS objects in the mirror. Objects not accessed within this duration may be evicted from the cache.
+// WithTTL sets the minimum interval between pull syncs of the same repository.
 func WithTTL(d time.Duration) Option {
 	return func(m *Mirror) {
 		m.ttl = d
 	}
 }
-
-// GitOutputFunc defines a function type for providing an io.Writer to capture git command output for a given repository.
-type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
 
 // WithGitOutputFunc sets a callback function to provide an io.Writer for capturing git command output for a given repository.
 func WithGitOutputFunc(fn GitOutputFunc) Option {
@@ -178,9 +167,6 @@ func WithGitOutputFunc(fn GitOutputFunc) Option {
 	}
 }
 
-// SyncUserInfoFunc defines a function type for generating a sync token for a given repository, used to coordinate concurrent sync operations.
-type SyncUserInfoFunc func(ctx context.Context, repoName string) (*url.Userinfo, error)
-
 // WithSyncUserInfoFunc sets a callback function to generate a sync token for a given repository, used to coordinate concurrent sync operations.
 func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 	return func(m *Mirror) {
@@ -188,21 +174,146 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 	}
 }
 
-// NewMirror creates a new Mirror with the provided options.
-func NewMirror(opts ...Option) *Mirror {
+// WithUpstream sets the upstream hub base URL for the data plane (e.g.
+// https://huggingface.co). Setting it enables the xet mirror data plane.
+func WithUpstream(upstream string) Option {
+	return func(m *Mirror) {
+		m.upstreamURL = upstream
+	}
+}
+
+// WithUpstreamToken sets the credential the data plane uses against the upstream hub.
+func WithUpstreamToken(token string) Option {
+	return func(m *Mirror) {
+		m.upstreamToken = token
+	}
+}
+
+// WithExternalURL sets the externally visible base URL used in xet Link
+// headers and minted CAS tokens. When empty it is derived from each request.
+func WithExternalURL(external string) Option {
+	return func(m *Mirror) {
+		m.externalURL = external
+	}
+}
+
+// WithDataDir sets the directory holding the xet storage, the mirror
+// ingest cache, and the xet client chunk cache.
+func WithDataDir(dir string) Option {
+	return func(m *Mirror) {
+		m.dataDir = dir
+	}
+}
+
+// WithXETStorage overrides the xet storage backend. When unset a file
+// storage rooted under the data directory is created.
+func WithXETStorage(s xetstorage.Storage) Option {
+	return func(m *Mirror) {
+		m.xetStorage = s
+	}
+}
+
+// WithXETCacheSize bounds the xet client chunk cache size in bytes.
+func WithXETCacheSize(sizeBytes int64) Option {
+	return func(m *Mirror) {
+		m.xetCacheSize = sizeBytes
+	}
+}
+
+// NewMirror creates a new Mirror with the provided options. When an upstream
+// is configured it assembles the xet data plane: a CAS server whose
+// fallthrough is the xet mirror handler, sharing one storage and one token
+// issuer, following the composition of xetd.
+func NewMirror(opts ...Option) (*Mirror, error) {
 	m := &Mirror{}
 	for _, opt := range opts {
 		opt(m)
 	}
-	if m.xetEvictBeforeFunc == nil {
-		m.xetEvictBeforeFunc = time.Now
-	}
 	if m.repositoriesFS == nil {
 		m.repositoriesFS = osfs.Default
 	}
+	if m.dataDir == "" {
+		m.dataDir = filepath.Join(".", "xet-mirror-data")
+	}
+	// The batch/upload client has no overall timeout because uploads may run
+	// long; the stall guard bounds no-progress phases instead.
+	m.httpClient = http.DefaultClient
+	m.downloadClient = newDownloadClient()
 
-	m.lfsTeeCache = newTeeCache(m.lfsStorage, m.concurrency, m.enablePullXET, m.enablePushXET, m.cacheDir, m.xetEvictMaxBytes, m.xetEvictBeforeFunc, m.progressFunc)
-	return m
+	chunksDir := filepath.Join(m.dataDir, "chunks")
+	if err := os.MkdirAll(chunksDir, 0755); err != nil {
+		return nil, fmt.Errorf("create xet chunk cache dir: %w", err)
+	}
+	clientOpts := []xetclient.Options{
+		xetclient.WithCacheDir(chunksDir),
+		// The xet client wraps this transport with its own httpseek layer, so
+		// stalled chunk downloads abort and resume instead of hanging.
+		xetclient.WithHTTPClient(&http.Client{Transport: stallguard.NewTransport(http.DefaultTransport, stallIdleWindow)}),
+	}
+	if m.concurrency > 0 {
+		clientOpts = append(clientOpts, xetclient.WithConcurrency(m.concurrency))
+	}
+	if m.progressFunc != nil {
+		clientOpts = append(clientOpts, xetclient.WithProgressFunc(m.progressFunc))
+	}
+	if m.xetCacheSize > 0 {
+		clientOpts = append(clientOpts, xetclient.WithCacheSize(m.xetCacheSize))
+	}
+	xetC, err := xetclient.NewClient(clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("create xet client: %w", err)
+	}
+	m.xetClient = xetC
+
+	if m.xetStorage == nil {
+		stor, err := xetstorage.NewFileStorage(
+			xetstorage.WithBasePath(filepath.Join(m.dataDir, "storage")),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create xet storage: %w", err)
+		}
+		m.xetStorage = stor
+	}
+
+	issuer, err := xettoken.NewIssuer(nil, 15*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("create token issuer: %w", err)
+	}
+	m.issuer = issuer
+
+	// The CAS server always runs so xet clients can upload LFS objects; the
+	// upstream ingest handler is added only when a pull upstream exists.
+	casNext := http.Handler(http.NotFoundHandler())
+	if m.upstreamURL != "" {
+		mirrorHandler, err := xetmirror.NewHandler(
+			xetmirror.WithStorage(m.xetStorage),
+			xetmirror.WithUpstream(m.upstreamURL),
+			xetmirror.WithUpstreamToken(m.upstreamToken),
+			xetmirror.WithCacheDir(filepath.Join(m.dataDir, "mirror")),
+			xetmirror.WithClient(m.xetClient),
+			xetmirror.WithMintToken(issuer.Mint),
+			xetmirror.WithExternalURL(m.externalURL),
+			// hfd serves its own control plane; unmatched requests must not
+			// be proxied upstream.
+			xetmirror.WithNext(http.NotFoundHandler()),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create xet mirror handler: %w", err)
+		}
+		casNext = mirrorHandler
+		m.mirrorHandler = mirrorHandler
+	}
+
+	m.dataPlane = xetserver.NewHandler(
+		xetserver.WithStorage(m.xetStorage),
+		xetserver.WithAuthFunc(func(tok string) bool { return issuer.Validate(tok, time.Now()) }),
+		xetserver.WithNext(casNext),
+	)
+	if m.permissionHookFunc != nil {
+		m.dataPlane = m.gateUserPaths(m.dataPlane)
+	}
+
+	return m, nil
 }
 
 // IsMirrorSource checks if the given repository is a mirror source by invoking the mirrorSourceFunc callback. Returns false if the callback is not set.
@@ -212,6 +323,12 @@ func (m *Mirror) IsMirrorSource(ctx context.Context, repoName string) (bool, err
 	}
 	_, isMirror, err := m.mirrorSourceFunc(ctx, repoName)
 	return isMirror, err
+}
+
+// Wait blocks until background work (LFS prefetches and the ingests they
+// drive) has finished. Call it before tearing down the data directory.
+func (m *Mirror) Wait() {
+	m.background.Wait()
 }
 
 // IsMirrorDestination checks if the given repository is a mirror destination by invoking the mirrorDestinationFunc callback. Returns false if the callback is not set.

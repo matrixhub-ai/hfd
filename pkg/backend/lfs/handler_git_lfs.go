@@ -3,19 +3,17 @@ package lfs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
@@ -45,23 +43,30 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	var responseObjects []*lfsRepresentation
 
+	// Select the xet transfer for uploads when the client advertises it and
+	// the data plane can receive xorbs; uploaded objects land in xet storage.
+	xetUpload := bv.Operation == "upload" && h.mirror != nil && h.mirror.XETUploadEnabled() &&
+		slices.ContainsFunc(bv.Transfers, func(tr string) bool { return strings.EqualFold(tr, "xet") })
+	var casURL, casToken string
+	var casExpiresAt time.Time
+	if xetUpload {
+		casURL, casToken, casExpiresAt = h.mirror.MintXETToken(r)
+	}
+
 	// Create a response object
 	for _, object := range bv.Objects {
-		if h.lfsStorage.Exists(object.Oid) {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false, true))
+		if h.mirror != nil && h.mirror.KnowsObject(r.Context(), object.Oid) {
+			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false))
 			continue
-		}
-
-		if h.mirror != nil {
-			if pf := h.mirror.Get(object.Oid); pf != nil {
-				responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, true, false, false))
-				continue
-			}
 		}
 
 		// Object is not found
 		if bv.Operation == "upload" {
-			responseObjects = append(responseObjects, h.lfsRepresent(r.Context(), bv.Operation, object, false, true, false))
+			rep := h.lfsRepresent(r.Context(), bv.Operation, object, false, true)
+			if xetUpload {
+				addXETUploadHeaders(rep, casURL, casToken, casExpiresAt)
+			}
+			responseObjects = append(responseObjects, rep)
 		} else {
 			rep := &lfsRepresentation{
 				Oid:  object.Oid,
@@ -77,112 +82,82 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", metaMediaType)
 
+	transfer := "basic"
+	if xetUpload {
+		transfer = "xet"
+	}
 	respobj := &lfsBatchResponse{
-		Transfer: "basic",
+		Transfer: transfer,
 		Objects:  responseObjects,
 	}
 
 	responseJSON(w, respobj, http.StatusOK)
 }
 
-// handlePutContent receives data from the client and puts it into the content store.
-// Presign-capable storages are handled at batch time; a client reaching this
-// endpoint sends the content here, so store it directly.
+// addXETUploadHeaders attaches the CAS credentials the xet transfer reads
+// from the upload action; the href stays as the basic fallback endpoint.
+func addXETUploadHeaders(rep *lfsRepresentation, casURL, casToken string, expiresAt time.Time) {
+	upload, ok := rep.Actions["upload"]
+	if !ok {
+		return
+	}
+	if upload.Header == nil {
+		upload.Header = make(map[string]string)
+	}
+	upload.Header["X-Xet-Cas-Url"] = casURL
+	upload.Header["X-Xet-Access-Token"] = casToken
+	upload.Header["X-Xet-Token-Expiration"] = strconv.FormatInt(expiresAt.Unix(), 10)
+	if upload.ExpiresAt.IsZero() {
+		upload.ExpiresAt = expiresAt
+	}
+}
+
+// handlePutContent receives data from the client and ingests it into the xet
+// storage server-side; the OID and size are verified before anything lands.
 func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if err := h.lfsStorage.Put(rv.Oid, r.Body, r.ContentLength); err != nil {
+	if h.mirror == nil {
+		responseJSON(w, "no object store configured", http.StatusNotImplemented)
+		return
+	}
+	if err := h.mirror.PutObject(r.Context(), rv.Oid, r.Body, r.ContentLength); err != nil {
 		responseJSON(w, fmt.Sprintf("failed to put LFS object %s: %v", rv.Oid, err), http.StatusInternalServerError)
 		return
 	}
 }
 
-// handleGetContent gets the content from the content store
+// handleGetContent proxies the object bytes out of the xet storage; there is
+// no presignable location for reconstructed files.
 func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if !h.lfsStorage.Exists(rv.Oid) {
-		if h.mirror != nil {
-			pf := h.mirror.Get(rv.Oid)
-			if pf != nil {
-				rs := pf.NewReadSeeker()
-				defer rs.Close()
-				http.ServeContent(w, r, rv.Oid, pf.ModTime(), rs)
-				return
-			}
-		}
-		responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
+	if h.mirror != nil && h.mirror.ServeObject(w, r, rv.Oid) {
 		return
 	}
-	if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
-		url, _, err := signer.SignGet(rv.Oid)
-		if err != nil {
-			responseJSON(w, fmt.Sprintf("failed to sign URL for LFS object %q: %v", rv.Oid, err), http.StatusInternalServerError)
-			return
-		}
-		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-		return
-	}
-	if getter, ok := h.lfsStorage.(lfs.Getter); ok {
-		content, stat, err := getter.Get(rv.Oid)
-		if err != nil {
-			if os.IsNotExist(err) {
-				responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
-				return
-			}
-			responseJSON(w, fmt.Sprintf("failed to get LFS object %s: %v", rv.Oid, err), http.StatusInternalServerError)
-			return
-		}
-		defer func() {
-			_ = content.Close()
-		}()
-
-		w.Header().Set("ETag", fmt.Sprintf("\"%s\"", rv.Oid))
-		http.ServeContent(w, r, rv.Oid, stat.ModTime(), content)
-		return
-	}
-	responseJSON(w, fmt.Sprintf("LFS storage does not support direct content retrieval for object %s", rv.Oid), http.StatusNotImplemented)
+	responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
 }
 
-// handleVerifyObject confirms an upload completed. Staged presigned uploads
-// are size-checked and moved into place (their hash rides in the signed
-// checksum); Put uploads were hash-checked on write, so only presence and
-// size are checked.
+// handleVerifyObject confirms an upload completed. The content hash is the
+// OID, so presence in the xet storage implies integrity and size.
 func (h *Handler) handleVerifyObject(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if verifier, ok := h.lfsStorage.(lfs.PutVerifier); ok {
-		if err := verifier.VerifyPut(rv.Oid, rv.Size); err != nil {
-			switch {
-			case os.IsNotExist(err):
-				responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
-			case errors.Is(err, lfs.ErrSizeMismatch):
-				responseJSON(w, "Size mismatch", http.StatusBadRequest)
-			default:
-				responseJSON(w, fmt.Sprintf("failed to verify LFS object %s: %v", rv.Oid, err), http.StatusInternalServerError)
-			}
-		}
+	if h.mirrorHasObject(r, rv.Oid) {
 		return
 	}
-	info, err := h.lfsStorage.Info(rv.Oid)
-	if err != nil {
-		if os.IsNotExist(err) {
-			responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
-			return
-		}
-		responseJSON(w, fmt.Sprintf("failed to get LFS object %s info: %v", rv.Oid, err), http.StatusInternalServerError)
-		return
-	}
+	responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
+}
 
-	if info.Size() != rv.Size {
-		responseJSON(w, "Size mismatch", http.StatusBadRequest)
-		return
-	}
+// mirrorHasObject reports whether the xet data plane holds the object; its
+// content hash is the OID, so presence implies integrity.
+func (h *Handler) mirrorHasObject(r *http.Request, oid string) bool {
+	return h.mirror != nil && h.mirror.HasObject(r.Context(), oid)
 }
 
 const tokenExpiration = time.Hour
 
 // lfsRepresent takes a RequestVars and Meta and turns it into a Representation suitable
-// for json encoding. inStorage reports whether the object is already in the
-// LFS storage (as opposed to only in the mirror cache).
-func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVars, download, upload, inStorage bool) *lfsRepresentation {
+// for json encoding. All content transfers are served by this server: the
+// xet storage has no presignable location for whole objects.
+func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVars, download, upload bool) *lfsRepresentation {
 	rep := &lfsRepresentation{
 		Oid:     rv.Oid,
 		Size:    rv.Size,
@@ -192,16 +167,6 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 	user, _ := authenticate.GetUserInfo(ctx)
 
 	if download && op == "download" {
-		// hand out a presigned URL when the storage holds the object; objects
-		// only in the mirror cache are served by this server's endpoint
-		if signer, ok := h.lfsStorage.(lfs.SignGetter); ok && inStorage {
-			if url, header, err := signer.SignGet(rv.Oid); err == nil {
-				rep.Actions["download"] = &lfsLink{Href: url, Header: header, ExpiresAt: time.Now().Add(lfs.SignExpiry)}
-				return rep
-			} else {
-				slog.WarnContext(ctx, "failed to presign LFS download link", "oid", rv.Oid, "error", err)
-			}
-		}
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
@@ -217,17 +182,6 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 	}
 
 	if upload && op == "upload" {
-		// the checksum-enforced grant requires its signed headers on the PUT;
-		// clients that upload bare (hf-style) send the content here instead
-		if signer, ok := h.lfsStorage.(lfs.SignPutter); ok && !rv.PlainPut {
-			if url, header, err := signer.SignPut(rv.Oid); err == nil {
-				rep.Actions["upload"] = &lfsLink{Href: url, Header: header, ExpiresAt: time.Now().Add(lfs.SignExpiry)}
-				rep.Actions["verify"] = h.verifyAction(ctx, rv, user.User)
-				return rep
-			} else {
-				slog.WarnContext(ctx, "failed to presign LFS upload link", "oid", rv.Oid, "error", err)
-			}
-		}
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
@@ -310,15 +264,10 @@ func unpackBatch(r *http.Request) *lfsBatchVars {
 	}
 	origin := fmt.Sprintf("%s://%s", scheme, r.Host)
 
-	// hf-style clients declare the "multipart" transfer and PUT without the
-	// action headers, so checksum-enforced presigned uploads are unusable
-	// for them
-	plainPut := slices.Contains(bv.Transfers, "multipart")
 	for i := range len(bv.Objects) {
 		bv.Objects[i].Repo = vars["repo"]
 		bv.Objects[i].Authorization = r.Header.Get("Authorization")
 		bv.Objects[i].Origin = origin
-		bv.Objects[i].PlainPut = plainPut
 	}
 
 	return &bv
@@ -333,9 +282,6 @@ type lfsRequestVars struct {
 
 	Repo          string
 	Authorization string
-	// PlainPut marks clients that upload without the action header (hf-style);
-	// they upload to this server instead of a presigned URL.
-	PlainPut bool `json:"-"`
 }
 
 func (v *lfsRequestVars) objectsLink() string {

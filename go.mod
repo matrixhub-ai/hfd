@@ -12,11 +12,9 @@ require (
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/johannesboyne/gofakes3 v1.2.0
-	github.com/wzshiming/dl v0.0.0-20260427082752-19804485f005
 	github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc
-	github.com/wzshiming/httpseek v0.6.1
-	github.com/wzshiming/ioswmr v0.2.0
-	github.com/wzshiming/xet v0.0.0-20260617081805-02c9cfb4deca
+	github.com/wzshiming/httpseek v0.7.0
+	github.com/wzshiming/xet v0.0.0-20260820060914-da1cda8c493b
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -28,6 +26,8 @@ require (
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74 // indirect
 	github.com/avast/retry-go v2.4.2+incompatible // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.17 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.32.36 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.36 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.37 // indirect
@@ -35,6 +35,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.29 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.36 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.37 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.5.5 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.33.5 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect
 	github.com/aws/smithy-go v1.27.7 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/dpotapov/go-spnego v0.0.0-20210315154721-298b63a54430 // indirect

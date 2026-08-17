@@ -7,7 +7,6 @@ services:
       - "2222:2222"
     command:
       - --pull-mirror=https://huggingface.co
-      - --pull-xet
       - --s3-use-path-style
       - --s3-endpoint=http://s3:9000
       - --s3-sign-endpoint=http://127.0.0.1:9000
@@ -15,7 +14,7 @@ services:
       - --s3-access-key=adminadmin
       - --s3-secret-key=adminadmin
     volumes:
-      - ./data/tmp/:/data/tmp/
+      - ./data/xet/:/data/xet/
   s3:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     ports:

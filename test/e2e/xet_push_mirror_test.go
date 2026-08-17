@@ -3,7 +3,8 @@ package e2e_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,101 +13,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
-	xetserver "github.com/wzshiming/xet/server"
-	xetstorage "github.com/wzshiming/xet/storage"
 )
-
-// xetLFSBatchHandler wraps next, intercepting LFS batch upload requests and
-// returning XET transfer credentials instead of the standard basic PUT URLs.
-// It only intercepts POST requests to paths ending in /info/lfs/objects/batch
-// where the client advertises the "xet" transfer protocol and the operation is "upload".
-func xetLFSBatchHandler(casURL, casToken string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/info/lfs/objects/batch") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "read body: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Re-buffer so that next handler can read the body if we fall through.
-		r.Body = io.NopCloser(bytes.NewReader(body))
-
-		var req struct {
-			Operation string   `json:"operation"`
-			Transfers []string `json:"transfers"`
-			Objects   []struct {
-				Oid  string `json:"oid"`
-				Size int64  `json:"size"`
-			} `json:"objects"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil || req.Operation != "upload" {
-			// Not an upload (or unparseable) — let the standard handler deal with it.
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Only intercept if the client advertises the "xet" transfer protocol.
-		hasXET := false
-		for _, tr := range req.Transfers {
-			if strings.EqualFold(tr, "xet") {
-				hasXET = true
-				break
-			}
-		}
-		if !hasXET {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		type action struct {
-			Href   string            `json:"href"`
-			Header map[string]string `json:"header"`
-		}
-		type obj struct {
-			Oid     string            `json:"oid"`
-			Size    int64             `json:"size"`
-			Actions map[string]action `json:"actions"`
-		}
-
-		objects := make([]obj, 0, len(req.Objects))
-		for _, o := range req.Objects {
-			objects = append(objects, obj{
-				Oid:  o.Oid,
-				Size: o.Size,
-				Actions: map[string]action{
-					"upload": {
-						// Href is a required field in the LFS spec even for XET transfers;
-						// the XET upload path reads its credentials from the headers and
-						// does not use this URL.
-						Href: r.URL.String(),
-						Header: map[string]string{
-							"X-Xet-Cas-Url":      casURL,
-							"X-Xet-Access-Token": casToken,
-						},
-					},
-				},
-			})
-		}
-
-		w.Header().Set("Content-Type", "application/vnd.git-lfs+json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"transfer": "xet",
-			"objects":  objects,
-		})
-	})
-}
 
 // TestXETPushMirror_E2E is an end-to-end test for the XET upload path in the
 // push-mirror flow.  The scenario mirrors a real deployment:
@@ -114,10 +29,11 @@ func xetLFSBatchHandler(casURL, casToken string, next http.Handler) http.Handler
 //  1. A git client pushes an LFS-tracked binary to a "source" HFD server.
 //  2. The post-receive hook on the source server calls Mirror.PushToRemote
 //     with XET enabled.
-//  3. PushToRemote pushes the git refs to a "destination" HFD server and
-//     uploads the LFS object via the XET CAS protocol.
-//  4. The test asserts that the XET CAS server persisted at least one shard,
-//     confirming the full XET upload path executed.
+//  3. PushToRemote pushes the git refs to a "destination" HFD server whose
+//     LFS batch endpoint negotiates the xet transfer and hands out CAS
+//     credentials for its own data plane.
+//  4. The test asserts that the destination's xet storage holds the object
+//     and serves back the original bytes.
 func TestXETPushMirror_E2E(t *testing.T) {
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		t.Skip("git-lfs not available, skipping XET push mirror e2e test")
@@ -126,44 +42,35 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	root := t.TempDir()
 
 	// ------------------------------------------------------------------ //
-	// 1.  XET CAS server (in-process)                                      //
-	// ------------------------------------------------------------------ //
-	xetStorageDir := filepath.Join(root, "xet-storage")
-	xetStore, err := xetstorage.NewFileStorage(
-		xetstorage.WithBasePath(xetStorageDir),
-	)
-	if err != nil {
-		t.Fatalf("create xet storage: %v", err)
-	}
-	casHandler := xetserver.NewHandler(xetserver.WithStorage(xetStore))
-	casServer := httptest.NewServer(casHandler)
-	t.Cleanup(casServer.Close)
-	casURL := casServer.URL
-	casToken := "test-xet-token"
-
-	// ------------------------------------------------------------------ //
-	// 2.  Destination HFD server (git backend + XET-aware LFS batch)       //
+	// 1.  Destination HFD server (git backend + xet-capable LFS batch)     //
 	// ------------------------------------------------------------------ //
 	destStorage := newTestStorage(t, newDataDir(t, "xet-mirror-dest"))
-	destLFSStorage := lfs.New(destStorage.LFSFS())
+
+	// Data-plane-only mirror: no pull upstream, no push destination; it
+	// provides the CAS server, token issuer, and xet storage for LFS content.
+	destMirror, err := mirror.NewMirror(
+		mirror.WithRepositoriesFS(destStorage.RepositoriesFS()),
+		mirror.WithDataDir(filepath.Join(root, "dest-xet")),
+	)
+	if err != nil {
+		t.Fatalf("create dest mirror: %v", err)
+	}
 
 	var destHandler http.Handler
 	destHandler = backendhf.NewHandler(
 		backendhf.WithStorage(destStorage),
-		backendhf.WithLFSStorage(destLFSStorage),
+		backendhf.WithMirror(destMirror),
 	)
-	// Wrap the inner HF+LFS handler with the XET-aware LFS batch interceptor,
-	// then add the LFS object-upload handler on top, then the git handler.
 	destHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(destStorage),
 		backendlfs.WithNext(destHandler),
-		backendlfs.WithLFSStorage(destLFSStorage),
+		backendlfs.WithMirror(destMirror),
 	)
-	destHandler = xetLFSBatchHandler(casURL, casToken, destHandler)
 	destHandler = backendhttp.NewHandler(
 		backendhttp.WithStorage(destStorage),
 		backendhttp.WithNext(destHandler),
 	)
+	destHandler = mountDataPlane(t, destMirror, destHandler)
 
 	destServer := httptest.NewServer(destHandler)
 	t.Cleanup(destServer.Close)
@@ -185,21 +92,21 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	}
 
 	// ------------------------------------------------------------------ //
-	// 3.  Source HFD server with a post-receive hook that calls             //
+	// 2.  Source HFD server with a post-receive hook that calls             //
 	//     Mirror.PushToRemote with XET enabled.                            //
 	// ------------------------------------------------------------------ //
 	sourceStorage := newTestStorage(t, newDataDir(t, "xet-mirror-source"))
-	sourceLFSStorage := lfs.New(sourceStorage.LFSFS())
 
-	sharedMirror := mirror.NewMirror(
+	sharedMirror, err := mirror.NewMirror(
 		mirror.WithMirrorDestinationFunc(func(_ context.Context, name string) (string, bool, error) {
 			return destServer.URL + "/" + name, true, nil
 		}),
-		mirror.WithLFSStorage(sourceLFSStorage),
 		mirror.WithRepositoriesFS(sourceStorage.RepositoriesFS()),
-		mirror.WithPushXET(true),
-		mirror.WithCacheDir(filepath.Join(root, "xet-cache")),
+		mirror.WithDataDir(filepath.Join(root, "xet-cache")),
 	)
+	if err != nil {
+		t.Fatalf("create mirror: %v", err)
+	}
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
 		repoPath := repository.ResolvePath(name)
@@ -209,18 +116,19 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	var sourceHandler http.Handler
 	sourceHandler = backendhf.NewHandler(
 		backendhf.WithStorage(sourceStorage),
-		backendhf.WithLFSStorage(sourceLFSStorage),
+		backendhf.WithMirror(sharedMirror),
 	)
 	sourceHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(sourceStorage),
 		backendlfs.WithNext(sourceHandler),
-		backendlfs.WithLFSStorage(sourceLFSStorage),
+		backendlfs.WithMirror(sharedMirror),
 	)
 	sourceHandler = backendhttp.NewHandler(
 		backendhttp.WithStorage(sourceStorage),
 		backendhttp.WithNext(sourceHandler),
 		backendhttp.WithPostReceiveHookFunc(postHook),
 	)
+	sourceHandler = mountDataPlane(t, sharedMirror, sourceHandler)
 
 	sourceServer := httptest.NewServer(sourceHandler)
 	t.Cleanup(sourceServer.Close)
@@ -237,7 +145,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	}
 
 	// ------------------------------------------------------------------ //
-	// 4.  Client: clone → track with LFS → push                           //
+	// 3.  Client: clone → track with LFS → push                           //
 	// ------------------------------------------------------------------ //
 	clientDir := filepath.Join(root, "client")
 	if err := os.MkdirAll(clientDir, 0755); err != nil {
@@ -264,19 +172,39 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// This push triggers the post-receive hook on the source server, which calls
 	// Mirror.PushToRemote.  PushToRemote:
 	//   a) pushes the git refs to the destination server, and
-	//   b) calls pushMirrorLFS which performs the XET upload to the CAS server.
+	//   b) calls pushMirrorLFS, which negotiates the xet transfer with the
+	//      destination's LFS batch endpoint and uploads to its CAS.
 	runXETGitCmd(t, cloneDir, env, "push", "origin", "main")
 
 	// ------------------------------------------------------------------ //
-	// 5.  Assert: XET CAS server should have persisted at least one shard  //
+	// 4.  Assert: destination xet storage serves the object by its OID     //
 	// ------------------------------------------------------------------ //
-	shardsDir := filepath.Join(xetStorageDir, "shards")
-	entries, err := os.ReadDir(shardsDir)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read xet shards dir: %v", err)
+	sum := sha256.Sum256(binContent)
+	oid := hex.EncodeToString(sum[:])
+	ctx := context.Background()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for !destMirror.HasObject(ctx, oid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("destination never received object %s via xet upload", oid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	if len(entries) == 0 {
-		t.Fatal("expected XET CAS server to have at least one shard after push, got none")
+
+	rs, size, err := destMirror.OpenObject(ctx, oid)
+	if err != nil {
+		t.Fatalf("open uploaded object: %v", err)
+	}
+	defer rs.Close()
+	if size != int64(len(binContent)) {
+		t.Fatalf("uploaded object size = %d, want %d", size, len(binContent))
+	}
+	got, err := io.ReadAll(rs)
+	if err != nil {
+		t.Fatalf("read uploaded object: %v", err)
+	}
+	if !bytes.Equal(got, binContent) {
+		t.Fatal("uploaded object bytes mismatch")
 	}
 }
 

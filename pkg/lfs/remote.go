@@ -89,7 +89,9 @@ var (
 	TransferWithXETCapabilities = []string{"xet", "basic"}
 )
 
-// DownloadBatch requests download URLs for LFS objects using the batch API
+// DownloadBatch requests download URLs for LFS objects using the batch API.
+// It is the fallback fetch path for upstreams that do not expose the hub
+// resolve API the xet mirror ingests through.
 func (c *Client) DownloadBatch(ctx context.Context, lfsEndpoint string, transfers []string, objects []LFSObject) (*BatchResponse, error) {
 	return c.batch(ctx, lfsEndpoint, "download", transfers, objects)
 }

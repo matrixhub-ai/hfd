@@ -14,13 +14,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
+	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -31,17 +31,14 @@ func s3Configured(cfg *config) bool {
 	return cfg.S3Endpoint != "" && cfg.S3Bucket != ""
 }
 
-// newS3Filesystem returns a billy filesystem rooted at the S3 bucket, holding
-// both git repositories and LFS objects. Metadata and small object bodies are
-// kept in a local write-through cache; writes from other processes become
-// visible after the TTL. The presign client lets LFS hand out URLs for direct
-// content transfers, signed against the sign endpoint when it differs.
-func newS3Filesystem(cfg *config) *s3fs.S3FS {
+// newS3Client builds the S3 client shared by the repository filesystem and
+// the xet content storage.
+func newS3Client(cfg *config) *s3.Client {
 	awsCfg := aws.Config{
 		Region:      "us-east-1",
 		Credentials: credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, ""),
 	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.S3Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.S3Endpoint)
 		}
@@ -50,6 +47,14 @@ func newS3Filesystem(cfg *config) *s3fs.S3FS {
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
+}
+
+// newS3Filesystem returns a billy filesystem rooted at the S3 bucket, holding
+// git repositories. Metadata and small object bodies are kept in a local
+// write-through cache; writes from other processes become visible after the
+// TTL.
+func newS3Filesystem(cfg *config) *s3fs.S3FS {
+	client := newS3Client(cfg)
 	var presignOpts []func(*s3.PresignOptions)
 	if cfg.S3SignEndpoint != "" {
 		presignOpts = append(presignOpts, s3fs.WithPresignEndpoint(cfg.S3SignEndpoint))
@@ -82,42 +87,52 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 	return storage.NewStorage(opts...), nil
 }
 
-// buildMirror creates the shared mirror when pull or push mirroring is
-// configured, or returns nil otherwise.
-func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *serverHooks, lfsStorage lfs.Storage) *mirror.Mirror {
-	if cfg.PullMirrorURL == "" && cfg.PushMirrorURL == "" {
-		return nil
-	}
-
+// buildMirror creates the shared mirror. The xet data plane is always
+// enabled and holds all LFS content; pull and push mirroring activate when
+// their URLs are configured. In S3 mode the xet storage lives in the bucket,
+// and xorb downloads presign straight to S3 — everything else is proxied.
+func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *serverHooks) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
 		mirror.WithPreReceiveHookFunc(hooks.preReceive),
 		mirror.WithPostReceiveHookFunc(hooks.postReceive),
-		mirror.WithLFSStorage(lfsStorage),
+		mirror.WithPermissionHookFunc(hooks.permission),
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-		mirror.WithPullXET(cfg.PullMirrorXET),
-		mirror.WithPushXET(cfg.PushMirrorXET),
-		mirror.WithXETIdleEvictMaxBytes(cfg.ProxyXETEvictMaxBytes),
-		mirror.WithXETIdleEvictBeforeFunc(func() time.Time {
-			if cfg.ProxyXETEvictBefore < 0 {
-				return time.Time{}
-			}
-			return time.Now().Add(-cfg.ProxyXETEvictBefore)
-		}),
 		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
-		mirror.WithCacheDir(filepath.Join(cfg.DataDir, "tmp")),
+		mirror.WithDataDir(filepath.Join(cfg.DataDir, "xet")),
+		mirror.WithXETCacheSize(cfg.ProxyCacheSize),
+		mirror.WithExternalURL(cfg.HostURL),
 		mirror.WithGitOutputFunc(hooks.gitOutput),
 		mirror.WithSyncUserInfoFunc(hooks.syncUserInfo),
 		mirror.WithTTL(cfg.ProxyCacheTTL),
 		mirror.WithMirrorRefFilterFunc(hooks.mirrorRefFilter),
 	}
 
+	if s3Configured(cfg) {
+		s3Opts := []xetstorage.S3Option{
+			xetstorage.WithS3Client(newS3Client(cfg)),
+			xetstorage.WithS3Bucket(cfg.S3Bucket),
+			xetstorage.WithS3Prefix("xet"),
+		}
+		if cfg.S3SignEndpoint != "" {
+			s3Opts = append(s3Opts, xetstorage.WithS3PresignEndpoint(cfg.S3SignEndpoint))
+		}
+		xs, err := xetstorage.NewS3Storage(ctx, s3Opts...)
+		if err != nil {
+			return nil, fmt.Errorf("create xet S3 storage: %w", err)
+		}
+		opts = append(opts, mirror.WithXETStorage(xs))
+	}
+
 	if cfg.PullMirrorURL != "" {
 		slog.InfoContext(ctx, "Pull mirror mode enabled", "source", cfg.PullMirrorURL)
 		baseURL := strings.TrimSuffix(cfg.PullMirrorURL, "/")
-		opts = append(opts, mirror.WithMirrorSourceFunc(
-			func(ctx context.Context, repoName string) (string, bool, error) {
-				return baseURL + "/" + strings.TrimPrefix(repoName, "/"), true, nil
-			}))
+		opts = append(opts,
+			mirror.WithUpstream(baseURL),
+			mirror.WithUpstreamToken(cfg.ProxyToken),
+			mirror.WithMirrorSourceFunc(
+				func(ctx context.Context, repoName string) (string, bool, error) {
+					return baseURL + "/" + strings.TrimPrefix(repoName, "/"), true, nil
+				}))
 	}
 
 	if cfg.PushMirrorURL != "" {
@@ -173,7 +188,7 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticators, err
 
 // buildHTTPHandler assembles the HTTP handler chain:
 // HF API → LFS → HTTP Git → authentication middlewares.
-func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, lfsStorage lfs.Storage, auth *authenticators) http.Handler {
+func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, auth *authenticators) http.Handler {
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
@@ -184,7 +199,6 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 		backendhf.WithPermissionHookFunc(hooks.permission),
 		backendhf.WithPreReceiveHookFunc(hooks.preReceive),
 		backendhf.WithPostReceiveHookFunc(hooks.postReceive),
-		backendhf.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -193,7 +207,6 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 		backendlfs.WithMirror(sharedMirror),
 		backendlfs.WithPermissionHookFunc(hooks.permission),
 		backendlfs.WithTokenSignValidator(auth.tokenSign),
-		backendlfs.WithLFSStorage(lfsStorage),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -206,10 +219,41 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 		backendhttp.WithPostReceiveHookFunc(hooks.postReceive),
 	)
 
+	// Token minting and bridge routes carry user credentials: they ride
+	// inside the authentication chain so the mirror's permission gate sees
+	// the requesting user.
+	if sharedMirror != nil {
+		if dp := sharedMirror.DataPlane(); dp != nil {
+			inner := handler
+			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mirror.IsDataPlaneUserPath(r.URL.Path) {
+					dp.ServeHTTP(w, r)
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+		}
+	}
+
 	handler = authenticate.AnonymousAuthenticateHandler(handler)
 	handler = authenticate.TokenValidatorHandler(auth.token, handler)
 	handler = authenticate.TokenSignValidatorHandler(auth.tokenSign, handler)
 	handler = authenticate.BasicAuthHandler(auth.basicAuth, handler)
+
+	// CAS transfer routes authenticate with their own minted tokens, so they
+	// bypass the hfd authentication chain.
+	if sharedMirror != nil {
+		if dp := sharedMirror.DataPlane(); dp != nil {
+			inner := handler
+			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mirror.IsCASPath(r.URL.Path) {
+					dp.ServeHTTP(w, r)
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+		}
+	}
 
 	return handler
 }

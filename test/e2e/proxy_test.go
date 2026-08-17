@@ -18,7 +18,6 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -62,18 +61,21 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 	dataDir := newDataDir(t, "proxy-e2e-data")
 
 	storage := newTestStorage(t, dataDir)
-	lfsStorage := lfs.New(storage.LFSFS())
 
-	sharedMirror := mirror.NewMirror(
+	sharedMirror, err := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
+		mirror.WithUpstream(upstreamURL),
+		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
 	)
+	if err != nil {
+		t.Fatalf("Failed to create mirror: %v", err)
+	}
 
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(storage),
-		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
@@ -81,7 +83,7 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStorage),
+		backendlfs.WithMirror(sharedMirror),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -90,6 +92,8 @@ func setupProxyServer(t *testing.T, upstreamURL string) (*httptest.Server, strin
 		backendhttp.WithMirror(sharedMirror),
 		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, storage)),
 	)
+
+	handler = mountDataPlane(t, sharedMirror, handler)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })
@@ -115,10 +119,15 @@ func setupSSHProxyServer(t *testing.T, upstreamURL string) (net.Listener, string
 		t.Fatalf("Failed to create host key signer: %v", err)
 	}
 
-	sharedMirror := mirror.NewMirror(
+	sharedMirror, err := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
+		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
 	)
+	if err != nil {
+		t.Fatalf("Failed to create mirror: %v", err)
+	}
+	t.Cleanup(sharedMirror.Wait)
 
 	sshServer := backendssh.NewServer(
 		backendssh.WithHostKey(hostKey),
@@ -340,19 +349,21 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter m
 	dataDir := newDataDir(t, "proxy-ref-filter-e2e-data")
 
 	st := newTestStorage(t, dataDir)
-	lfsStorage := lfs.New(st.LFSFS())
 
-	sharedMirror := mirror.NewMirror(
+	sharedMirror, err := mirror.NewMirror(
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstreamURL)),
 		mirror.WithMirrorRefFilterFunc(refFilter),
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
+		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
 	)
+	if err != nil {
+		t.Fatalf("Failed to create mirror: %v", err)
+	}
 
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(st),
-		backendhf.WithLFSStorage(lfsStorage),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, st)),
 	)
@@ -360,7 +371,7 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter m
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStorage),
+		backendlfs.WithMirror(sharedMirror),
 	)
 
 	handler = backendhttp.NewHandler(
@@ -369,6 +380,8 @@ func setupProxyServerWithRefFilter(t *testing.T, upstreamURL string, refFilter m
 		backendhttp.WithMirror(sharedMirror),
 		backendhttp.WithPreOpenHookFunc(newMirrorPreOpenHook(sharedMirror, st)),
 	)
+
+	handler = mountDataPlane(t, sharedMirror, handler)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })
