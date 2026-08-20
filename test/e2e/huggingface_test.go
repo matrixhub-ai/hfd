@@ -15,7 +15,7 @@ import (
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {
@@ -24,26 +24,36 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	dataDir := newDataDir(t, "hf-e2e-data")
 
 	storage := newTestStorage(t, dataDir)
-	lfsStorage := lfs.New(storage.LFSFS())
+
+	// Data-plane-only mirror: holds all LFS content in xet storage.
+	sharedMirror, err := mirror.NewMirror(
+		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
+		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
+	)
+	if err != nil {
+		t.Fatalf("Failed to create mirror: %v", err)
+	}
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
 
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(storage),
-		backendhf.WithLFSStorage(lfsStorage),
+		backendhf.WithMirror(sharedMirror),
 	)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
 		backendlfs.WithNext(handler),
-		backendlfs.WithLFSStorage(lfsStorage),
+		backendlfs.WithMirror(sharedMirror),
 	)
 
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
+
+	handler = mountDataPlane(t, sharedMirror, handler)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })

@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
 
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -82,4 +84,19 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 				s3fs.WithPrefix(filepath.Base(dataDir)))))
 	}
 	return storage.NewStorage(opts...)
+}
+
+// mountDataPlane splits the xet data-plane routes to the mirror and waits
+// out its background work on cleanup, the same way cmd/hfd wires it.
+func mountDataPlane(t *testing.T, m *mirror.Mirror, next http.Handler) http.Handler {
+	t.Helper()
+	t.Cleanup(m.Wait)
+	dp := m.DataPlane()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if mirror.IsDataPlanePath(r.URL.Path) {
+			dp.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

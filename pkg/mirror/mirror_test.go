@@ -61,8 +61,20 @@ func staticDestination(path string) mirror.DestinationFunc {
 	}
 }
 
+func newMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
+	t.Helper()
+	opts = append(opts, mirror.WithDataDir(filepath.Join(t.TempDir(), "xet")))
+	m, err := mirror.NewMirror(opts...)
+	if err != nil {
+		t.Fatalf("new mirror: %v", err)
+	}
+	// Background prefetches must not outlive the temp data dir.
+	t.Cleanup(m.Wait)
+	return m
+}
+
 func TestIsMirrorSourceAndDestinationUnset(t *testing.T) {
-	m := mirror.NewMirror()
+	m := newMirror(t)
 	if ok, err := m.IsMirrorSource(context.Background(), "org/repo"); err != nil || ok {
 		t.Fatalf("IsMirrorSource = (%v, %v), want (false, nil)", ok, err)
 	}
@@ -76,7 +88,7 @@ func TestPullFromRemoteInitializesMirror(t *testing.T) {
 	src, srcPath := initSourceRepo(t, root, "src")
 	addCommit(t, src, "feature", "feature.txt", "feature\n")
 
-	m := mirror.NewMirror(mirror.WithMirrorSourceFunc(staticSource(srcPath)))
+	m := newMirror(t, mirror.WithMirrorSourceFunc(staticSource(srcPath)))
 
 	destPath := filepath.Join(root, "dest.git")
 	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
@@ -103,7 +115,7 @@ func TestPullFromRemoteSyncsNewCommitsAndFiresHooks(t *testing.T) {
 	src, srcPath := initSourceRepo(t, root, "src")
 
 	var postUpdates []receive.RefUpdate
-	m := mirror.NewMirror(
+	m := newMirror(t,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithPostReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
 			postUpdates = append(postUpdates, updates...)
@@ -137,7 +149,7 @@ func TestPullFromRemotePreReceiveReject(t *testing.T) {
 	root := t.TempDir()
 	_, srcPath := initSourceRepo(t, root, "src")
 
-	m := mirror.NewMirror(
+	m := newMirror(t,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithPreReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 			return false, nil
@@ -156,7 +168,7 @@ func TestPullFromRemotePreReceiveReject(t *testing.T) {
 }
 
 func TestPullFromRemoteNotAMirror(t *testing.T) {
-	m := mirror.NewMirror(mirror.WithMirrorSourceFunc(
+	m := newMirror(t, mirror.WithMirrorSourceFunc(
 		func(ctx context.Context, repoName string) (string, bool, error) {
 			return "", false, nil
 		}))
@@ -171,7 +183,7 @@ func TestPullFromRemoteTTLSkipsFreshSync(t *testing.T) {
 	root := t.TempDir()
 	src, srcPath := initSourceRepo(t, root, "src")
 
-	m := mirror.NewMirror(
+	m := newMirror(t,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithTTL(time.Hour),
 	)
@@ -196,7 +208,7 @@ func TestPushToRemoteWithoutDestinationFuncIsNoop(t *testing.T) {
 	root := t.TempDir()
 	_, localPath := initSourceRepo(t, root, "local")
 
-	m := mirror.NewMirror()
+	m := newMirror(t)
 	if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
 		t.Fatalf("push to remote: %v", err)
 	}
@@ -206,7 +218,7 @@ func TestPushToRemoteNotAPushMirrorIsNoop(t *testing.T) {
 	root := t.TempDir()
 	_, localPath := initSourceRepo(t, root, "local")
 
-	m := mirror.NewMirror(mirror.WithMirrorDestinationFunc(
+	m := newMirror(t, mirror.WithMirrorDestinationFunc(
 		func(ctx context.Context, repoName string) (string, bool, error) {
 			return "", false, nil
 		}))
@@ -225,7 +237,7 @@ func TestPushToRemotePushesAllRefs(t *testing.T) {
 		t.Fatalf("init dest repo: %v", err)
 	}
 
-	m := mirror.NewMirror(mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+	m := newMirror(t, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
 	if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
 		t.Fatalf("push to remote: %v", err)
 	}
@@ -252,7 +264,7 @@ func TestPushToRemoteSpecificRefsOnly(t *testing.T) {
 		t.Fatalf("init dest repo: %v", err)
 	}
 
-	m := mirror.NewMirror(mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+	m := newMirror(t, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
 	err := m.PushToRemote(context.Background(), localPath, "org/repo",
 		&mirror.PushOptions{Refs: []string{"refs/heads/main"}})
 	if err != nil {

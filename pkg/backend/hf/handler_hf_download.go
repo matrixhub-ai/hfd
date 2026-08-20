@@ -8,12 +8,10 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/gorilla/mux"
 
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -172,68 +170,29 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		name := blob.Name()
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 
-		// This is an LFS file, redirect to the LFS object
-		// Set HuggingFace-required headers before redirect
+		// This is an LFS file, serve it from the xet data plane
+		// Set HuggingFace-required headers first
 		w.Header().Set("X-Repo-Commit", commitHash)
 
-		if h.mirror != nil && !h.lfsStorage.Exists(ptr.OID()) {
-			if pf := h.mirror.Get(ptr.OID()); pf != nil {
-				// Prevent concurrent downloads.
-				if r.Method == http.MethodHead {
-					w.Header().Set("Content-Length", strconv.FormatInt(pf.Total(), 10))
-					w.Header().Set("Last-Modified", pf.ModTime().UTC().Format(http.TimeFormat))
-
-					w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
-					return
-				}
-
-				rs := pf.NewReadSeeker()
-				defer rs.Close()
-
-				w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
-
-				http.ServeContent(w, r, ptr.OID(), pf.ModTime(), rs)
+		if h.mirror != nil {
+			// Hub parity: fully ingested files answer with metadata and a
+			// redirect to the sha256 bridge; only in-flight ingests stream
+			// bytes on this response (via the mirror's spool).
+			if h.mirror.ServeIngestedRedirect(w, r, ptr.OID()) {
 				return
 			}
-			responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
-			return
-		}
-		if signer, ok := h.lfsStorage.(lfs.SignGetter); ok {
-			url, _, err := signer.SignGet(ptr.OID())
-			if err != nil {
-				if os.IsNotExist(err) {
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
-					return
-				}
-				responseJSON(w, fmt.Errorf("failed to sign URL for LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
+			// Delegate to the xet mirror data plane: it streams while
+			// ingesting and ingests on miss. Prefer the commit hash so cache
+			// entries stay immutable.
+			resolveRev := commitHash
+			if resolveRev == "" {
+				resolveRev = rev
+			}
+			if h.mirror.ServeResolve(w, r, ri.RepoName, resolveRev, path) {
 				return
 			}
-			w.Header().Set("X-Linked-Size", strconv.FormatInt(ptr.Size(), 10))
-			w.Header().Set("X-Linked-Etag", fmt.Sprintf("\"%s\"", ptr.OID()))
-
-			http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-			return
 		}
-		if getter, ok := h.lfsStorage.(lfs.Getter); ok {
-			content, stat, err := getter.Get(ptr.OID())
-			if err != nil {
-				if os.IsNotExist(err) {
-					responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
-					return
-				}
-				responseJSON(w, fmt.Errorf("failed to get LFS object %q: %v", ptr.OID(), err), http.StatusInternalServerError)
-				return
-			}
-			defer func() {
-				_ = content.Close()
-			}()
-
-			w.Header().Set("ETag", fmt.Sprintf("\"%s\"", ptr.OID()))
-
-			http.ServeContent(w, r, ptr.OID(), stat.ModTime(), content)
-			return
-		}
-		responseJSON(w, fmt.Errorf("LFS storage does not support direct content retrieval for object %q", ptr.OID()), http.StatusNotImplemented)
+		responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 		return
 	}
 

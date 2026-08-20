@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/gorilla/handlers"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 func main() {
@@ -27,14 +26,16 @@ func main() {
 
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
-	lfsStorage := lfs.New(st.LFSFS())
-
 	hooks := &serverHooks{
 		storage:    st,
 		proxyToken: cfg.ProxyToken,
 	}
 	// The mirror is built with the hooks and the hooks call back into the mirror.
-	hooks.mirror = buildMirror(ctx, cfg, st, hooks, lfsStorage)
+	hooks.mirror, err = buildMirror(ctx, cfg, st, hooks)
+	if err != nil {
+		slog.ErrorContext(ctx, "Error preparing mirror", "error", err)
+		os.Exit(1)
+	}
 
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
@@ -42,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	handler := buildHTTPHandler(st, hooks, hooks.mirror, lfsStorage, auth)
+	handler := buildHTTPHandler(st, hooks, hooks.mirror, auth)
 
 	if cfg.SSHAddr != "" {
 		sshServer, err := buildSSHServer(ctx, cfg, st, hooks, hooks.mirror, auth)

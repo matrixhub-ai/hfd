@@ -10,7 +10,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -23,7 +22,6 @@ type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
 	next                http.Handler
-	lfsStorage          lfs.Storage
 	permissionHookFunc  permission.PermissionHookFunc
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
@@ -78,13 +76,6 @@ func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(h *Handler) {
 		h.postReceiveHookFunc = fn
-	}
-}
-
-// WithLFSStorage configures the LFS storage backend.
-func WithLFSStorage(storage lfs.Storage) Option {
-	return func(h *Handler) {
-		h.lfsStorage = storage
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"net/url"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -50,7 +49,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, opt.SourceURL); err != nil {
+		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
 			return nil, err
 		}
 		return repo, nil
@@ -110,7 +109,7 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, opt.SourceURL); err != nil {
+		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
 			return nil, err
 		}
 		return repo, nil
@@ -118,25 +117,43 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 	return err
 }
 
-// pullMirrorLFS queues background fetches for all LFS objects referenced by the repository.
-func (m *Mirror) pullMirrorLFS(repo *repository.Repository, sourceURL string) error {
-	lfsPointers, err := repo.ScanLFSPointers()
-	if err != nil {
-		return fmt.Errorf("failed to scan LFS pointers: %w", err)
-	}
-
-	if len(lfsPointers) == 0 {
+// pullMirrorLFS scans the tips of all local refs for LFS pointers and
+// prefetches the referenced objects through the xet data plane, keyed by the
+// immutable commit each pointer was seen at.
+func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL string) error {
+	if m.mirrorHandler == nil {
 		return nil
 	}
 
-	objects := make([]lfs.LFSObject, 0, len(lfsPointers))
-	for _, pointer := range lfsPointers {
-		objects = append(objects, lfs.LFSObject{
-			Oid:  pointer.OID(),
-			Size: pointer.Size(),
-		})
+	refs, err := repo.Refs()
+	if err != nil {
+		return fmt.Errorf("failed to get local refs: %w", err)
 	}
 
-	m.lfsTeeCache.Queue(sourceURL, objects)
+	var oids []string
+	targets := make(map[string]resolveTarget)
+	seenCommits := make(map[string]struct{})
+	for _, commit := range refs {
+		if _, ok := seenCommits[commit]; ok {
+			continue
+		}
+		seenCommits[commit] = struct{}{}
+
+		files, err := repo.ListLFSPointers(commit)
+		if err != nil {
+			slog.Warn("Mirror LFS scan failed", "repo", repoName, "rev", commit, "error", err)
+			continue
+		}
+		for _, f := range files {
+			oid := f.Pointer.OID()
+			if _, ok := targets[oid]; ok {
+				continue
+			}
+			targets[oid] = resolveTarget{repoName: repoName, commit: commit, path: f.Path, size: f.Pointer.Size()}
+			oids = append(oids, oid)
+		}
+	}
+
+	m.prefetchLFS(sourceURL, oids, targets)
 	return nil
 }

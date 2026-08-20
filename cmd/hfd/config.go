@@ -41,11 +41,8 @@ type config struct {
 	PullMirrorURL           string
 	PushMirrorURL           string
 	ProxyCacheTTL           time.Duration
-	PullMirrorXET           bool
-	PushMirrorXET           bool
 	ProxyConcurrencyPerFile int
-	ProxyXETEvictMaxBytes   int64
-	ProxyXETEvictBefore     time.Duration
+	ProxyCacheSize          int64
 }
 
 func defaultConfig() *config {
@@ -57,8 +54,7 @@ func defaultConfig() *config {
 		AuthSignKey:             "secret-sign-key",
 		ProxyCacheTTL:           time.Minute,
 		ProxyConcurrencyPerFile: 2,
-		ProxyXETEvictMaxBytes:   10 * 1024 * 1024 * 1024, // 10 GB
-		ProxyXETEvictBefore:     6 * time.Hour,
+		ProxyCacheSize:          10 * 1024 * 1024 * 1024, // 10 GB
 	}
 }
 
@@ -92,10 +88,7 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.PushMirrorURL, "push-mirror", cfg.PushMirrorURL, "Push mirror destination base URL for syncing local pushes to a remote (e.g. https://huggingface.co)")
 	flag.DurationVar(&cfg.ProxyCacheTTL, "proxy-cache-ttl", cfg.ProxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
 	flag.IntVar(&cfg.ProxyConcurrencyPerFile, "proxy-concurrency-per-file", cfg.ProxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
-	flag.BoolVar(&cfg.PullMirrorXET, "pull-xet", cfg.PullMirrorXET, "Enable XET for downloading LFS objects during pull-mirror syncs")
-	flag.BoolVar(&cfg.PushMirrorXET, "push-xet", cfg.PushMirrorXET, "Enable XET for uploading LFS objects during push-mirror syncs")
-	flag.Int64Var(&cfg.ProxyXETEvictMaxBytes, "proxy-xet-evict-max-bytes", cfg.ProxyXETEvictMaxBytes, "Maximum XET disk cache size after idle cleanup; 0 evicts all eligible inactive entries")
-	flag.DurationVar(&cfg.ProxyXETEvictBefore, "proxy-xet-evict-before", cfg.ProxyXETEvictBefore, "Evict XET cache entries older than this idle-time age; negative disables the age cutoff")
+	flag.Int64Var(&cfg.ProxyCacheSize, "proxy-cache-size", cfg.ProxyCacheSize, "Maximum size in bytes of the content chunk cache used for proxy transfers")
 	flag.Parse()
 
 	if cfg.HostURL == "" {
