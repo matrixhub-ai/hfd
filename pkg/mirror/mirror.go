@@ -309,6 +309,7 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 		xetserver.WithAuthFunc(func(tok string) bool { return issuer.Validate(tok, time.Now()) }),
 		xetserver.WithNext(casNext),
 	)
+	m.dataPlane = m.handleWriteToken(m.dataPlane)
 	if m.permissionHookFunc != nil {
 		m.dataPlane = m.gateUserPaths(m.dataPlane)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -331,10 +332,9 @@ func uploadToCAS(t *testing.T, m *mirror.Mirror, data []byte) string {
 func TestDataPlaneUserPathGate(t *testing.T) {
 	allow := true
 	var gotRepos []string
+	var gotOps []permission.Operation
 	hook := func(ctx context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-		if op != permission.OperationReadRepo {
-			t.Errorf("op = %v, want read_repo", op)
-		}
+		gotOps = append(gotOps, op)
 		gotRepos = append(gotRepos, repoName)
 		return allow, nil
 	}
@@ -355,21 +355,55 @@ func TestDataPlaneUserPathGate(t *testing.T) {
 		t.Fatal("allowed bridge bytes mismatch")
 	}
 
+	// The write-token route mints hub-shaped CAS credentials locally.
+	if rec := get("/api/models/org/repo/xet-write-token/main"); rec.Code != http.StatusOK {
+		t.Fatalf("write token status = %d, want 200", rec.Code)
+	} else {
+		var tok struct {
+			CasURL      string `json:"casUrl"`
+			AccessToken string `json:"accessToken"`
+			Exp         int64  `json:"exp"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&tok); err != nil {
+			t.Fatalf("decode write token: %v", err)
+		}
+		if tok.CasURL == "" || tok.AccessToken == "" || tok.Exp <= time.Now().Unix() {
+			t.Fatalf("write token incomplete: %+v", tok)
+		}
+	}
+
+	// A write-token segment embedded in a read-token path must not mint.
+	gotOps = nil
+	if rec := get("/api/models/org/repo/xet-write-token/x/xet-read-token/main"); rec.Code == http.StatusOK {
+		t.Fatalf("embedded write-token path minted a credential (status %d)", rec.Code)
+	}
+	if fmt.Sprint(gotOps) != fmt.Sprint([]permission.Operation{permission.OperationReadRepo}) {
+		t.Fatalf("hook ops = %v, want [%v]", gotOps, permission.OperationReadRepo)
+	}
+
 	allow = false
 	gotRepos = nil
+	gotOps = nil
 	for _, path := range []string{
 		"/xet-bridge/" + oid,
 		"/xet-token",
 		"/api/models/org/repo/xet-read-token/main",
 		"/api/datasets/org/repo/xet-read-token/main",
+		"/api/models/org/repo/xet-write-token/main",
 	} {
 		if rec := get(path); rec.Code != http.StatusForbidden {
 			t.Fatalf("denied %s status = %d, want 403", path, rec.Code)
 		}
 	}
-	want := []string{"", "", "org/repo", "datasets/org/repo"}
+	want := []string{"", "", "org/repo", "datasets/org/repo", "org/repo"}
 	if fmt.Sprint(gotRepos) != fmt.Sprint(want) {
 		t.Fatalf("hook repos = %v, want %v", gotRepos, want)
+	}
+	r := permission.OperationReadRepo
+	u := permission.OperationUpdateRepo
+	wantOps := []permission.Operation{r, r, r, r, u}
+	if fmt.Sprint(gotOps) != fmt.Sprint(wantOps) {
+		t.Fatalf("hook ops = %v, want %v", gotOps, wantOps)
 	}
 
 	// CAS transfer routes authenticate with CAS tokens, not the hook.
