@@ -209,14 +209,18 @@ func TestXETPushMirror_E2E(t *testing.T) {
 }
 
 // runXETGitCmd runs a git command with the given environment for XET e2e tests.
+// A watchdog kills wedged subprocesses so hangs fail fast with their output.
 func runXETGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(os.Environ(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("git %s failed: %v\noutput: %s", strings.Join(args, " "), err, output)
+	cmd.WaitDelay = 10 * time.Second
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s failed (%v): %v\noutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
 	}
 }
