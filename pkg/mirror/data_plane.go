@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ const xetNamespace = "default"
 // through to the xet mirror handler), or nil when no upstream is configured.
 // Mount it for the CAS, token, and bridge routes referenced by resolve
 // responses: /v1/*, /v2/*, /reconstructions, /shards, /xet-bridge/*,
-// /xet-token and /api/{type}s/{repo}/xet-read-token/{rev}.
+// /xet-token and /api/{type}s/{repo}/xet-(read|write)-token/{rev}.
 func (m *Mirror) DataPlane() http.Handler {
 	return m.dataPlane
 }
@@ -66,30 +67,34 @@ func IsDataPlaneUserPath(p string) bool {
 		p == "/xet-token":
 		return true
 	}
-	// Hub clients construct the token refresh route themselves.
-	if strings.HasPrefix(p, "/api/") && strings.Contains(p, "/xet-read-token/") {
+	// Hub clients construct the token refresh routes themselves.
+	if strings.HasPrefix(p, "/api/") && (strings.Contains(p, "/xet-read-token/") || strings.Contains(p, "/xet-write-token/")) {
 		return true
 	}
 	return false
 }
 
-// xetReadTokenRe matches the hub-style token refresh route and captures the
-// repo type and name.
-var xetReadTokenRe = regexp.MustCompile(`^/api/(models|datasets|spaces)/(.+)/xet-read-token/[^/]+$`)
+// xetTokenRouteRe matches the hub-style token refresh routes and captures the
+// repo type, name, and token kind.
+var xetTokenRouteRe = regexp.MustCompile(`^/api/(models|datasets|spaces)/(.+)/xet-(read|write)-token/[^/]+$`)
 
-// userPathRepoName extracts the repository a user-path request is about,
+// userPathOperation extracts the repository a user-path request is about,
 // following the hf naming convention (models unprefixed, other types
-// prefixed). Token and bridge requests carry no repository context and
-// yield "".
-func userPathRepoName(p string) string {
-	m := xetReadTokenRe.FindStringSubmatch(p)
+// prefixed), and the permission the request needs. Token and bridge requests
+// without repository context yield "" with read permission.
+func userPathOperation(p string) (string, permission.Operation) {
+	m := xetTokenRouteRe.FindStringSubmatch(p)
 	if m == nil {
-		return ""
+		return "", permission.OperationReadRepo
+	}
+	op := permission.OperationReadRepo
+	if m[3] == "write" {
+		op = permission.OperationUpdateRepo
 	}
 	if m[1] == "models" {
-		return m[2]
+		return m[2], op
 	}
-	return m[1] + "/" + m[2]
+	return m[1] + "/" + m[2], op
 }
 
 // gateUserPaths enforces the permission hook on the data plane's
@@ -98,7 +103,8 @@ func userPathRepoName(p string) string {
 func (m *Mirror) gateUserPaths(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if IsDataPlaneUserPath(r.URL.Path) {
-			ok, err := m.permissionHookFunc(r.Context(), permission.OperationReadRepo, userPathRepoName(r.URL.Path), permission.Context{})
+			repoName, op := userPathOperation(r.URL.Path)
+			ok, err := m.permissionHookFunc(r.Context(), op, repoName, permission.Context{})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -109,6 +115,28 @@ func (m *Mirror) gateUserPaths(next http.Handler) http.Handler {
 			}
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// handleWriteToken answers the hub-style xet-write-token route with a minted
+// CAS credential in the hub's JSON shape; the xet mirror module only serves
+// the read variant.
+func (m *Mirror) handleWriteToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Take the kind from the same match the permission gate classifies with.
+		route := xetTokenRouteRe.FindStringSubmatch(r.URL.Path)
+		if r.Method != http.MethodGet || route == nil || route[3] != "write" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		casURL, token, expiresAt := m.MintXETToken(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"casUrl":      casURL,
+			"accessToken": token,
+			"exp":         expiresAt.Unix(),
+		})
 	})
 }
 

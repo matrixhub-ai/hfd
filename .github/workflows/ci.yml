@@ -30,10 +30,12 @@ jobs:
           python-version: "3.x"
 
       - name: Install huggingface_hub
-        run: pip install 'huggingface_hub[cli]'
+        run: pip install 'huggingface_hub[cli,hf_xet]'
 
       # Unit tests and e2e tests are run together.
       # E2e tests use httptest.NewServer with a local temp dir and require
-      # no external credentials; they skip gracefully if tools are absent.
+      # no external credentials; they skip when client tools are absent,
+      # but this job installs them and sets CI, so missing tools fail the
+      # client matrix here instead of skipping.
       - name: Test
-        run: go test ./...
+        run: go test -timeout 30m ./...

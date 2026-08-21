@@ -42,7 +42,9 @@ type transferMatrixServer struct {
 
 // newTransferMatrixServer wires the full production handler chain. During the
 // S3 pass the xet storage lives in the fake S3 bucket, like production.
-func newTransferMatrixServer(t *testing.T) *transferMatrixServer {
+// Optional wrappers are applied outermost, ahead of the data plane split, so
+// they observe every request including CAS traffic.
+func newTransferMatrixServer(t *testing.T, wrap ...func(http.Handler) http.Handler) *transferMatrixServer {
 	t.Helper()
 
 	dataDir := newDataDir(t, "transfer-matrix-data")
@@ -89,6 +91,9 @@ func newTransferMatrixServer(t *testing.T) *transferMatrixServer {
 		backendhttp.WithNext(handler),
 	)
 	handler = mountDataPlane(t, sharedMirror, handler)
+	for _, w := range wrap {
+		handler = w(handler)
+	}
 
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
