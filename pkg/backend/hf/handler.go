@@ -207,20 +207,10 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string, write
 // checkPermission runs the permission hook and writes the failure response.
 // It returns true when the operation may proceed.
 func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string, permCtx permission.Context) bool {
-	if h.permissionHookFunc == nil {
-		return true
-	}
-	ok, err := h.permissionHookFunc(r.Context(), op, repoName, permCtx)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "permission hook error", "op", op, "repo", repoName, "error", err)
-		responseJSON(w, err.Error(), http.StatusInternalServerError)
-		return false
-	}
-	if !ok {
-		responseJSON(w, "permission denied", http.StatusForbidden)
-		return false
-	}
-	return true
+	return permission.Guard{
+		Hook:    h.permissionHookFunc,
+		Respond: func(w http.ResponseWriter, msg string, sc int) { responseJSON(w, msg, sc) },
+	}.Allow(w, r, op, repoName, permCtx)
 }
 
 // resolveRepoPath resolves storageName to its storage path, writing a 404

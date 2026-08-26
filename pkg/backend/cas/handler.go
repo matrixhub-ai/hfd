@@ -5,7 +5,6 @@ package cas
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -108,18 +107,8 @@ func (h *Handler) handleWriteToken(w http.ResponseWriter, r *http.Request) {
 // checkPermission runs the permission hook and writes the failure response.
 // It returns true when the operation may proceed.
 func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string) bool {
-	if h.permissionHookFunc == nil {
-		return true
-	}
-	ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{})
-	if err != nil {
-		slog.ErrorContext(r.Context(), "permission hook error", "op", op, "repo", repoName, "error", err)
-		httpapi.RespondJSON(w, err.Error(), http.StatusInternalServerError)
-		return false
-	}
-	if !ok {
-		httpapi.RespondJSON(w, "permission denied", http.StatusForbidden)
-		return false
-	}
-	return true
+	return permission.Guard{
+		Hook:    h.permissionHookFunc,
+		Respond: func(w http.ResponseWriter, msg string, sc int) { httpapi.RespondJSON(w, msg, sc) },
+	}.Allow(w, r, op, repoName, permission.Context{})
 }

@@ -2,6 +2,7 @@ package permission
 
 import (
 	"context"
+	"errors"
 )
 
 // Operation represents the type of operation being performed.
@@ -75,3 +76,21 @@ type Context struct {
 
 // PermissionHookFunc is a function that checks whether an operation on a repository is allowed.
 type PermissionHookFunc func(ctx context.Context, op Operation, repoName string, opCtx Context) (bool, error)
+
+// ErrDenied reports that the hook denied the operation.
+var ErrDenied = errors.New("permission denied")
+
+// Check runs the hook. A nil hook allows everything.
+func (f PermissionHookFunc) Check(ctx context.Context, op Operation, repoName string, opCtx Context) error {
+	if f == nil {
+		return nil
+	}
+	ok, err := f(ctx, op, repoName, opCtx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrDenied
+	}
+	return nil
+}

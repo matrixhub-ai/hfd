@@ -112,3 +112,23 @@ func (h *Handler) registryLFSLock(r *mux.Router) {
 func responseJSON(w http.ResponseWriter, data any, sc int) {
 	httpapi.RespondJSON(w, data, sc)
 }
+
+// checkPermission runs the permission hook and writes the failure response.
+// It returns true when the operation may proceed.
+func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string) bool {
+	return permission.Guard{
+		Hook:    h.permissionHookFunc,
+		Respond: func(w http.ResponseWriter, msg string, sc int) { responseJSON(w, msg, sc) },
+	}.Allow(w, r, op, repoName, permission.Context{})
+}
+
+// checkLockPermission is checkPermission rendering failures as lock lists,
+// preserving the lock endpoints' response bodies.
+func (h *Handler) checkLockPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string) bool {
+	return permission.Guard{
+		Hook: h.permissionHookFunc,
+		Respond: func(w http.ResponseWriter, msg string, sc int) {
+			responseJSON(w, &lfs.VerifiableLockList{Message: msg}, sc)
+		},
+	}.Allow(w, r, op, repoName, permission.Context{})
+}

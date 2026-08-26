@@ -26,19 +26,13 @@ const (
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	bv := unpackBatch(r)
 
-	if h.permissionHookFunc != nil {
-		op := permission.OperationReadRepo
-		if bv.Operation == "upload" {
-			op = permission.OperationUpdateRepo
-		}
-		repoName := bv.repoName()
-		if ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{}); err != nil {
-			responseJSON(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if !ok {
-			responseJSON(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	op := permission.OperationReadRepo
+	if bv.Operation == "upload" {
+		op = permission.OperationUpdateRepo
+	}
+	repoName := bv.repoName()
+	if !h.checkPermission(w, r, op, repoName) {
+		return
 	}
 
 	var responseObjects []*lfsRepresentation
