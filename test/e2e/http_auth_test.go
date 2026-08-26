@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
 // setupAuthTestServer creates an HTTP test server with basic authentication enabled.
@@ -41,13 +43,12 @@ func setupAuthTestServer(t *testing.T, username, password string) (*httptest.Ser
 		backendhttp.WithNext(handler),
 	)
 
-	basicAuth := authenticate.NewSimpleBasicAuthValidator(username, password)
-	tokenAuth := authenticate.NewSimpleTokenValidator(username, password)
-	tokenSignValidator := authenticate.NewTokenSignValidator([]byte(password))
-	handler = authenticate.AnonymousAuthenticateHandler(handler)
-	handler = authenticate.TokenValidatorHandler(tokenAuth, handler)
-	handler = authenticate.TokenSignValidatorHandler(tokenSignValidator, handler)
-	handler = authenticate.BasicAuthHandler(basicAuth, handler)
+	handler = authenticate.NewHandler(
+		authenticate.WithNext(handler),
+		authenticate.WithBasicAuthValidator(authenticate.NewSimpleBasicAuthValidator(username, password)),
+		authenticate.WithTokenValidator(authenticate.NewSimpleTokenValidator(username, password)),
+		authenticate.WithTokenSignValidator(authenticate.NewTokenSignValidator([]byte(password))),
+	)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })
@@ -267,4 +268,53 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 			t.Errorf("Unexpected content: %q", body)
 		}
 	})
+}
+
+// TestCASTokenTraversesAuth pins the wire.go chain-head order: the CAS scope
+// check runs before the per-URL sign validator that would otherwise 401 it.
+func TestCASTokenTraversesAuth(t *testing.T) {
+	validator := authenticate.NewTokenSignValidator([]byte("secret"))
+	mint, authFn, err := mirror.NewXETTokenScheme(validator)
+	if err != nil {
+		t.Fatalf("new token scheme: %v", err)
+	}
+
+	var gotUser string
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := authenticate.GetUserInfo(r.Context())
+		gotUser = u.User
+		w.WriteHeader(http.StatusNoContent)
+	})
+	var handler http.Handler = sentinel
+	handler = authenticate.NewHandler(
+		authenticate.WithNext(handler),
+		authenticate.WithTokenSignValidator(validator),
+	)
+	handler = authenticate.TokenValidatorHandler(authenticate.TokenValidatorFunc(
+		func(_ context.Context, token string) (string, bool, bool, error) {
+			if authFn(token) {
+				return "xet-cas", false, true, nil
+			}
+			return "", true, false, nil
+		}), handler)
+
+	get := func(bearer string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/xorbs/default/abc", nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	tok, _ := mint(time.Now())
+	if code := get(tok); code != http.StatusNoContent {
+		t.Fatalf("CAS token status = %d, want 204", code)
+	}
+	if gotUser != "xet-cas" {
+		t.Fatalf("CAS token user = %q, want xet-cas", gotUser)
+	}
+	// A forged signed token still dies at the sign validator.
+	if code := get("sign:forged.forged.forged"); code != http.StatusUnauthorized {
+		t.Fatalf("forged token status = %d, want 401", code)
+	}
 }

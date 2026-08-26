@@ -26,13 +26,9 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	storage := newTestStorage(t, dataDir)
 
 	// Data-plane-only mirror: holds all LFS content in xet storage.
-	sharedMirror, err := mirror.NewMirror(
+	sharedMirror, dataPlane := newTestMirror(t, dataDir, "", false,
 		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
-		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
 	)
-	if err != nil {
-		t.Fatalf("Failed to create mirror: %v", err)
-	}
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
@@ -40,6 +36,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(storage),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithNext(dataPlane),
 	)
 
 	handler = backendlfs.NewHandler(
@@ -52,8 +49,6 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 		backendhttp.WithStorage(storage),
 		backendhttp.WithNext(handler),
 	)
-
-	handler = mountDataPlane(t, sharedMirror, handler)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() { server.Close() })

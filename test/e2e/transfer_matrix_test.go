@@ -20,7 +20,6 @@ import (
 
 	xetclient "github.com/wzshiming/xet/client"
 	xethf "github.com/wzshiming/xet/hf"
-	xetstorage "github.com/wzshiming/xet/storage"
 	"golang.org/x/crypto/ssh"
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -42,8 +41,8 @@ type transferMatrixServer struct {
 
 // newTransferMatrixServer wires the full production handler chain. During the
 // S3 pass the xet storage lives in the fake S3 bucket, like production.
-// Optional wrappers are applied outermost, ahead of the data plane split, so
-// they observe every request including CAS traffic.
+// Optional wrappers are applied outermost, so they observe every request
+// including CAS traffic.
 func newTransferMatrixServer(t *testing.T, wrap ...func(http.Handler) http.Handler) *transferMatrixServer {
 	t.Helper()
 
@@ -51,35 +50,20 @@ func newTransferMatrixServer(t *testing.T, wrap ...func(http.Handler) http.Handl
 	st := newTestStorage(t, dataDir)
 
 	// The mirror handler serves the xet token routes, so the data plane needs
-	// an upstream; fully ingested objects never contact it.
+	// an upstream; fully ingested objects never contact it. During the S3
+	// pass the xet storage lives in the fake S3 bucket, like production.
 	upstream := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(upstream.Close)
 
-	opts := []mirror.Option{
+	sharedMirror, dataPlane := newTestMirror(t, dataDir, upstream.URL, testS3Client != nil,
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-		mirror.WithDataDir(filepath.Join(dataDir, "xet")),
-		mirror.WithUpstream(upstream.URL),
-	}
-	if testS3Client != nil {
-		xs, err := xetstorage.NewS3Storage(t.Context(),
-			xetstorage.WithS3Client(testS3Client),
-			xetstorage.WithS3Bucket(testS3Bucket),
-			xetstorage.WithS3Prefix(filepath.Base(dataDir)+"/xet"),
-		)
-		if err != nil {
-			t.Fatalf("create xet S3 storage: %v", err)
-		}
-		opts = append(opts, mirror.WithXETStorage(xs))
-	}
-	sharedMirror, err := mirror.NewMirror(opts...)
-	if err != nil {
-		t.Fatalf("create mirror: %v", err)
-	}
+	)
 
 	var handler http.Handler
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithNext(dataPlane),
 	)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(st),
@@ -90,7 +74,6 @@ func newTransferMatrixServer(t *testing.T, wrap ...func(http.Handler) http.Handl
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
 	)
-	handler = mountDataPlane(t, sharedMirror, handler)
 	for _, w := range wrap {
 		handler = w(handler)
 	}
