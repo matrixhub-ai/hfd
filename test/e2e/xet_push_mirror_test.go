@@ -218,7 +218,7 @@ func runXETGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	cmd.WaitDelay = 10 * time.Second
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s failed (%v): %v\noutput: %s", strings.Join(args, " "), ctx.Err(), err, output)

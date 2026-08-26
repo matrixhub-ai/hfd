@@ -113,15 +113,10 @@ func requireUpDownMatrixTools(t *testing.T) {
 // watchdog kills hung invocations so a stuck client fails fast with output.
 func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string {
 	t.Helper()
-	env := make([]string, 0, len(os.Environ())+6)
-	for _, kv := range os.Environ() {
+	base := testEnv()
+	env := make([]string, 0, len(base)+6)
+	for _, kv := range base {
 		if strings.HasPrefix(kv, "HF_HUB_DISABLE_XET=") {
-			continue
-		}
-		// Everything talks to 127.0.0.1; ambient proxies break httpx.
-		name, _, _ := strings.Cut(kv, "=")
-		switch strings.ToUpper(name) {
-		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
 			continue
 		}
 		env = append(env, kv)

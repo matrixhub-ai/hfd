@@ -188,7 +188,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 	t.Run("CloneWithAuth", func(t *testing.T) {
 		cloneDir := filepath.Join(clientDir, "clone-auth")
 		cmd := exec.CommandContext(t.Context(), "git", "clone", authURL+"/git-auth-user/auth-git-model.git", cloneDir)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 		output, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("Git clone with auth failed: %v\n%s", err, output)
@@ -209,7 +209,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			cmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -227,7 +227,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			cmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -238,7 +238,7 @@ func TestHTTPAuthGitClonePush(t *testing.T) {
 		wrongURL := strings.Replace(endpoint, "http://", "http://gituser:wrongpass@", 1)
 		cloneDir := filepath.Join(clientDir, "clone-wrong-auth")
 		cmd := exec.CommandContext(t.Context(), "git", "clone", wrongURL+"/git-auth-user/auth-git-model.git", cloneDir)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 		output, err := cmd.Output()
 		// With anonymous fallback, wrong credentials cause 401 but git retries
 		// without credentials, which falls through to anonymous and succeeds.

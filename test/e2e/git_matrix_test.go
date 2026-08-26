@@ -264,7 +264,7 @@ func testCloneEmptyRepo(t *testing.T, cloneURL string, env []string) {
 
 	cloneDir := filepath.Join(clientDir, "clone")
 	cmd := exec.CommandContext(t.Context(), "git", "clone", cloneURL, cloneDir)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Clone failed: %v\n%s", err, output)
 	}
@@ -503,7 +503,7 @@ func runGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
 	}
