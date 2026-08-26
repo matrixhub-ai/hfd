@@ -14,7 +14,7 @@ require (
 	github.com/johannesboyne/gofakes3 v1.2.0
 	github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc
 	github.com/wzshiming/httpseek v0.7.0
-	github.com/wzshiming/xet v0.0.0-20260820060914-da1cda8c493b
+	github.com/wzshiming/xet v0.0.0-20260825022533-4c7fd5961903
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
 	gopkg.in/yaml.v3 v3.0.1

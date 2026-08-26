@@ -13,6 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	xetclient "github.com/wzshiming/xet/client"
+	xetmirror "github.com/wzshiming/xet/mirror"
+	xetstorage "github.com/wzshiming/xet/storage"
 )
 
 // TestPrefetchFallsBackToLFSBatch covers sources without the hub resolve API:
@@ -47,9 +51,38 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 
 	lfsSrv := srv // batch and content live on the same server
 
+	dataDir := filepath.Join(t.TempDir(), "xet")
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
+	if err != nil {
+		t.Fatalf("new xet client: %v", err)
+	}
+	xs, err := xetstorage.NewFileStorage(
+		xetstorage.WithBasePath(filepath.Join(dataDir, "storage")),
+	)
+	if err != nil {
+		t.Fatalf("new xet storage: %v", err)
+	}
+	mint, _, err := NewXETTokenScheme(nil)
+	if err != nil {
+		t.Fatalf("new token scheme: %v", err)
+	}
+	mirrorHandler, err := xetmirror.NewHandler(
+		xetmirror.WithStorage(xs),
+		xetmirror.WithUpstream(srv.URL),
+		xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+		xetmirror.WithClient(client),
+		xetmirror.WithMintToken(mint),
+		xetmirror.WithNext(http.NotFoundHandler()),
+	)
+	if err != nil {
+		t.Fatalf("new xet mirror handler: %v", err)
+	}
 	m, err := NewMirror(
-		WithDataDir(filepath.Join(t.TempDir(), "xet")),
-		WithUpstream(srv.URL),
+		WithXETStorage(xs),
+		WithXETClient(client),
+		WithMirrorHandler(mirrorHandler),
+		WithMintToken(mint),
+		WithDataDir(dataDir),
 	)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)

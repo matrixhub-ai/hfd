@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +16,8 @@ import (
 
 	xetclient "github.com/wzshiming/xet/client"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 // fakeHub answers hub-style resolve requests for a single LFS object with the
@@ -58,9 +57,8 @@ func TestPullMirrorLFSDataPlane(t *testing.T) {
 
 	hub := fakeHub(t, "model.bin", data, oid)
 
-	m := newMirror(t,
+	m, dataPlane := newMirror(t, hub.URL, nil,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-		mirror.WithUpstream(hub.URL),
 	)
 
 	destPath := filepath.Join(root, "dest.git")
@@ -139,7 +137,7 @@ func TestPullMirrorLFSDataPlane(t *testing.T) {
 		}
 
 		bridge := httptest.NewRecorder()
-		m.DataPlane().ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, "/xet-bridge/"+oid, nil))
+		dataPlane.ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, "/xet-bridge/"+oid, nil))
 		if bridge.Code != http.StatusOK {
 			t.Fatalf("bridge status = %d, want 200", bridge.Code)
 		}
@@ -160,9 +158,8 @@ func TestServeObjectStreamsWhileIngesting(t *testing.T) {
 
 	hub := fakeHub(t, "weights.bin", data, oid)
 
-	m := newMirror(t,
+	m, dataPlane := newMirror(t, hub.URL, nil,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-		mirror.WithUpstream(hub.URL),
 	)
 
 	destPath := filepath.Join(root, "dest.git")
@@ -179,7 +176,7 @@ func TestServeObjectStreamsWhileIngesting(t *testing.T) {
 	body := rec.Body.Bytes()
 	if rec.Code == http.StatusFound {
 		bridge := httptest.NewRecorder()
-		m.DataPlane().ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, rec.Result().Header.Get("Location"), nil))
+		dataPlane.ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, rec.Result().Header.Get("Location"), nil))
 		if bridge.Code != http.StatusOK {
 			t.Fatalf("bridge status = %d, want 200", bridge.Code)
 		}
@@ -194,12 +191,12 @@ func TestServeObjectStreamsWhileIngesting(t *testing.T) {
 
 func TestXETUploadRoundTrip(t *testing.T) {
 	// Data-plane-only mirror: no upstream, no destination.
-	m := newMirror(t)
+	m, dataPlane := newMirror(t, "", nil)
 	if !m.XETUploadEnabled() {
 		t.Fatal("xet upload not enabled on data-plane-only mirror")
 	}
 
-	srv := httptest.NewServer(m.DataPlane())
+	srv := httptest.NewServer(dataPlane)
 	t.Cleanup(srv.Close)
 
 	_, token, expiresAt := m.MintXETToken(httptest.NewRequest(http.MethodGet, srv.URL+"/", nil))
@@ -294,7 +291,7 @@ func TestXETUploadRoundTrip(t *testing.T) {
 		}
 
 		bridge := httptest.NewRecorder()
-		m.DataPlane().ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, h.Get("Location"), nil))
+		dataPlane.ServeHTTP(bridge, httptest.NewRequest(http.MethodGet, h.Get("Location"), nil))
 		if bridge.Code != http.StatusOK {
 			t.Fatalf("bridge status = %d, want 200", bridge.Code)
 		}
@@ -309,105 +306,56 @@ func TestXETUploadRoundTrip(t *testing.T) {
 	})
 }
 
-// uploadToCAS pushes data into the mirror's CAS through the xet transfer and
-// returns its sha256 OID.
-func uploadToCAS(t *testing.T, m *mirror.Mirror, data []byte) string {
-	t.Helper()
-	srv := httptest.NewServer(m.DataPlane())
-	defer srv.Close()
-
-	_, token, _ := m.MintXETToken(httptest.NewRequest(http.MethodGet, srv.URL+"/", nil))
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+func TestXETTokenSignValidator(t *testing.T) {
+	validator := authenticate.NewTokenSignValidator([]byte("cas-secret"))
+	mint, _, err := mirror.NewXETTokenScheme(validator)
 	if err != nil {
-		t.Fatalf("create xet client: %v", err)
+		t.Fatalf("new token scheme: %v", err)
 	}
-	provider := xetclient.StaticAuthProvider(srv.URL, token)
-	if _, err := xc.UploadFileWithAuthProvider(context.Background(), provider, bytes.NewReader(data)); err != nil {
-		t.Fatalf("xet upload: %v", err)
+
+	tok, exp := mint(time.Now())
+	if !strings.HasPrefix(tok, "sign:") {
+		t.Fatalf("minted token = %q, want sign: prefix", tok)
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-func TestDataPlaneUserPathGate(t *testing.T) {
-	allow := true
-	var gotRepos []string
-	var gotOps []permission.Operation
-	hook := func(ctx context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-		gotOps = append(gotOps, op)
-		gotRepos = append(gotRepos, repoName)
-		return allow, nil
+	if !time.Unix(exp, 0).After(time.Now()) {
+		t.Fatalf("minted token already expired at %v", exp)
 	}
-	m := newMirror(t, mirror.WithPermissionHookFunc(hook))
 
-	data := bytes.Repeat([]byte("gated bytes. "), 1024)
-	oid := uploadToCAS(t, m, data)
+	// The assembled mirror's CAS server validates with the same scheme.
+	_, dataPlane := newMirror(t, "", validator)
 
-	get := func(path string) *httptest.ResponseRecorder {
+	head := func(bearer string) int {
 		rec := httptest.NewRecorder()
-		m.DataPlane().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		return rec
+		req := httptest.NewRequest(http.MethodHead, "/v1/xorbs/default/"+strings.Repeat("0", 64), nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		dataPlane.ServeHTTP(rec, req)
+		return rec.Code
 	}
 
-	if rec := get("/xet-bridge/" + oid); rec.Code != http.StatusOK {
-		t.Fatalf("allowed bridge status = %d, want 200", rec.Code)
-	} else if !bytes.Equal(rec.Body.Bytes(), data) {
-		t.Fatal("allowed bridge bytes mismatch")
+	if code := head(tok); code == http.StatusUnauthorized {
+		t.Fatal("minted token rejected by the CAS server")
+	}
+	if code := head("xtk1.9999999999.bogus"); code != http.StatusUnauthorized {
+		t.Fatalf("issuer-style token accepted (status %d)", code)
+	}
+	// A per-URL token signed with the same key must not open the CAS surface.
+	lfsTok, err := validator.Sign(context.Background(), http.MethodGet, "/objects/abc", "user", time.Hour)
+	if err != nil {
+		t.Fatalf("sign per-URL token: %v", err)
+	}
+	if code := head(lfsTok); code != http.StatusUnauthorized {
+		t.Fatalf("per-URL token accepted by the CAS server (status %d)", code)
 	}
 
-	// The write-token route mints hub-shaped CAS credentials locally.
-	if rec := get("/api/models/org/repo/xet-write-token/main"); rec.Code != http.StatusOK {
-		t.Fatalf("write token status = %d, want 200", rec.Code)
-	} else {
-		var tok struct {
-			CasURL      string `json:"casUrl"`
-			AccessToken string `json:"accessToken"`
-			Exp         int64  `json:"exp"`
-		}
-		if err := json.NewDecoder(rec.Body).Decode(&tok); err != nil {
-			t.Fatalf("decode write token: %v", err)
-		}
-		if tok.CasURL == "" || tok.AccessToken == "" || tok.Exp <= time.Now().Unix() {
-			t.Fatalf("write token incomplete: %+v", tok)
-		}
-	}
-
-	// A write-token segment embedded in a read-token path must not mint.
-	gotOps = nil
-	if rec := get("/api/models/org/repo/xet-write-token/x/xet-read-token/main"); rec.Code == http.StatusOK {
-		t.Fatalf("embedded write-token path minted a credential (status %d)", rec.Code)
-	}
-	if fmt.Sprint(gotOps) != fmt.Sprint([]permission.Operation{permission.OperationReadRepo}) {
-		t.Fatalf("hook ops = %v, want [%v]", gotOps, permission.OperationReadRepo)
-	}
-
-	allow = false
-	gotRepos = nil
-	gotOps = nil
-	for _, path := range []string{
-		"/xet-bridge/" + oid,
-		"/xet-token",
-		"/api/models/org/repo/xet-read-token/main",
-		"/api/datasets/org/repo/xet-read-token/main",
-		"/api/models/org/repo/xet-write-token/main",
-	} {
-		if rec := get(path); rec.Code != http.StatusForbidden {
-			t.Fatalf("denied %s status = %d, want 403", path, rec.Code)
+	// Nor must the CAS token validate as a user credential on real requests.
+	for _, tuple := range [][2]string{{http.MethodGet, "/"}, {http.MethodPost, "/xet-token"}} {
+		if _, _, ok, _ := validator.Validate(context.Background(), tuple[0], tuple[1], tok); ok {
+			t.Fatalf("CAS token validated for %s %s", tuple[0], tuple[1])
 		}
 	}
-	want := []string{"", "", "org/repo", "datasets/org/repo", "org/repo"}
-	if fmt.Sprint(gotRepos) != fmt.Sprint(want) {
-		t.Fatalf("hook repos = %v, want %v", gotRepos, want)
-	}
-	r := permission.OperationReadRepo
-	u := permission.OperationUpdateRepo
-	wantOps := []permission.Operation{r, r, r, r, u}
-	if fmt.Sprint(gotOps) != fmt.Sprint(wantOps) {
-		t.Fatalf("hook ops = %v, want %v", gotOps, wantOps)
-	}
-
-	// CAS transfer routes authenticate with CAS tokens, not the hook.
-	if rec := get("/v1/reconstructions/" + strings.Repeat("0", 64)); rec.Code == http.StatusForbidden {
-		t.Fatalf("CAS route hit the permission gate (status %d)", rec.Code)
+	// The CAS signing scope is not a legal HTTP method, so no wire request
+	// can ever present it to the auth chain.
+	if _, err := http.NewRequest("xet/cas", "http://hfd/", nil); err == nil {
+		t.Fatal("CAS signing method is constructible as a real request")
 	}
 }

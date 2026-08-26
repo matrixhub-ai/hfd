@@ -2,12 +2,20 @@ package mirror_test
 
 import (
 	"context"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
+	xetclient "github.com/wzshiming/xet/client"
+	xetmirror "github.com/wzshiming/xet/mirror"
+	xetserver "github.com/wzshiming/xet/server"
+	xetstorage "github.com/wzshiming/xet/storage"
+
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -61,20 +69,70 @@ func staticDestination(path string) mirror.DestinationFunc {
 	}
 }
 
-func newMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
+// newMirror assembles the xet data-plane pieces the way cmd/hfd does — file
+// storage, client, token scheme, and the xet mirror handler when hubURL is
+// set — and builds a Mirror over them with the extra options appended,
+// returning the mirror and the CAS-server composition.
+func newMirror(t *testing.T, hubURL string, validator authenticate.TokenSignValidator, extra ...mirror.Option) (*mirror.Mirror, http.Handler) {
 	t.Helper()
-	opts = append(opts, mirror.WithDataDir(filepath.Join(t.TempDir(), "xet")))
-	m, err := mirror.NewMirror(opts...)
+	dataDir := filepath.Join(t.TempDir(), "xet")
+	chunksDir := filepath.Join(dataDir, "chunks")
+	if err := os.MkdirAll(chunksDir, 0755); err != nil {
+		t.Fatalf("create xet chunk cache dir: %v", err)
+	}
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(chunksDir))
+	if err != nil {
+		t.Fatalf("create xet client: %v", err)
+	}
+	xs, err := xetstorage.NewFileStorage(
+		xetstorage.WithBasePath(filepath.Join(dataDir, "storage")),
+	)
+	if err != nil {
+		t.Fatalf("create xet storage: %v", err)
+	}
+	mint, authFn, err := mirror.NewXETTokenScheme(validator)
+	if err != nil {
+		t.Fatalf("create token scheme: %v", err)
+	}
+	casNext := http.Handler(http.NotFoundHandler())
+	var mirrorHandler *xetmirror.Handler
+	if hubURL != "" {
+		mirrorHandler, err = xetmirror.NewHandler(
+			xetmirror.WithStorage(xs),
+			xetmirror.WithUpstream(hubURL),
+			xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+			xetmirror.WithClient(client),
+			xetmirror.WithMintToken(mint),
+			xetmirror.WithNext(http.NotFoundHandler()),
+		)
+		if err != nil {
+			t.Fatalf("create xet mirror handler: %v", err)
+		}
+		casNext = mirrorHandler
+	}
+	dataPlane := xetserver.NewHandler(
+		xetserver.WithStorage(xs),
+		xetserver.WithAuthFunc(authFn),
+		xetserver.WithNext(casNext),
+	)
+	opts := []mirror.Option{
+		mirror.WithXETStorage(xs),
+		mirror.WithXETClient(client),
+		mirror.WithMirrorHandler(mirrorHandler),
+		mirror.WithMintToken(mint),
+		mirror.WithDataDir(dataDir),
+	}
+	m, err := mirror.NewMirror(append(opts, extra...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
 	// Background prefetches must not outlive the temp data dir.
 	t.Cleanup(m.Wait)
-	return m
+	return m, dataPlane
 }
 
 func TestIsMirrorSourceAndDestinationUnset(t *testing.T) {
-	m := newMirror(t)
+	m, _ := newMirror(t, "", nil)
 	if ok, err := m.IsMirrorSource(context.Background(), "org/repo"); err != nil || ok {
 		t.Fatalf("IsMirrorSource = (%v, %v), want (false, nil)", ok, err)
 	}
@@ -88,7 +146,7 @@ func TestPullFromRemoteInitializesMirror(t *testing.T) {
 	src, srcPath := initSourceRepo(t, root, "src")
 	addCommit(t, src, "feature", "feature.txt", "feature\n")
 
-	m := newMirror(t, mirror.WithMirrorSourceFunc(staticSource(srcPath)))
+	m, _ := newMirror(t, "", nil, mirror.WithMirrorSourceFunc(staticSource(srcPath)))
 
 	destPath := filepath.Join(root, "dest.git")
 	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
@@ -115,7 +173,7 @@ func TestPullFromRemoteSyncsNewCommitsAndFiresHooks(t *testing.T) {
 	src, srcPath := initSourceRepo(t, root, "src")
 
 	var postUpdates []receive.RefUpdate
-	m := newMirror(t,
+	m, _ := newMirror(t, "", nil,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithPostReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
 			postUpdates = append(postUpdates, updates...)
@@ -149,7 +207,7 @@ func TestPullFromRemotePreReceiveReject(t *testing.T) {
 	root := t.TempDir()
 	_, srcPath := initSourceRepo(t, root, "src")
 
-	m := newMirror(t,
+	m, _ := newMirror(t, "", nil,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithPreReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 			return false, nil
@@ -168,7 +226,7 @@ func TestPullFromRemotePreReceiveReject(t *testing.T) {
 }
 
 func TestPullFromRemoteNotAMirror(t *testing.T) {
-	m := newMirror(t, mirror.WithMirrorSourceFunc(
+	m, _ := newMirror(t, "", nil, mirror.WithMirrorSourceFunc(
 		func(ctx context.Context, repoName string) (string, bool, error) {
 			return "", false, nil
 		}))
@@ -183,7 +241,7 @@ func TestPullFromRemoteTTLSkipsFreshSync(t *testing.T) {
 	root := t.TempDir()
 	src, srcPath := initSourceRepo(t, root, "src")
 
-	m := newMirror(t,
+	m, _ := newMirror(t, "", nil,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
 		mirror.WithTTL(time.Hour),
 	)
@@ -208,7 +266,7 @@ func TestPushToRemoteWithoutDestinationFuncIsNoop(t *testing.T) {
 	root := t.TempDir()
 	_, localPath := initSourceRepo(t, root, "local")
 
-	m := newMirror(t)
+	m, _ := newMirror(t, "", nil)
 	if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
 		t.Fatalf("push to remote: %v", err)
 	}
@@ -218,7 +276,7 @@ func TestPushToRemoteNotAPushMirrorIsNoop(t *testing.T) {
 	root := t.TempDir()
 	_, localPath := initSourceRepo(t, root, "local")
 
-	m := newMirror(t, mirror.WithMirrorDestinationFunc(
+	m, _ := newMirror(t, "", nil, mirror.WithMirrorDestinationFunc(
 		func(ctx context.Context, repoName string) (string, bool, error) {
 			return "", false, nil
 		}))
@@ -237,7 +295,7 @@ func TestPushToRemotePushesAllRefs(t *testing.T) {
 		t.Fatalf("init dest repo: %v", err)
 	}
 
-	m := newMirror(t, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+	m, _ := newMirror(t, "", nil, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
 	if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
 		t.Fatalf("push to remote: %v", err)
 	}
@@ -264,7 +322,7 @@ func TestPushToRemoteSpecificRefsOnly(t *testing.T) {
 		t.Fatalf("init dest repo: %v", err)
 	}
 
-	m := newMirror(t, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+	m, _ := newMirror(t, "", nil, mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
 	err := m.PushToRemote(context.Background(), localPath, "org/repo",
 		&mirror.PushOptions{Refs: []string{"refs/heads/main"}})
 	if err != nil {

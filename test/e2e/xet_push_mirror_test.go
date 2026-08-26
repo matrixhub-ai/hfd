@@ -48,18 +48,15 @@ func TestXETPushMirror_E2E(t *testing.T) {
 
 	// Data-plane-only mirror: no pull upstream, no push destination; it
 	// provides the CAS server, token issuer, and xet storage for LFS content.
-	destMirror, err := mirror.NewMirror(
+	destMirror, destDataPlane := newTestMirror(t, filepath.Join(root, "dest-xet"), "", false,
 		mirror.WithRepositoriesFS(destStorage.RepositoriesFS()),
-		mirror.WithDataDir(filepath.Join(root, "dest-xet")),
 	)
-	if err != nil {
-		t.Fatalf("create dest mirror: %v", err)
-	}
 
 	var destHandler http.Handler
 	destHandler = backendhf.NewHandler(
 		backendhf.WithStorage(destStorage),
 		backendhf.WithMirror(destMirror),
+		backendhf.WithNext(destDataPlane),
 	)
 	destHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(destStorage),
@@ -70,7 +67,6 @@ func TestXETPushMirror_E2E(t *testing.T) {
 		backendhttp.WithStorage(destStorage),
 		backendhttp.WithNext(destHandler),
 	)
-	destHandler = mountDataPlane(t, destMirror, destHandler)
 
 	destServer := httptest.NewServer(destHandler)
 	t.Cleanup(destServer.Close)
@@ -97,16 +93,12 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// ------------------------------------------------------------------ //
 	sourceStorage := newTestStorage(t, newDataDir(t, "xet-mirror-source"))
 
-	sharedMirror, err := mirror.NewMirror(
+	sharedMirror, dataPlane := newTestMirror(t, filepath.Join(root, "xet-cache"), "", false,
 		mirror.WithMirrorDestinationFunc(func(_ context.Context, name string) (string, bool, error) {
 			return destServer.URL + "/" + name, true, nil
 		}),
 		mirror.WithRepositoriesFS(sourceStorage.RepositoriesFS()),
-		mirror.WithDataDir(filepath.Join(root, "xet-cache")),
 	)
-	if err != nil {
-		t.Fatalf("create mirror: %v", err)
-	}
 
 	postHook := func(ctx context.Context, name string, updates []receive.RefUpdate) error {
 		repoPath := repository.ResolvePath(name)
@@ -117,6 +109,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	sourceHandler = backendhf.NewHandler(
 		backendhf.WithStorage(sourceStorage),
 		backendhf.WithMirror(sharedMirror),
+		backendhf.WithNext(dataPlane),
 	)
 	sourceHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(sourceStorage),
@@ -128,7 +121,6 @@ func TestXETPushMirror_E2E(t *testing.T) {
 		backendhttp.WithNext(sourceHandler),
 		backendhttp.WithPostReceiveHookFunc(postHook),
 	)
-	sourceHandler = mountDataPlane(t, sharedMirror, sourceHandler)
 
 	sourceServer := httptest.NewServer(sourceHandler)
 	t.Cleanup(sourceServer.Close)

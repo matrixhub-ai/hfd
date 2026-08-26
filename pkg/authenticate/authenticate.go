@@ -218,6 +218,79 @@ func (a *tokenSignValidator) Validate(_ context.Context, method, path string, to
 	return username, false, true, nil
 }
 
+// Authenticators bundles the optional validators for each authentication scheme.
+type Authenticators struct {
+	BasicAuth BasicAuthValidator
+	Token     TokenValidator
+	TokenSign TokenSignValidator
+	PublicKey PublicKeyValidator
+}
+
+// Handler authenticates HTTP requests with the configured validators before
+// delegating to the next handler.
+type Handler struct {
+	basicAuth BasicAuthValidator
+	token     TokenValidator
+	tokenSign TokenSignValidator
+	next      http.Handler
+	chain     http.Handler
+}
+
+// Option defines a functional option for configuring the Handler.
+type Option func(*Handler)
+
+// WithBasicAuthValidator sets the Basic auth validator.
+func WithBasicAuthValidator(v BasicAuthValidator) Option {
+	return func(h *Handler) {
+		h.basicAuth = v
+	}
+}
+
+// WithTokenValidator sets the static Bearer token validator.
+func WithTokenValidator(v TokenValidator) Option {
+	return func(h *Handler) {
+		h.token = v
+	}
+}
+
+// WithTokenSignValidator sets the signed Bearer token validator.
+func WithTokenSignValidator(v TokenSignValidator) Option {
+	return func(h *Handler) {
+		h.tokenSign = v
+	}
+}
+
+// WithNext sets the next http.Handler to call once the request is authenticated.
+func WithNext(next http.Handler) Option {
+	return func(h *Handler) {
+		h.next = next
+	}
+}
+
+// NewHandler creates a new Handler; requests pass Basic auth, signed token,
+// and static token validation before falling back to anonymous.
+func NewHandler(opts ...Option) *Handler {
+	h := &Handler{}
+	for _, opt := range opts {
+		opt(h)
+	}
+	next := h.next
+	if next == nil {
+		next = http.NotFoundHandler()
+	}
+	chain := AnonymousAuthenticateHandler(next)
+	chain = TokenValidatorHandler(h.token, chain)
+	chain = TokenSignValidatorHandler(h.tokenSign, chain)
+	chain = BasicAuthHandler(h.basicAuth, chain)
+	h.chain = chain
+	return h
+}
+
+// ServeHTTP implements the http.Handler interface.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.chain.ServeHTTP(w, r)
+}
+
 // BasicAuthHandler returns an HTTP middleware that authenticates via Basic auth.
 // If Basic auth is present and valid, the user is set in context.
 // If Basic auth is present but invalid, returns 401.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,133 +11,21 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wzshiming/httpseek"
+	xettoken "github.com/wzshiming/xet/token"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 // xetNamespace is the single CAS namespace the data plane operates in,
 // matching the namespace the xet mirror ingests into.
 const xetNamespace = "default"
-
-// DataPlane returns the xet data-plane handler (CAS server routes falling
-// through to the xet mirror handler), or nil when no upstream is configured.
-// Mount it for the CAS, token, and bridge routes referenced by resolve
-// responses: /v1/*, /v2/*, /reconstructions, /shards, /xet-bridge/*,
-// /xet-token and /api/{type}s/{repo}/xet-(read|write)-token/{rev}.
-func (m *Mirror) DataPlane() http.Handler {
-	return m.dataPlane
-}
-
-// IsDataPlanePath reports whether the request path belongs to the xet data
-// plane rather than the hfd control plane.
-func IsDataPlanePath(p string) bool {
-	return IsCASPath(p) || IsDataPlaneUserPath(p)
-}
-
-// IsCASPath reports whether the path is a CAS transfer route. These
-// authenticate with a minted CAS token instead of hfd credentials, so they
-// must bypass the hfd authentication chain.
-func IsCASPath(p string) bool {
-	switch {
-	case strings.HasPrefix(p, "/v1/"),
-		strings.HasPrefix(p, "/v2/"),
-		p == "/reconstructions",
-		p == "/shards":
-		return true
-	}
-	return false
-}
-
-// IsDataPlaneUserPath reports whether the path is a data-plane route that
-// carries user credentials: CAS token minting and the sha256 bridge. Route
-// these through the hfd authentication chain so the permission gate sees the
-// requesting user.
-func IsDataPlaneUserPath(p string) bool {
-	switch {
-	case strings.HasPrefix(p, "/xet-bridge/"),
-		p == "/xet-token":
-		return true
-	}
-	// Hub clients construct the token refresh routes themselves.
-	if strings.HasPrefix(p, "/api/") && (strings.Contains(p, "/xet-read-token/") || strings.Contains(p, "/xet-write-token/")) {
-		return true
-	}
-	return false
-}
-
-// xetTokenRouteRe matches the hub-style token refresh routes and captures the
-// repo type, name, and token kind.
-var xetTokenRouteRe = regexp.MustCompile(`^/api/(models|datasets|spaces)/(.+)/xet-(read|write)-token/[^/]+$`)
-
-// userPathOperation extracts the repository a user-path request is about,
-// following the hf naming convention (models unprefixed, other types
-// prefixed), and the permission the request needs. Token and bridge requests
-// without repository context yield "" with read permission.
-func userPathOperation(p string) (string, permission.Operation) {
-	m := xetTokenRouteRe.FindStringSubmatch(p)
-	if m == nil {
-		return "", permission.OperationReadRepo
-	}
-	op := permission.OperationReadRepo
-	if m[3] == "write" {
-		op = permission.OperationUpdateRepo
-	}
-	if m[1] == "models" {
-		return m[2], op
-	}
-	return m[1] + "/" + m[2], op
-}
-
-// gateUserPaths enforces the permission hook on the data plane's
-// user-credential routes; CAS transfer routes pass through and authenticate
-// with their own minted tokens.
-func (m *Mirror) gateUserPaths(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if IsDataPlaneUserPath(r.URL.Path) {
-			repoName, op := userPathOperation(r.URL.Path)
-			ok, err := m.permissionHookFunc(r.Context(), op, repoName, permission.Context{})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if !ok {
-				http.Error(w, "permission denied", http.StatusForbidden)
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// handleWriteToken answers the hub-style xet-write-token route with a minted
-// CAS credential in the hub's JSON shape; the xet mirror module only serves
-// the read variant.
-func (m *Mirror) handleWriteToken(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Take the kind from the same match the permission gate classifies with.
-		route := xetTokenRouteRe.FindStringSubmatch(r.URL.Path)
-		if r.Method != http.MethodGet || route == nil || route[3] != "write" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		casURL, token, expiresAt := m.MintXETToken(r)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"casUrl":      casURL,
-			"accessToken": token,
-			"exp":         expiresAt.Unix(),
-		})
-	})
-}
 
 // resolveTarget locates a file in the upstream hub by its commit-pinned
 // resolve key, along with the object size from the pointer that named it.
@@ -171,7 +58,7 @@ func (m *Mirror) ServeResolve(w http.ResponseWriter, r *http.Request, repoName, 
 // when the object is known from a pull scan (streaming while it ingests).
 // It reports false when the object cannot be served.
 func (m *Mirror) ServeObject(w http.ResponseWriter, r *http.Request, oid string) bool {
-	if m.dataPlane == nil {
+	if m.xetStorage == nil {
 		return false
 	}
 	if m.ServeIngested(w, r, oid) {
@@ -249,15 +136,19 @@ func setLinkedMetadataHeaders(w http.ResponseWriter, oid string, size int64) {
 }
 
 // serveKey rewrites the request to the given resolve key and hands it to the
-// data plane, preserving the original headers and host so Range requests and
-// externally visible URLs keep working.
+// xet mirror handler, preserving the original headers and host so Range
+// requests and externally visible URLs keep working.
 func (m *Mirror) serveKey(w http.ResponseWriter, r *http.Request, key string) {
+	if m.mirrorHandler == nil {
+		http.NotFound(w, r)
+		return
+	}
 	r2 := r.Clone(r.Context())
 	r2.URL = &url.URL{Path: key}
 	r2.RequestURI = ""
 	r2.Body = http.NoBody
 	r2.ContentLength = 0
-	m.dataPlane.ServeHTTP(w, r2)
+	m.mirrorHandler.ServeHTTP(w, r2)
 }
 
 // HasObject reports whether the xet storage holds a fully ingested file with
@@ -276,14 +167,14 @@ func (m *Mirror) HasObject(ctx context.Context, oid string) bool {
 
 // XETUploadEnabled reports whether the data plane can accept xet uploads.
 func (m *Mirror) XETUploadEnabled() bool {
-	return m.dataPlane != nil
+	return m.xetStorage != nil
 }
 
 // MintXETToken mints a short-lived CAS access token for xet transfers,
 // returning the externally visible CAS base URL, the token, and its expiry.
 func (m *Mirror) MintXETToken(r *http.Request) (casURL, token string, expiresAt time.Time) {
 	now := time.Now()
-	tok, exp := m.issuer.Mint(now)
+	tok, exp := m.mintToken(now)
 	return m.externalBase(r), tok, time.Unix(exp, 0)
 }
 
@@ -477,4 +368,43 @@ func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
 // Ingest shares tasks and entries with the HTTP resolve path.
 func escapePath(p string) string {
 	return (&url.URL{Path: p}).EscapedPath()
+}
+
+// xetTokenTTL bounds the life of minted CAS tokens.
+const xetTokenTTL = 60 * time.Minute
+
+// xetTokenMethod and xetTokenPath are the fixed signing scope of CAS
+// tokens: one grant covers the whole CAS surface. The slash makes the
+// method an invalid HTTP token, so no wire request can ever replay a CAS
+// token through the method+URL-bound user auth chain, and vice versa.
+const (
+	xetTokenMethod = "xet/cas"
+	xetTokenPath   = "/"
+)
+
+// NewXETTokenScheme returns the CAS token mint/validate pair: hfd's signed
+// token mechanism when a validator is injected, otherwise a process-local
+// random-key issuer.
+func NewXETTokenScheme(v authenticate.TokenSignValidator) (mint func(time.Time) (token string, exp int64), authFn func(string) bool, err error) {
+	if v != nil {
+		mint = func(now time.Time) (string, int64) {
+			tok, err := v.Sign(context.Background(), xetTokenMethod, xetTokenPath, "xet-cas", xetTokenTTL)
+			if err != nil || tok == "" {
+				// Fail closed: an empty token cannot pass the CAS AuthFunc.
+				slog.Error("mint CAS token", "error", err)
+				return "", 0
+			}
+			return tok, now.Add(xetTokenTTL).Unix()
+		}
+		authFn = func(tok string) bool {
+			_, _, ok, err := v.Validate(context.Background(), xetTokenMethod, xetTokenPath, tok)
+			return err == nil && ok
+		}
+		return mint, authFn, nil
+	}
+	issuer, err := xettoken.NewIssuer(nil, xetTokenTTL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create token issuer: %w", err)
+	}
+	return issuer.Mint, func(tok string) bool { return issuer.Validate(tok, time.Now()) }, nil
 }
