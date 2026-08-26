@@ -322,7 +322,7 @@ assert "data.txt" in siblings, f"data.txt not in {siblings}"
 func runPyScript(t *testing.T, endpoint, script string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "python3", "-c", script)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(testEnv(),
 		"HF_ENDPOINT="+endpoint,
 		"HF_HUB_DISABLE_TELEMETRY=1",
 		"HF_TOKEN=dummy-token",

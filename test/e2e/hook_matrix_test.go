@@ -127,7 +127,7 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 			runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "v1.0")
 			cmd.Dir = cloneDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			output, err := cmd.Output()
 			if err == nil {
 				t.Fatalf("Expected tag push to fail, but it succeeded: %s", output)
@@ -450,7 +450,7 @@ func runHookGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
 	}
@@ -544,7 +544,7 @@ func TestPermissionHookMatrix(t *testing.T) {
 
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "main")
 			cmd.Dir = cloneDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			output, err := cmd.Output()
 			if err == nil {
 				t.Fatalf("Expected push to fail due to permission hook, but it succeeded: %s", output)

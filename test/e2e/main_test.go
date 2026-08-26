@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -57,6 +58,29 @@ func run(m *testing.M) int {
 
 	fmt.Println("=== e2e pass 2/2: S3 storage ===")
 	return m.Run()
+}
+
+// testEnv strips host proxy/ssh overrides that must not leak into client subprocesses.
+// It also pins git-lfs to the basic transfer, so custom transfer adapters from the
+// host gitconfig (e.g. lfs.customtransfer.xet) cannot hijack test uploads.
+func testEnv() []string {
+	hostEnv := os.Environ()
+	env := make([]string, 0, len(hostEnv)+5)
+	for _, kv := range hostEnv {
+		name, _, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "GIT_SSH_COMMAND":
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env,
+		"GIT_TERMINAL_PROMPT=0",
+		"NO_PROXY=*",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=lfs.basictransfersonly",
+		"GIT_CONFIG_VALUE_0=true",
+	)
 }
 
 // newDataDir returns a fresh server data directory on the host.

@@ -120,7 +120,7 @@ func runSSHGitCmd(t *testing.T, dir string, env []string, args ...string) string
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
@@ -258,7 +258,7 @@ func TestSSHCloneWithUnauthorizedKeyFails(t *testing.T) {
 	// Attempt clone with unauthorized key
 	cloneDir := filepath.Join(clientDir, "clone-bad")
 	cmd := exec.CommandContext(t.Context(), "git", "clone", sshURL+"test-user/ssh-unauth-model.git", cloneDir)
-	cmd.Env = append(os.Environ(), badEnv...)
+	cmd.Env = append(testEnv(), badEnv...)
 	output, err := cmd.Output()
 	if err == nil {
 		t.Fatalf("Expected clone to fail with unauthorized key, but it succeeded: %s", output)
@@ -299,7 +299,7 @@ func TestSSHCrossProtocolUploadHTTPCloneSSH(t *testing.T) {
 	httpCloneDir := filepath.Join(clientDir, "http-clone")
 	httpGitURL := endpoint + "/cross-user/cross-model.git"
 	httpCmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, httpCloneDir)
-	httpCmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	httpCmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 	if output, err := httpCmd.Output(); err != nil {
 		t.Fatalf("HTTP clone failed: %v\n%s", err, output)
 	}
@@ -318,7 +318,7 @@ func TestSSHCrossProtocolUploadHTTPCloneSSH(t *testing.T) {
 	} {
 		cmd := exec.CommandContext(t.Context(), "git", args...)
 		cmd.Dir = httpCloneDir
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(testEnv(), "GIT_TERMINAL_PROMPT=0")
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 		}

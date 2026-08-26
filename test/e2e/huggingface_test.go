@@ -65,7 +65,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 func runHFCmd(t *testing.T, endpoint string, args ...string) string {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "hf", args...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(testEnv(),
 		"HF_ENDPOINT="+endpoint,
 		"HF_HUB_DISABLE_TELEMETRY=1",
 		"HF_HUB_DISABLE_XET=1",

@@ -25,7 +25,7 @@ func checkPythonHFHub(t *testing.T) {
 func runPythonScript(t *testing.T, endpoint, script string) string {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "python3", "-c", script)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(testEnv(),
 		"HF_ENDPOINT="+endpoint,
 		"HF_HUB_DISABLE_TELEMETRY=1",
 		"HF_HUB_DISABLE_XET=1",

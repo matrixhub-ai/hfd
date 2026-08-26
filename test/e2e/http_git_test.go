@@ -37,7 +37,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 	t.Run("CloneEmptyRepo", func(t *testing.T) {
 		cloneDir := filepath.Join(clientDir, "clone-empty")
 		cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, cloneDir)
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(testEnv(), env...)
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("HTTP clone failed: %v\n%s", err, output)
 		}
@@ -57,7 +57,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -75,7 +75,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -85,7 +85,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 	t.Run("CloneWithContent", func(t *testing.T) {
 		cloneDir := filepath.Join(clientDir, "clone-content")
 		cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, cloneDir)
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(testEnv(), env...)
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("HTTP clone failed: %v\n%s", err, output)
 		}
@@ -104,7 +104,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		workDir := filepath.Join(clientDir, "clone-content")
 		cmd := exec.CommandContext(t.Context(), "git", "fetch", "origin")
 		cmd.Dir = workDir
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(testEnv(), env...)
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("Git fetch failed: %v\n%s", err, output)
 		}
@@ -119,7 +119,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -137,7 +137,7 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		} {
 			cmd := exec.CommandContext(t.Context(), "git", args...)
 			cmd.Dir = workDir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(testEnv(), env...)
 			if output, err := cmd.Output(); err != nil {
 				t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 			}
@@ -148,14 +148,14 @@ func TestHTTPGitCloneAndPush(t *testing.T) {
 		firstCloneDir := filepath.Join(clientDir, "clone-empty")
 		cmd := exec.CommandContext(t.Context(), "git", "config", "pull.rebase", "false")
 		cmd.Dir = firstCloneDir
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(testEnv(), env...)
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("Git config failed: %v\n%s", err, output)
 		}
 
 		pullCmd := exec.CommandContext(t.Context(), "git", "pull")
 		pullCmd.Dir = firstCloneDir
-		pullCmd.Env = append(os.Environ(), env...)
+		pullCmd.Env = append(testEnv(), env...)
 		if output, err := pullCmd.Output(); err != nil {
 			t.Fatalf("Git pull failed: %v\n%s", err, output)
 		}
@@ -208,7 +208,7 @@ func TestHTTPGitMultipleFiles(t *testing.T) {
 
 	cloneDir := filepath.Join(clientDir, "clone")
 	cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, cloneDir)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Clone failed: %v\n%s", err, output)
 	}
@@ -236,7 +236,7 @@ func TestHTTPGitMultipleFiles(t *testing.T) {
 	} {
 		gitCmd := exec.CommandContext(t.Context(), "git", args...)
 		gitCmd.Dir = cloneDir
-		gitCmd.Env = append(os.Environ(), env...)
+		gitCmd.Env = append(testEnv(), env...)
 		if output, err := gitCmd.Output(); err != nil {
 			t.Fatalf("Git command failed: git %s\n%v\n%s", strings.Join(args, " "), err, output)
 		}
@@ -264,7 +264,7 @@ func TestHTTPGitMultipleFiles(t *testing.T) {
 	t.Run("VerifyViaClone", func(t *testing.T) {
 		verifyDir := filepath.Join(clientDir, "verify-clone")
 		cmd := exec.CommandContext(t.Context(), "git", "clone", httpGitURL, verifyDir)
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(testEnv(), env...)
 		if output, err := cmd.Output(); err != nil {
 			t.Fatalf("Verify clone failed: %v\n%s", err, output)
 		}

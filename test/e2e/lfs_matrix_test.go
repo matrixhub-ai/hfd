@@ -161,7 +161,7 @@ func runLFSGitCmd(t *testing.T, dir string, env []string, args ...string) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(testEnv(), env...)
 	if output, err := cmd.Output(); err != nil {
 		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
 	}
