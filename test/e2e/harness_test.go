@@ -21,11 +21,15 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -40,10 +44,17 @@ type e2eServer struct {
 }
 
 type e2eConfig struct {
-	upstreamURL string
-	ssh         bool
-	sshLFSURL   bool
-	wraps       []func(http.Handler) http.Handler
+	upstreamURL  string
+	ssh          bool
+	sshLFSURL    bool
+	wraps        []func(http.Handler) http.Handler
+	authUser     string
+	authPass     string
+	preReceive   receive.PreReceiveHookFunc
+	postReceive  receive.PostReceiveHookFunc
+	permission   permission.PermissionHookFunc
+	mirrorSource string
+	refFilter    mirror.RefFilterFunc
 }
 
 type e2eOption func(*e2eConfig)
@@ -74,6 +85,72 @@ func withWrap(mw func(http.Handler) http.Handler) e2eOption {
 	return func(c *e2eConfig) { c.wraps = append(c.wraps, mw) }
 }
 
+// withAuth wires the authenticate layer over the HTTP chain the way cmd/hfd
+// does: basic, static-token, and sign validators for the credentials. The
+// layer only establishes identity — anonymous requests pass through and
+// enforcement stays in permission hooks.
+func withAuth(username, password string) e2eOption {
+	return func(c *e2eConfig) { c.authUser = username; c.authPass = password }
+}
+
+// withHooks installs pre/post receive hooks on the git transports (HTTP and
+// SSH); nil hooks stay unset. The hf API layer is left unhooked, matching
+// the pre-harness per-protocol fixtures.
+func withHooks(pre receive.PreReceiveHookFunc, post receive.PostReceiveHookFunc) e2eOption {
+	return func(c *e2eConfig) { c.preReceive = pre; c.postReceive = post }
+}
+
+// withPermissionHook installs the permission hook on the git transports
+// (HTTP and SSH), leaving the hf API layer open so fixtures can create repos.
+func withPermissionHook(fn permission.PermissionHookFunc) e2eOption {
+	return func(c *e2eConfig) { c.permission = fn }
+}
+
+// withMirrorSource turns the server into a pull-through mirror of the given
+// upstream: opening an unknown repository fetches it on demand via the
+// pre-open hook, on HTTP and SSH alike, and pushes to it are refused.
+func withMirrorSource(upstreamURL string) e2eOption {
+	return func(c *e2eConfig) { c.mirrorSource = upstreamURL }
+}
+
+// withRefFilter narrows which upstream refs withMirrorSource mirrors.
+func withRefFilter(fn mirror.RefFilterFunc) e2eOption {
+	return func(c *e2eConfig) { c.refFilter = fn }
+}
+
+// newMirrorSourceFunc maps every repository name onto the same upstream base
+// URL, marking all of them as mirror sources.
+func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	return func(ctx context.Context, repoName string) (string, bool, error) {
+		return baseURL + "/" + repoName, true, nil
+	}
+}
+
+// newMirrorPreOpenHook pulls mirror-source repositories from their remote
+// before they are opened, creating them locally on first access.
+func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, string, bool) error {
+	return func(ctx context.Context, repoName string, write bool) error {
+		if sharedMirror == nil {
+			return nil
+		}
+
+		isMirror, err := sharedMirror.IsMirrorSource(ctx, repoName)
+		if err != nil {
+			return err
+		}
+		if !isMirror {
+			return nil
+		}
+
+		repoPath := repository.ResolvePath(repoName)
+		if repoPath == "" {
+			return fmt.Errorf("repository path not found for %s", repoName)
+		}
+		return sharedMirror.PullFromRemote(ctx, repoPath, repoName, nil)
+	}
+}
+
 // newE2EServer wires the full production handler chain the way cmd/hfd does.
 // The mirror handler serves the xet token routes, so the data plane needs an
 // upstream; tests that never leave local content default to an always-404
@@ -95,25 +172,65 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		cfg.upstreamURL = upstream.URL
 	}
 
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, cfg.upstreamURL, testS3Client != nil,
-		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-	)
+	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
+	if cfg.mirrorSource != "" {
+		mirrorOpts = append(mirrorOpts, mirror.WithMirrorSourceFunc(newMirrorSourceFunc(cfg.mirrorSource)))
+	}
+	if cfg.refFilter != nil {
+		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
+	}
+	sharedMirror, dataPlane := newTestMirror(t, dataDir, cfg.upstreamURL, testS3Client != nil, mirrorOpts...)
 
-	var handler http.Handler
-	handler = backendhf.NewHandler(
+	// The git transports get the mirror (and its access rules) only in
+	// pull-through mode: with a mirror set they refuse to serve non-mirror
+	// repositories.
+	var preOpen func(context.Context, string, bool) error
+	if cfg.mirrorSource != "" {
+		preOpen = newMirrorPreOpenHook(sharedMirror)
+	}
+
+	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithNext(dataPlane),
-	)
+	}
+	if preOpen != nil {
+		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
+	}
+	var handler http.Handler
+	handler = backendhf.NewHandler(hfOpts...)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
 		backendlfs.WithMirror(sharedMirror),
 	)
-	handler = backendhttp.NewHandler(
+	httpOpts := []backendhttp.Option{
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
-	)
+	}
+	if preOpen != nil {
+		httpOpts = append(httpOpts,
+			backendhttp.WithMirror(sharedMirror),
+			backendhttp.WithPreOpenHookFunc(preOpen))
+	}
+	if cfg.preReceive != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(cfg.preReceive))
+	}
+	if cfg.postReceive != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(cfg.postReceive))
+	}
+	if cfg.permission != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(cfg.permission))
+	}
+	handler = backendhttp.NewHandler(httpOpts...)
+	if cfg.authUser != "" || cfg.authPass != "" {
+		handler = authenticate.NewHandler(
+			authenticate.WithNext(handler),
+			authenticate.WithBasicAuthValidator(authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)),
+			authenticate.WithTokenValidator(authenticate.NewSimpleTokenValidator(cfg.authUser, cfg.authPass)),
+			authenticate.WithTokenSignValidator(authenticate.NewTokenSignValidator([]byte(cfg.authPass))),
+		)
+	}
 	for _, w := range cfg.wraps {
 		handler = w(handler)
 	}
@@ -148,6 +265,20 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	if cfg.sshLFSURL {
 		sshOpts = append(sshOpts, backendssh.WithLFSURL(httpServer.URL))
+	}
+	if preOpen != nil {
+		sshOpts = append(sshOpts,
+			backendssh.WithMirror(sharedMirror),
+			backendssh.WithPreOpenHookFunc(preOpen))
+	}
+	if cfg.preReceive != nil {
+		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(cfg.preReceive))
+	}
+	if cfg.postReceive != nil {
+		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(cfg.postReceive))
+	}
+	if cfg.permission != nil {
+		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(cfg.permission))
 	}
 	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -255,19 +386,6 @@ func sshGitEnv(keyFile string, port string) []string {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=" + sshCmd,
 	}
-}
-
-// runSSHGitCmd runs a git command with the given environment in the specified directory.
-func runSSHGitCmd(t *testing.T, dir string, env []string, args ...string) string {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(testEnv(), env...)
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
-	}
-	return string(output)
 }
 
 // requestRecorder captures every request hitting the server so the matrix
