@@ -354,3 +354,30 @@ func TestNoAuthenticate(t *testing.T) {
 		t.Errorf("Expected 200, got %d", rr.Code)
 	}
 }
+
+func TestNewTokenRecognizer(t *testing.T) {
+	recognize := func(token string) bool { return token == "known" }
+	tests := []struct {
+		name      string
+		validator TokenValidator
+		token     string
+		wantUser  string
+		wantNext  bool
+		wantOK    bool
+	}{
+		{"recognized token", NewTokenRecognizer("svc", recognize), "known", "svc", false, true},
+		{"unrecognized token falls through", NewTokenRecognizer("svc", recognize), "other", "", true, false},
+		{"nil recognize never matches", NewTokenRecognizer("svc", nil), "known", "", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user, next, ok, err := tt.validator.Validate(context.Background(), tt.token)
+			if err != nil {
+				t.Fatalf("Validate error = %v", err)
+			}
+			if user != tt.wantUser || next != tt.wantNext || ok != tt.wantOK {
+				t.Errorf("Validate = (%q, %v, %v), want (%q, %v, %v)", user, next, ok, tt.wantUser, tt.wantNext, tt.wantOK)
+			}
+		})
+	}
+}

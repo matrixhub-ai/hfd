@@ -311,13 +311,7 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 
 	// CAS credentials are hfd-signed with a fixed scope; recognize them ahead
 	// of the per-URL validators, which would otherwise 401 them.
-	handler = authenticate.TokenValidatorHandler(authenticate.TokenValidatorFunc(
-		func(_ context.Context, token string) (string, bool, bool, error) {
-			if authFn(token) {
-				return "xet-cas", false, true, nil
-			}
-			return "", true, false, nil
-		}), handler)
+	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), handler)
 
 	return handler
 }
