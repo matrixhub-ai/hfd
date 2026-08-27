@@ -349,6 +349,12 @@ func requireUpDownMatrixTools(t *testing.T) {
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		missing("git-lfs not found; install git-lfs")
 	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		missing("python3 not found; install python3 with huggingface_hub")
+	}
+	if pyOut, err := exec.CommandContext(t.Context(), "python3", "-c", "import huggingface_hub").CombinedOutput(); err != nil {
+		missing("python3 cannot import huggingface_hub: %v\n%s", err, pyOut)
+	}
 	out, err := exec.CommandContext(t.Context(), "hf", "env").CombinedOutput()
 	if err != nil {
 		missing("hf env failed: %v\n%s", err, out)
@@ -396,6 +402,62 @@ func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("hf %s failed (%v): %v\nOutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
+	}
+	return string(output)
+}
+
+// requirePyXetTokenContract gates the python xet cells: old huggingface_hub
+// releases fetch CAS tokens in Python and demand X-Xet-* response headers on
+// the token routes, while this server speaks the current hub contract (JSON
+// body, parsed by the hf_xet core). Skips locally, fails on CI, like
+// requireUpDownMatrixTools.
+func requirePyXetTokenContract(t *testing.T) {
+	t.Helper()
+	missing := func(format string, args ...any) {
+		t.Helper()
+		if os.Getenv("CI") != "" {
+			t.Fatalf(format, args...)
+		}
+		t.Skipf(format, args...)
+	}
+	probe := "import hf_xet; import sys, huggingface_hub.utils._xet as x; " +
+		"sys.exit(1 if hasattr(x, 'parse_xet_connection_info_from_headers') else 0)"
+	if out, err := exec.CommandContext(t.Context(), "python3", "-c", probe).CombinedOutput(); err != nil {
+		missing("python huggingface_hub/hf_xet too old for the JSON xet token contract; pip install -U 'huggingface_hub[hf_xet]': %v\n%s", err, out)
+	}
+}
+
+// runPyXet runs a Python3 snippet driving huggingface_hub against endpoint
+// with xet-core (hf_xet) enabled or disabled, mirroring runHFCmdXet. HF_HOME
+// is isolated per call so nothing is served from cache. A watchdog kills
+// hung invocations so a stuck client fails fast with output.
+func runPyXet(t *testing.T, endpoint string, xet bool, script string) string {
+	t.Helper()
+	base := testEnv()
+	env := make([]string, 0, len(base)+5)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "HF_HUB_DISABLE_XET=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"HF_ENDPOINT="+endpoint,
+		"HF_HUB_DISABLE_TELEMETRY=1",
+		"HF_TOKEN=dummy-token",
+		"HF_HOME="+t.TempDir(),
+	)
+	if !xet {
+		env = append(env, "HF_HUB_DISABLE_XET=1")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "python3", "-c", script)
+	cmd.Env = env
+	cmd.WaitDelay = 10 * time.Second
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("python script failed (%v): %v\nScript:\n%s\nOutput: %s", ctx.Err(), err, script, output)
 	}
 	return string(output)
 }
