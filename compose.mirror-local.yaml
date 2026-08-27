@@ -1,0 +1,10 @@
+services:
+  hfd:
+    build: .
+    ports:
+      - "8080:8080"
+      - "2222:2222"
+    command:
+      - --pull-mirror=https://huggingface.co
+    volumes:
+      - ./data/:/data/
