@@ -40,11 +40,9 @@ type e2eServer struct {
 	sshURL  string
 	sshEnv  []string
 	storage *storage.Storage
-	mirror  *mirror.Mirror
 }
 
 type e2eConfig struct {
-	upstreamURL  string
 	ssh          bool
 	sshLFSURL    bool
 	wraps        []func(http.Handler) http.Handler
@@ -58,12 +56,6 @@ type e2eConfig struct {
 }
 
 type e2eOption func(*e2eConfig)
-
-// withUpstream points the xet mirror handler at the given upstream instead
-// of the default always-404 one.
-func withUpstream(url string) e2eOption {
-	return func(c *e2eConfig) { c.upstreamURL = url }
-}
 
 // withSSH starts an SSH git server sharing the HTTP server's storage,
 // filling sshURL and sshEnv.
@@ -151,11 +143,14 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 	}
 }
 
-// newE2EServer wires the full production handler chain the way cmd/hfd does.
-// The mirror handler serves the xet token routes, so the data plane needs an
-// upstream; tests that never leave local content default to an always-404
-// one, which fully ingested objects never contact. During the S3 pass the
-// xet storage lives in the fake S3 bucket, like production.
+// newE2EServer wires the handler chain in cmd/hfd's order (http → lfs → hf →
+// xet CAS data plane), with one known deviation from the production wiring:
+// the mirror reaches the git transports only under withMirrorSource, because
+// injecting it unconditionally — as wire.go does — would make
+// checkMirrorAccess refuse every non-mirror repository. The data plane needs
+// an upstream; tests never leave local content, so it points at an
+// always-404 server that fully ingested objects never contact. During the S3
+// pass the xet storage lives in the fake S3 bucket, like production.
 func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	t.Helper()
 	cfg := &e2eConfig{}
@@ -166,11 +161,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	dataDir := newDataDir(t, "e2e-server-data")
 	st := newTestStorage(t, dataDir)
 
-	if cfg.upstreamURL == "" {
-		upstream := httptest.NewServer(http.NotFoundHandler())
-		t.Cleanup(upstream.Close)
-		cfg.upstreamURL = upstream.URL
-	}
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(upstream.Close)
 
 	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
 	if cfg.mirrorSource != "" {
@@ -179,7 +171,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
 	}
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, cfg.upstreamURL, testS3Client != nil, mirrorOpts...)
+	sharedMirror, dataPlane := newTestMirror(t, dataDir, upstream.URL, testS3Client != nil, mirrorOpts...)
 
 	// The git transports get the mirror (and its access rules) only in
 	// pull-through mode: with a mirror set they refuse to serve non-mirror
@@ -241,7 +233,6 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	s := &e2eServer{
 		httpURL: httpServer.URL,
 		storage: st,
-		mirror:  sharedMirror,
 	}
 	if !cfg.ssh {
 		return s
@@ -439,17 +430,6 @@ func (rr *requestRecorder) dump() string {
 	return strings.Join(rr.reqs, "\n")
 }
 
-// noProxyEnv neutralizes ambient proxy settings for subprocesses; every
-// endpoint in this matrix is 127.0.0.1 and Go's exec keeps the last
-// duplicate env entry.
-func noProxyEnv() []string {
-	return []string{
-		"http_proxy=", "https_proxy=", "all_proxy=",
-		"HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=",
-		"NO_PROXY=*", "no_proxy=*",
-	}
-}
-
 // requireUpDownMatrixTools skips locally when a required client is missing;
 // on CI (CI env set) it hard-fails so the matrix stays enforced there.
 func requireUpDownMatrixTools(t *testing.T) {
@@ -545,62 +525,11 @@ func requirePyXetTokenContract(t *testing.T) {
 	}
 }
 
-// setupTestServer is the pre-harness fixture: the same handler chain as
-// newE2EServer without SSH/upstream/wrap options, returning the raw
-// httptest.Server and data dir. Kept for lfs_matrix and proxy tests.
-func setupTestServer(t *testing.T) (*httptest.Server, string) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "hf-e2e-data")
-
-	storage := newTestStorage(t, dataDir)
-
-	// Data-plane-only mirror: holds all LFS content in xet storage.
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, "", false,
-		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
-	)
-
-	// Set up handler chain (same order as main.go)
-	var handler http.Handler
-
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(dataPlane),
-	)
-
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-		backendlfs.WithMirror(sharedMirror),
-	)
-
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
-		backendhttp.WithNext(handler),
-	)
-
-	server := httptest.NewServer(handler)
-	t.Cleanup(func() { server.Close() })
-
-	return server, dataDir
-}
-
-// runHFCmd runs the hf CLI with the given endpoint and arguments.
+// runHFCmd runs the hf CLI against endpoint with xet disabled: runHFCmdXet's
+// non-xet form under the pre-matrix helper name.
 func runHFCmd(t *testing.T, endpoint string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "hf", args...)
-	cmd.Env = append(testEnv(),
-		"HF_ENDPOINT="+endpoint,
-		"HF_HUB_DISABLE_TELEMETRY=1",
-		"HF_HUB_DISABLE_XET=1",
-		"HF_TOKEN=dummy-token",
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("HF command failed: hf %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
-	}
-	return string(output)
+	return runHFCmdXet(t, endpoint, false, args...)
 }
 
 // runPyScript runs a Python3 script with HF_ENDPOINT and HF_TOKEN set and
@@ -610,15 +539,24 @@ func runPyScript(t *testing.T, endpoint, script string) {
 	runPyXet(t, endpoint, false, script)
 }
 
-// checkPythonHFHub skips the test if Python3 or huggingface_hub are not available.
+// checkPythonHFHub skips locally when python3 or huggingface_hub are
+// missing; on CI (CI env set) it hard-fails so the python rows stay
+// enforced there, like requireUpDownMatrixTools.
 func checkPythonHFHub(t *testing.T) {
 	t.Helper()
+	missing := func(format string, args ...any) {
+		t.Helper()
+		if os.Getenv("CI") != "" {
+			t.Fatalf(format, args...)
+		}
+		t.Skipf(format, args...)
+	}
 	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not available, skipping Python huggingface_hub test")
+		missing("python3 not available; install python3 with huggingface_hub")
 	}
 	cmd := exec.CommandContext(t.Context(), "python3", "-c", "import huggingface_hub")
 	if err := cmd.Run(); err != nil {
-		t.Skip("huggingface_hub not installed, skipping Python huggingface_hub test")
+		missing("huggingface_hub not installed; pip install huggingface_hub")
 	}
 }
 

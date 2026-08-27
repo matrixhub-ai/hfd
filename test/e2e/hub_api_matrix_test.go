@@ -96,9 +96,10 @@ type hubOp struct {
 
 func anyClientAnyType(hubClient, hubRepoType) bool { return true }
 
-// pyOnly marks hub API surfaces the hf CLI 1.28 does not expose
-// (snapshot_download, list_repo_files, *_info, list_repo_commits,
-// list_repo_refs, super_squash_history).
+// pyOnly pins ops whose hf CLI rows this matrix does not implement; the
+// python rows already cover the API semantics. hf CLI 1.28 does expose
+// ls/info commands — CLI rows for those are an optional follow-up — while
+// commits/refs/squash have no CLI equivalent.
 func pyOnly(c hubClient, _ hubRepoType) bool { return c.py }
 
 // modelCellOnly anchors ops that span all repo types internally to the Model

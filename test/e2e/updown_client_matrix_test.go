@@ -109,7 +109,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 			repo: "matrix-org/updown-git-http",
 			upload: func(t *testing.T, s *e2eServer, _ *requestRecorder, repoID string, data []byte) {
 				remote, env := s.httpRemote(repoID)
-				pushViaGitLFS(t, s, remote, append(env, noProxyEnv()...), repoID, data)
+				pushViaGitLFS(t, s, remote, env, repoID, data)
 			},
 		},
 		{
@@ -117,7 +117,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 			repo: "matrix-org/updown-git-ssh",
 			upload: func(t *testing.T, s *e2eServer, _ *requestRecorder, repoID string, data []byte) {
 				remote, env := s.sshRemote(repoID)
-				pushViaGitLFS(t, s, remote, append(env, noProxyEnv()...), repoID, data)
+				pushViaGitLFS(t, s, remote, env, repoID, data)
 			},
 		},
 		{
@@ -226,7 +226,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 			})
 			t.Run("DownGitHTTPLFSPull", func(t *testing.T) {
 				remote, env := s.httpRemote(up.repo)
-				verifyGitLFSPull(t, s, remote, append(env, noProxyEnv()...), up.repo, data)
+				verifyGitLFSPull(t, s, remote, env, up.repo, data)
 			})
 			// SSH LFS pull column cut: transfer_matrix's ReadGitLFSPull(sshRemote) already covers SSH LFS reads per write row.
 			t.Run("DownXetGoResolve", func(t *testing.T) {

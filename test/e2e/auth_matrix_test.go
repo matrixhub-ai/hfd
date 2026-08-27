@@ -244,6 +244,38 @@ func runAuthGitPush(t *testing.T, s *e2eServer, c authMatrixCred) {
 	// Like the clone row, wrong credentials ride the anonymous fallback:
 	// the push lands as the anonymous user because nothing challenges it.
 	runGit(t, workDir, env, "push", "origin", "main")
+
+	// Read back the pushed file over resolve to prove the bytes landed. The
+	// row's credential gets its documented direct-HTTP treatment (wrong basic
+	// credentials still 401 here), so those rows re-read anonymously for the
+	// content assertion.
+	req, err := http.NewRequest(http.MethodGet, s.httpURL+"/"+repoID+"/resolve/main/README.md", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	if c.apply != nil {
+		c.apply(t, req)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to read back pushed file: %v", err)
+	}
+	checkAuthStatus(t, c, resp.StatusCode)
+	if !c.wantOK {
+		resp.Body.Close()
+		resp, err = http.Get(s.httpURL + "/" + repoID + "/resolve/main/README.md")
+		if err != nil {
+			t.Fatalf("Failed to read back pushed file anonymously: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected 200 reading back anonymously, got %d", resp.StatusCode)
+		}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != authMatrixReadme {
+		t.Errorf("Unexpected pushed content: %q", body)
+	}
 }
 
 func runAuthResolve(t *testing.T, s *e2eServer, c authMatrixCred) {

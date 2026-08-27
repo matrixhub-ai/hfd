@@ -60,8 +60,8 @@ func TestLFSOperationsMatrix(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			server, _ := setupTestServer(t)
-			endpoint := server.URL
+			s := newE2EServer(t)
+			endpoint := s.httpURL
 
 			clientDir, err := os.MkdirTemp("", "lfs-matrix-client")
 			if err != nil {
@@ -85,15 +85,15 @@ func TestLFSOperationsMatrix(t *testing.T) {
 
 			// Clone the repo
 			cloneDir := filepath.Join(clientDir, "clone")
-			runLFSGitCmd(t, "", env, "clone", httpGitURL, cloneDir)
+			runGit(t, "", env, "clone", httpGitURL, cloneDir)
 
 			// Configure user
-			runLFSGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-			runLFSGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 			// Track files with LFS
 			for _, pattern := range tc.filePatterns {
-				runLFSGitCmd(t, cloneDir, env, "lfs", "track", pattern)
+				runGit(t, cloneDir, env, "lfs", "track", pattern)
 			}
 
 			// Create files
@@ -109,16 +109,16 @@ func TestLFSOperationsMatrix(t *testing.T) {
 			}
 
 			// Add and commit
-			runLFSGitCmd(t, cloneDir, env, "add", ".")
-			runLFSGitCmd(t, cloneDir, env, "commit", "-m", "Add LFS tracked files")
-			runLFSGitCmd(t, cloneDir, env, "push", "origin", "main")
+			runGit(t, cloneDir, env, "add", ".")
+			runGit(t, cloneDir, env, "commit", "-m", "Add LFS tracked files")
+			runGit(t, cloneDir, env, "push", "origin", "main")
 
 			// Clone into a new directory and verify LFS content
 			verifyDir := filepath.Join(clientDir, "verify")
-			runLFSGitCmd(t, "", env, "clone", httpGitURL, verifyDir)
+			runGit(t, "", env, "clone", httpGitURL, verifyDir)
 
 			// Pull LFS content
-			runLFSGitCmd(t, verifyDir, env, "lfs", "pull")
+			runGit(t, verifyDir, env, "lfs", "pull")
 
 			// Verify all files
 			for name, expectedContent := range tc.files {
@@ -267,17 +267,4 @@ func makeBinaryData(size int, seed byte) []byte {
 		data[i] = byte((i + int(seed)) % 256)
 	}
 	return data
-}
-
-// runLFSGitCmd runs a git command for LFS tests
-func runLFSGitCmd(t *testing.T, dir string, env []string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = append(testEnv(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
-	}
 }

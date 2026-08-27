@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -96,20 +95,20 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 
 			// Clone and push commit (should succeed)
 			cloneDir := filepath.Join(clientDir, "clone")
-			runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-			runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-			runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+			runGit(t, "", env, "clone", repoURL, cloneDir)
+			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 			if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 				t.Fatalf("Failed to create file: %v", err)
 			}
 
-			runHookGitCmd(t, cloneDir, env, "add", "README.md")
-			runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
-			runHookGitCmd(t, cloneDir, env, "push", "origin", "main")
+			runGit(t, cloneDir, env, "add", "README.md")
+			runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
+			runGit(t, cloneDir, env, "push", "origin", "main")
 
 			// Tag push should be denied
-			runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
+			runGit(t, cloneDir, env, "tag", "v1.0")
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "v1.0")
 			cmd.Dir = cloneDir
 			cmd.Env = append(testEnv(), env...)
@@ -129,17 +128,17 @@ func testHookBranchPush(t *testing.T, repoURL string, env []string, recorder *ma
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-	runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+	runGit(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	runHookGitCmd(t, cloneDir, env, "add", "README.md")
-	runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "main")
+	runGit(t, cloneDir, env, "add", "README.md")
+	runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
+	runGit(t, cloneDir, env, "push", "origin", "main")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -167,10 +166,10 @@ func testHookTagCreate(t *testing.T, repoURL string, env []string, recorder *mat
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, "", env, "clone", repoURL, cloneDir)
 
-	runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "v1.0")
+	runGit(t, cloneDir, env, "tag", "v1.0")
+	runGit(t, cloneDir, env, "push", "origin", "v1.0")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -201,9 +200,9 @@ func testHookTagDelete(t *testing.T, repoURL string, env []string, recorder *mat
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, "", env, "clone", repoURL, cloneDir)
 
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -234,18 +233,18 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-	runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+	runGit(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
-	runHookGitCmd(t, cloneDir, env, "checkout", "-b", "feature")
+	runGit(t, cloneDir, env, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(cloneDir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	runHookGitCmd(t, cloneDir, env, "add", "feature.txt")
-	runHookGitCmd(t, cloneDir, env, "commit", "-m", "Feature commit")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "feature")
+	runGit(t, cloneDir, env, "add", "feature.txt")
+	runGit(t, cloneDir, env, "commit", "-m", "Feature commit")
+	runGit(t, cloneDir, env, "push", "origin", "feature")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -265,8 +264,8 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 
 	// Delete the branch
 	recorder.reset()
-	runHookGitCmd(t, cloneDir, env, "checkout", "main")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "--delete", "feature")
+	runGit(t, cloneDir, env, "checkout", "main")
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "feature")
 
 	calls = recorder.getCalls()
 	if len(calls) == 0 {
@@ -285,23 +284,10 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 	}
 }
 
-func runHookGitCmd(t *testing.T, dir string, env []string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = append(testEnv(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
-	}
-}
-
 // matrixHookRecorder records receive hook calls in a thread-safe manner (for matrix tests)
 type matrixHookRecorder struct {
-	mu      sync.Mutex
-	calls   []matrixHookCall
-	hookErr error
+	mu    sync.Mutex
+	calls []matrixHookCall
 }
 
 type matrixHookCall struct {
@@ -313,7 +299,7 @@ func (r *matrixHookRecorder) hook(ctx context.Context, repoName string, updates 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, matrixHookCall{repoName: repoName, updates: updates})
-	return r.hookErr
+	return nil
 }
 
 func (r *matrixHookRecorder) getCalls() []matrixHookCall {
@@ -360,18 +346,18 @@ func TestPermissionHookMatrix(t *testing.T) {
 
 			// Clone should succeed (read permission)
 			cloneDir := filepath.Join(clientDir, "clone")
-			runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+			runGit(t, "", env, "clone", repoURL, cloneDir)
 
 			// Push should fail (write denied)
-			runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-			runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 			if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 				t.Fatalf("Failed to create file: %v", err)
 			}
 
-			runHookGitCmd(t, cloneDir, env, "add", "README.md")
-			runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
+			runGit(t, cloneDir, env, "add", "README.md")
+			runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
 
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "main")
 			cmd.Dir = cloneDir
