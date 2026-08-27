@@ -579,11 +579,12 @@ func runHubDeleteFile(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 }
 
 // runHubRepoInfo (py only): the type's info accessor returns the id and the
-// full sibling set; setup and info share one script.
+// full sibling set; setup and info share one script. The README carries YAML
+// front matter so the info path exercises the card-metadata parser.
 func runHubRepoInfo(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/info-" + rt.arg
 	files := []hubFile{
-		{"README.md", "# Info Test"},
+		{"README.md", "---\ntags:\n- text-classification\n- pytorch\n---\n# Info Test\n"},
 		{"data.txt", "data\n"},
 	}
 
