@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
@@ -221,6 +222,50 @@ func runGit(t *testing.T, dir string, env []string, args ...string) string {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed (%v): %v\noutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
+	}
+	return string(output)
+}
+
+// generateTestKeyFile generates an ED25519 key pair and writes the private key to path.
+// Returns the SSH public key.
+func generateTestKeyFile(t *testing.T, path string) ssh.PublicKey {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate client key: %v", err)
+	}
+	privKeyPEM, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatalf("Failed to marshal private key: %v", err)
+	}
+	if err := os.WriteFile(path, pem.EncodeToMemory(privKeyPEM), 0600); err != nil {
+		t.Fatalf("Failed to write private key: %v", err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatalf("Failed to create signer: %v", err)
+	}
+	return signer.PublicKey()
+}
+
+// sshGitEnv returns environment variables for git to use a specific SSH key and port.
+func sshGitEnv(keyFile string, port string) []string {
+	sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", keyFile, port)
+	return []string{
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=" + sshCmd,
+	}
+}
+
+// runSSHGitCmd runs a git command with the given environment in the specified directory.
+func runSSHGitCmd(t *testing.T, dir string, env []string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(testEnv(), env...)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
 	}
 	return string(output)
 }

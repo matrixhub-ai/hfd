@@ -1,418 +1,200 @@
 package e2e_test
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
-	"fmt"
-	"net"
+	"bytes"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"golang.org/x/crypto/ssh"
 )
 
-// testProtocol defines a git protocol configuration for testing
-type testProtocol struct {
-	name      string
-	setupFunc func(t *testing.T) (cloneURL string, env []string, cleanup func())
-}
+const (
+	// gitMatrixRepoID is the repository every matrix cell operates on; the
+	// protocol setup creates it before handing out the remote.
+	gitMatrixRepoID = "test-org/test-repo"
+	// gitMatrixReadme is what testPushCommit pushes as README.md and what the
+	// read-back operations assert.
+	gitMatrixReadme = "# Test\n"
+)
 
-// setupHTTPProtocol creates an HTTP test server and returns its clone URL
-func setupHTTPProtocol(t *testing.T) (cloneURL string, env []string, cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "git-http-matrix-data")
-
-	storage := newTestStorage(t, dataDir)
-
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
-		backendhttp.WithNext(handler),
-	)
-
-	server := httptest.NewServer(handler)
-
-	// Create a test repo
-	resp, err := http.Post(server.URL+"/api/repos/create", "application/json",
-		strings.NewReader(`{"type":"model","name":"test-repo","organization":"test-org"}`))
-	if err != nil {
-		server.Close()
-		os.RemoveAll(dataDir)
-		t.Fatalf("Failed to create repo: %v", err)
-	}
-	resp.Body.Close()
-
-	return server.URL + "/test-org/test-repo.git",
-		[]string{"GIT_TERMINAL_PROMPT=0"},
-		func() {
-			server.Close()
-			os.RemoveAll(dataDir)
-		}
-}
-
-// setupSSHProtocol creates an SSH test server and returns its clone URL
-func setupSSHProtocol(t *testing.T) (cloneURL string, env []string, cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "git-ssh-matrix-data")
-
-	clientDir, err := os.MkdirTemp("", "git-ssh-matrix-client")
-	if err != nil {
-		os.RemoveAll(dataDir)
-		t.Fatalf("Failed to create client dir: %v", err)
-	}
-
-	storage := newTestStorage(t, dataDir)
-
-	// Set up HTTP handler for repo creation
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
-		backendhttp.WithNext(handler),
-	)
-
-	httpServer := httptest.NewServer(handler)
-
-	// Create a test repo via HTTP
-	resp, err := http.Post(httpServer.URL+"/api/repos/create", "application/json",
-		strings.NewReader(`{"type":"model","name":"test-repo","organization":"test-org"}`))
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to create repo: %v", err)
-	}
-	resp.Body.Close()
-
-	// Generate SSH host key
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to generate host key: %v", err)
-	}
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to create host key signer: %v", err)
-	}
-
-	// Generate client key
-	_, clientPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to generate client key: %v", err)
-	}
-	privKeyPEM, err := ssh.MarshalPrivateKey(clientPriv, "")
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to marshal private key: %v", err)
-	}
-	keyFile := filepath.Join(clientDir, "id_ed25519")
-	if err := os.WriteFile(keyFile, pem.EncodeToMemory(privKeyPEM), 0600); err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to write private key: %v", err)
-	}
-
-	// Set up SSH server
-	sshServer := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage))
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to listen for SSH: %v", err)
-	}
-
-	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
-	}()
-
-	addr := listener.Addr().(*net.TCPAddr)
-	port := strings.Split(addr.String(), ":")[1]
-	sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", keyFile, port)
-
-	return "ssh://git@" + addr.String() + "/test-org/test-repo.git",
-		[]string{
-			"GIT_TERMINAL_PROMPT=0",
-			"GIT_SSH_COMMAND=" + sshCmd,
-		},
-		func() {
-			listener.Close()
-			httpServer.Close()
-			os.RemoveAll(dataDir)
-			os.RemoveAll(clientDir)
-		}
-}
-
-// TestGitOperationsMatrix tests all git operations across HTTP and SSH protocols
+// TestGitOperationsMatrix tests all git operations across HTTP and SSH
+// protocols. Each cell gets a fresh server wired through the full production
+// chain (http → lfs → hf → cas → data plane) with its own storage.
 func TestGitOperationsMatrix(t *testing.T) {
-	protocols := []testProtocol{
+	// Both rows start the SSH server so CrossProtocolReadBack can always
+	// reach the other protocol's remote.
+	protocols := []struct {
+		name  string
+		setup func(t *testing.T) (s *e2eServer, remote string, env []string)
+	}{
 		{
-			name:      "HTTP",
-			setupFunc: setupHTTPProtocol,
+			name: "HTTP",
+			setup: func(t *testing.T) (*e2eServer, string, []string) {
+				s := newE2EServer(t, withSSH())
+				s.createRepo(t, "test-org", "test-repo")
+				remote, env := s.httpRemote(gitMatrixRepoID)
+				return s, remote, env
+			},
 		},
 		{
-			name:      "SSH",
-			setupFunc: setupSSHProtocol,
+			name: "SSH",
+			setup: func(t *testing.T) (*e2eServer, string, []string) {
+				s := newE2EServer(t, withSSH())
+				s.createRepo(t, "test-org", "test-repo")
+				remote, env := s.sshRemote(gitMatrixRepoID)
+				return s, remote, env
+			},
 		},
 	}
 
 	operations := []struct {
-		name string
-		test func(t *testing.T, cloneURL string, env []string)
+		name    string
+		sshOnly bool
+		test    func(t *testing.T, s *e2eServer, remote string, env []string)
 	}{
-		{
-			name: "CloneEmptyRepo",
-			test: testCloneEmptyRepo,
-		},
-		{
-			name: "PushCommit",
-			test: testPushCommit,
-		},
-		{
-			name: "CloneWithContent",
-			test: testCloneWithContent,
-		},
-		{
-			name: "FetchFromRepo",
-			test: testFetchFromRepo,
-		},
-		{
-			name: "PushMoreCommits",
-			test: testPushMoreCommits,
-		},
-		{
-			name: "PullChanges",
-			test: testPullChanges,
-		},
-		{
-			name: "PushMultipleFiles",
-			test: testPushMultipleFiles,
-		},
-		{
-			name: "CreateAndPushBranch",
-			test: testCreateAndPushBranch,
-		},
-		{
-			name: "CreateAndPushTag",
-			test: testCreateAndPushTag,
-		},
-		{
-			name: "DeleteBranch",
-			test: testDeleteBranch,
-		},
-		{
-			name: "DeleteTag",
-			test: testDeleteTag,
-		},
+		{name: "CloneEmptyRepo", test: testCloneEmptyRepo},
+		{name: "PushCommit", test: testPushCommit},
+		{name: "CloneWithContent", test: testCloneWithContent},
+		{name: "FetchFromRepo", test: testFetchFromRepo},
+		{name: "PushMoreCommits", test: testPushMoreCommits},
+		{name: "PullChanges", test: testPullChanges},
+		{name: "PushMultipleFiles", test: testPushMultipleFiles},
+		{name: "CreateAndPushBranch", test: testCreateAndPushBranch},
+		{name: "CreateAndPushTag", test: testCreateAndPushTag},
+		{name: "DeleteBranch", test: testDeleteBranch},
+		{name: "DeleteTag", test: testDeleteTag},
+		{name: "ResolveAfterPush", test: testResolveAfterPush},
+		{name: "CrossProtocolReadBack", test: testCrossProtocolReadBack},
+		{name: "UnauthorizedKeyDenied", sshOnly: true, test: testUnauthorizedKeyDenied},
 	}
 
 	for _, protocol := range protocols {
 		t.Run(protocol.name, func(t *testing.T) {
 			for _, op := range operations {
+				if op.sshOnly && protocol.name != "SSH" {
+					continue
+				}
 				t.Run(op.name, func(t *testing.T) {
-					cloneURL, env, cleanup := protocol.setupFunc(t)
-					defer cleanup()
-					op.test(t, cloneURL, env)
+					s, remote, env := protocol.setup(t)
+					op.test(t, s, remote, env)
 				})
 			}
 		})
 	}
 }
 
-func testCloneEmptyRepo(t *testing.T, cloneURL string, env []string) {
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+func testCloneEmptyRepo(t *testing.T, s *e2eServer, remote string, env []string) {
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
 
-	cloneDir := filepath.Join(clientDir, "clone")
-	cmd := exec.CommandContext(t.Context(), "git", "clone", cloneURL, cloneDir)
-	cmd.Env = append(testEnv(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("Clone failed: %v\n%s", err, output)
-	}
-
-	gitDir := filepath.Join(cloneDir, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cloneDir, ".git")); os.IsNotExist(err) {
 		t.Errorf(".git directory not found in cloned repository")
 	}
 }
 
-func testPushCommit(t *testing.T, cloneURL string, env []string) {
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+func testPushCommit(t *testing.T, s *e2eServer, remote string, env []string) {
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-	runGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
-
-	testFile := filepath.Join(cloneDir, "README.md")
-	if err := os.WriteFile(testFile, []byte("# Test\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte(gitMatrixReadme), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	runGitCmd(t, cloneDir, env, "add", "README.md")
-	runGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
-	runGitCmd(t, cloneDir, env, "push", "origin", "main")
+	runGit(t, cloneDir, env, "add", "README.md")
+	runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
+	runGit(t, cloneDir, env, "push", "origin", "main")
 }
 
-func testCloneWithContent(t *testing.T, cloneURL string, env []string) {
+func testCloneWithContent(t *testing.T, s *e2eServer, remote string, env []string) {
 	// First push content
-	testPushCommit(t, cloneURL, env)
+	testPushCommit(t, s, remote, env)
 
 	// Then clone and verify
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+	cloneDir := filepath.Join(t.TempDir(), "clone-verify")
+	runGit(t, "", env, "clone", remote, cloneDir)
 
-	cloneDir := filepath.Join(clientDir, "clone-verify")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-
-	readmePath := filepath.Join(cloneDir, "README.md")
-	content, err := os.ReadFile(readmePath)
+	content, err := os.ReadFile(filepath.Join(cloneDir, "README.md"))
 	if err != nil {
 		t.Fatalf("Failed to read README.md: %v", err)
 	}
-	if string(content) != "# Test\n" {
+	if string(content) != gitMatrixReadme {
 		t.Errorf("Unexpected content: %s", content)
 	}
 }
 
-func testFetchFromRepo(t *testing.T, cloneURL string, env []string) {
-	testPushCommit(t, cloneURL, env)
+func testFetchFromRepo(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
-
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-	runGitCmd(t, cloneDir, env, "fetch", "origin")
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "fetch", "origin")
 }
 
-func testPushMoreCommits(t *testing.T, cloneURL string, env []string) {
-	testPushCommit(t, cloneURL, env)
+func testPushMoreCommits(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-	runGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
-
-	testFile := filepath.Join(cloneDir, "file2.txt")
-	if err := os.WriteFile(testFile, []byte("Second file\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(cloneDir, "file2.txt"), []byte("Second file\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	runGitCmd(t, cloneDir, env, "add", "file2.txt")
-	runGitCmd(t, cloneDir, env, "commit", "-m", "Add second file")
-	runGitCmd(t, cloneDir, env, "push")
+	runGit(t, cloneDir, env, "add", "file2.txt")
+	runGit(t, cloneDir, env, "commit", "-m", "Add second file")
+	runGit(t, cloneDir, env, "push")
 }
 
-func testPullChanges(t *testing.T, cloneURL string, env []string) {
-	testPushCommit(t, cloneURL, env)
+func testPullChanges(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+	clientDir := t.TempDir()
 
 	// First clone
 	clone1Dir := filepath.Join(clientDir, "clone1")
-	runGitCmd(t, "", env, "clone", cloneURL, clone1Dir)
+	runGit(t, "", env, "clone", remote, clone1Dir)
 
 	// Second clone, push changes
 	clone2Dir := filepath.Join(clientDir, "clone2")
-	runGitCmd(t, "", env, "clone", cloneURL, clone2Dir)
-	runGitCmd(t, clone2Dir, env, "config", "user.email", "test@test.com")
-	runGitCmd(t, clone2Dir, env, "config", "user.name", "Test User")
+	runGit(t, "", env, "clone", remote, clone2Dir)
+	runGit(t, clone2Dir, env, "config", "user.email", "test@test.com")
+	runGit(t, clone2Dir, env, "config", "user.name", "Test User")
 
-	testFile := filepath.Join(clone2Dir, "changes.txt")
-	if err := os.WriteFile(testFile, []byte("Changes\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(clone2Dir, "changes.txt"), []byte("Changes\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	runGitCmd(t, clone2Dir, env, "add", "changes.txt")
-	runGitCmd(t, clone2Dir, env, "commit", "-m", "Add changes")
-	runGitCmd(t, clone2Dir, env, "push")
+	runGit(t, clone2Dir, env, "add", "changes.txt")
+	runGit(t, clone2Dir, env, "commit", "-m", "Add changes")
+	runGit(t, clone2Dir, env, "push")
 
 	// Pull changes in first clone
-	runGitCmd(t, clone1Dir, env, "config", "pull.rebase", "false")
-	runGitCmd(t, clone1Dir, env, "pull")
+	runGit(t, clone1Dir, env, "config", "pull.rebase", "false")
+	runGit(t, clone1Dir, env, "pull")
 
-	changesPath := filepath.Join(clone1Dir, "changes.txt")
-	if _, err := os.Stat(changesPath); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(clone1Dir, "changes.txt")); os.IsNotExist(err) {
 		t.Errorf("changes.txt not found after pull")
 	}
 }
 
-func testPushMultipleFiles(t *testing.T, cloneURL string, env []string) {
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
-
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-	runGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+func testPushMultipleFiles(t *testing.T, s *e2eServer, remote string, env []string) {
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 	files := map[string]string{
 		"README.md":  "# Multi-File Test\n",
 		"config.yml": "key: value\n",
 		"data.json":  `{"name": "test"}` + "\n",
+		"notes.txt":  "Some notes\n",
 	}
 
 	for name, content := range files {
@@ -421,90 +203,150 @@ func testPushMultipleFiles(t *testing.T, cloneURL string, env []string) {
 		}
 	}
 
-	runGitCmd(t, cloneDir, env, "add", ".")
-	runGitCmd(t, cloneDir, env, "commit", "-m", "Add multiple files")
-	runGitCmd(t, cloneDir, env, "push", "origin", "main")
+	runGit(t, cloneDir, env, "add", ".")
+	runGit(t, cloneDir, env, "commit", "-m", "Add multiple files")
+	runGit(t, cloneDir, env, "push", "origin", "main")
+
+	// Every pushed file must be readable through the hub resolve endpoint.
+	for name, content := range files {
+		resp, err := http.Get(s.httpURL + "/test-org/test-repo/resolve/main/" + name)
+		if err != nil {
+			t.Fatalf("Failed to resolve %s: %v", name, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("Failed to read resolved %s: %v", name, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("resolve %s status = %d, want 200", name, resp.StatusCode)
+		}
+		if string(body) != content {
+			t.Errorf("resolve %s content = %q, want %q", name, body, content)
+		}
+	}
+
+	// A fresh clone must contain all files with identical bytes.
+	verifyDir := filepath.Join(t.TempDir(), "verify")
+	runGit(t, "", env, "clone", remote, verifyDir)
+	for name, content := range files {
+		got, err := os.ReadFile(filepath.Join(verifyDir, name))
+		if err != nil {
+			t.Fatalf("Failed to read %s from verify clone: %v", name, err)
+		}
+		if string(got) != content {
+			t.Errorf("verify clone %s content = %q, want %q", name, got, content)
+		}
+	}
 }
 
-func testCreateAndPushBranch(t *testing.T, cloneURL string, env []string) {
-	testPushCommit(t, cloneURL, env)
+func testCreateAndPushBranch(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
-	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
-	}
-	defer os.RemoveAll(clientDir)
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-	runGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
-
-	runGitCmd(t, cloneDir, env, "checkout", "-b", "feature")
-	testFile := filepath.Join(cloneDir, "feature.txt")
-	if err := os.WriteFile(testFile, []byte("feature\n"), 0644); err != nil {
+	runGit(t, cloneDir, env, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(cloneDir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	runGitCmd(t, cloneDir, env, "add", "feature.txt")
-	runGitCmd(t, cloneDir, env, "commit", "-m", "Feature commit")
-	runGitCmd(t, cloneDir, env, "push", "origin", "feature")
+	runGit(t, cloneDir, env, "add", "feature.txt")
+	runGit(t, cloneDir, env, "commit", "-m", "Feature commit")
+	runGit(t, cloneDir, env, "push", "origin", "feature")
 }
 
-func testCreateAndPushTag(t *testing.T, cloneURL string, env []string) {
-	testPushCommit(t, cloneURL, env)
+func testCreateAndPushTag(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+
+	runGit(t, cloneDir, env, "tag", "v1.0")
+	runGit(t, cloneDir, env, "push", "origin", "v1.0")
+}
+
+func testDeleteBranch(t *testing.T, s *e2eServer, remote string, env []string) {
+	testCreateAndPushBranch(t, s, remote, env)
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "feature")
+}
+
+func testDeleteTag(t *testing.T, s *e2eServer, remote string, env []string) {
+	testCreateAndPushTag(t, s, remote, env)
+
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
+}
+
+// testResolveAfterPush pushes README.md over the row's protocol and reads it
+// back through the HF resolve API, byte for byte. On the SSH row this proves
+// an SSH write is visible to HF API reads.
+func testResolveAfterPush(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
+
+	resp, err := http.Get(s.httpURL + "/" + gitMatrixRepoID + "/resolve/main/README.md")
 	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
+		t.Fatalf("Failed to get file: %v", err)
 	}
-	defer os.RemoveAll(clientDir)
-
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-
-	runGitCmd(t, cloneDir, env, "tag", "v1.0")
-	runGitCmd(t, cloneDir, env, "push", "origin", "v1.0")
-}
-
-func testDeleteBranch(t *testing.T, cloneURL string, env []string) {
-	testCreateAndPushBranch(t, cloneURL, env)
-
-	clientDir, err := os.MkdirTemp("", "git-test-client")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
+		t.Fatalf("Failed to read body: %v", err)
 	}
-	defer os.RemoveAll(clientDir)
-
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-
-	runGitCmd(t, cloneDir, env, "push", "origin", "--delete", "feature")
+	if !bytes.Equal(body, []byte(gitMatrixReadme)) {
+		t.Errorf("Unexpected content: %q", body)
+	}
 }
 
-func testDeleteTag(t *testing.T, cloneURL string, env []string) {
-	testCreateAndPushTag(t, cloneURL, env)
+// testCrossProtocolReadBack pushes over the row's protocol, then clones with
+// the other protocol and verifies the content, proving both protocols serve
+// the same repository.
+func testCrossProtocolReadBack(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
 
-	clientDir, err := os.MkdirTemp("", "git-test-client")
+	otherRemote, otherEnv := s.sshRemote(gitMatrixRepoID)
+	if strings.HasPrefix(remote, "ssh://") {
+		otherRemote, otherEnv = s.httpRemote(gitMatrixRepoID)
+	}
+
+	cloneDir := filepath.Join(t.TempDir(), "cross-clone")
+	runGit(t, "", otherEnv, "clone", otherRemote, cloneDir)
+
+	content, err := os.ReadFile(filepath.Join(cloneDir, "README.md"))
 	if err != nil {
-		t.Fatalf("Failed to create temp client dir: %v", err)
+		t.Fatalf("Failed to read README.md from cross-protocol clone: %v", err)
 	}
-	defer os.RemoveAll(clientDir)
-
-	cloneDir := filepath.Join(clientDir, "clone")
-	runGitCmd(t, "", env, "clone", cloneURL, cloneDir)
-
-	runGitCmd(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
+	if string(content) != gitMatrixReadme {
+		t.Errorf("Unexpected content from cross-protocol clone: %q", content)
+	}
 }
 
-func runGitCmd(t *testing.T, dir string, env []string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
+// testUnauthorizedKeyDenied clones with a fresh key that is not in the
+// server's authorized list and requires the clone to fail.
+func testUnauthorizedKeyDenied(t *testing.T, s *e2eServer, remote string, env []string) {
+	badKeyFile := filepath.Join(t.TempDir(), "id_bad")
+	generateTestKeyFile(t, badKeyFile)
+
+	u, err := url.Parse(s.sshURL)
+	if err != nil {
+		t.Fatalf("Failed to parse SSH URL %q: %v", s.sshURL, err)
 	}
-	cmd.Env = append(testEnv(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
+	badEnv := sshGitEnv(badKeyFile, u.Port())
+
+	cloneDir := filepath.Join(t.TempDir(), "clone-bad")
+	stdout, stderr, err := gitCmd(t, "", badEnv, "clone", remote, cloneDir)
+	if err == nil {
+		t.Fatalf("Expected clone to fail with unauthorized key, but it succeeded:\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }
