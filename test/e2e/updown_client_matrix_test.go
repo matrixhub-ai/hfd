@@ -2,148 +2,14 @@ package e2e_test
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
-// requestRecorder captures every request hitting the server so the matrix
-// can prove which transfer protocol a client actually used.
-type requestRecorder struct {
-	mu   sync.Mutex
-	reqs []string
-}
-
-func (rr *requestRecorder) wrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rr.mu.Lock()
-		rr.reqs = append(rr.reqs, r.Method+" "+r.URL.Path)
-		rr.mu.Unlock()
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (rr *requestRecorder) reset() {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	rr.reqs = nil
-}
-
-// saw reports whether a request with the method and a path containing frag
-// was recorded. Method "" matches any non-GET/HEAD (write) request.
-func (rr *requestRecorder) saw(method, frag string) bool {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	for _, req := range rr.reqs {
-		m, p, _ := strings.Cut(req, " ")
-		if !strings.Contains(p, frag) {
-			continue
-		}
-		if method == "" {
-			if m != http.MethodGet && m != http.MethodHead {
-				return true
-			}
-			continue
-		}
-		if m == method {
-			return true
-		}
-	}
-	return false
-}
-
-func (rr *requestRecorder) dump() string {
-	rr.mu.Lock()
-	defer rr.mu.Unlock()
-	return strings.Join(rr.reqs, "\n")
-}
-
-// noProxyEnv neutralizes ambient proxy settings for subprocesses; every
-// endpoint in this matrix is 127.0.0.1 and Go's exec keeps the last
-// duplicate env entry.
-func noProxyEnv() []string {
-	return []string{
-		"http_proxy=", "https_proxy=", "all_proxy=",
-		"HTTP_PROXY=", "HTTPS_PROXY=", "ALL_PROXY=",
-		"NO_PROXY=*", "no_proxy=*",
-	}
-}
-
-// requireUpDownMatrixTools skips locally when a required client is missing;
-// on CI (CI env set) it hard-fails so the matrix stays enforced there.
-func requireUpDownMatrixTools(t *testing.T) {
-	t.Helper()
-	missing := func(format string, args ...any) {
-		t.Helper()
-		if os.Getenv("CI") != "" {
-			t.Fatalf(format, args...)
-		}
-		t.Skipf(format, args...)
-	}
-	if _, err := exec.LookPath("hf"); err != nil {
-		missing("hf CLI not found; pip install -U 'huggingface_hub[cli]'")
-	}
-	if _, err := exec.LookPath("git-lfs"); err != nil {
-		missing("git-lfs not found; install git-lfs")
-	}
-	out, err := exec.CommandContext(t.Context(), "hf", "env").CombinedOutput()
-	if err != nil {
-		missing("hf env failed: %v\n%s", err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		key, val, ok := strings.Cut(line, ":")
-		if !ok || !strings.Contains(key, "hf_xet") {
-			continue
-		}
-		if v := strings.TrimSpace(val); v != "" && !strings.EqualFold(v, "N/A") {
-			return
-		}
-	}
-	missing("hf_xet (xet-core) not available to the hf CLI; pip install hf_xet\nhf env:\n%s", out)
-}
-
-// runHFCmdXet runs the hf CLI against endpoint with xet-core enabled or
-// disabled. HF_HOME is isolated per call so nothing is served from cache. A
-// watchdog kills hung invocations so a stuck client fails fast with output.
-func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string {
-	t.Helper()
-	base := testEnv()
-	env := make([]string, 0, len(base)+6)
-	for _, kv := range base {
-		if strings.HasPrefix(kv, "HF_HUB_DISABLE_XET=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	env = append(env,
-		"HF_ENDPOINT="+endpoint,
-		"HF_HUB_DISABLE_TELEMETRY=1",
-		"HF_TOKEN=dummy-token",
-		"HF_HOME="+t.TempDir(),
-		"HF_HUB_VERBOSITY=debug",
-	)
-	if !xet {
-		env = append(env, "HF_HUB_DISABLE_XET=1")
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "hf", args...)
-	cmd.Env = env
-	cmd.WaitDelay = 10 * time.Second
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("hf %s failed (%v): %v\nOutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
-	}
-	return string(output)
-}
-
-func hfUploadFile(t *testing.T, s *transferMatrixServer, repoID string, xet bool, data []byte) {
+func hfUploadFile(t *testing.T, s *e2eServer, repoID string, xet bool, data []byte) {
 	t.Helper()
 	src := filepath.Join(t.TempDir(), transferMatrixFile)
 	if err := os.WriteFile(src, data, 0644); err != nil {
@@ -152,7 +18,7 @@ func hfUploadFile(t *testing.T, s *transferMatrixServer, repoID string, xet bool
 	runHFCmdXet(t, s.httpURL, xet, "upload", repoID, src, transferMatrixFile, "--commit-message", "upload via hf cli")
 }
 
-func hfDownloadFile(t *testing.T, s *transferMatrixServer, repoID string, xet bool) []byte {
+func hfDownloadFile(t *testing.T, s *e2eServer, repoID string, xet bool) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	runHFCmdXet(t, s.httpURL, xet, "download", repoID, transferMatrixFile, "--local-dir", dir)
@@ -177,12 +43,12 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 	uploads := []struct {
 		name   string
 		repo   string
-		upload func(t *testing.T, s *transferMatrixServer, rec *requestRecorder, repoID string, data []byte)
+		upload func(t *testing.T, s *e2eServer, rec *requestRecorder, repoID string, data []byte)
 	}{
 		{
 			name: "UpHFCliHTTP",
 			repo: "matrix-org/updown-hf-http",
-			upload: func(t *testing.T, s *transferMatrixServer, rec *requestRecorder, repoID string, data []byte) {
+			upload: func(t *testing.T, s *e2eServer, rec *requestRecorder, repoID string, data []byte) {
 				hfUploadFile(t, s, repoID, false, data)
 				if rec.saw("", "/xorbs/") || rec.saw("", "/shards") {
 					t.Fatal("plain hf upload wrote to the CAS; expected basic transfer only")
@@ -195,7 +61,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 		{
 			name: "UpHFCliXetCore",
 			repo: "matrix-org/updown-hf-xet",
-			upload: func(t *testing.T, s *transferMatrixServer, rec *requestRecorder, repoID string, data []byte) {
+			upload: func(t *testing.T, s *e2eServer, rec *requestRecorder, repoID string, data []byte) {
 				hfUploadFile(t, s, repoID, true, data)
 				// Chunk dedup queries are reads; only xorb/shard uploads prove a write.
 				if !rec.saw("", "/xorbs/") && !rec.saw("", "/shards") {
@@ -209,7 +75,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 		{
 			name: "UpGitHTTPLFS",
 			repo: "matrix-org/updown-git-http",
-			upload: func(t *testing.T, s *transferMatrixServer, _ *requestRecorder, repoID string, data []byte) {
+			upload: func(t *testing.T, s *e2eServer, _ *requestRecorder, repoID string, data []byte) {
 				remote, env := s.httpRemote(repoID)
 				pushViaGitLFS(t, s, remote, append(env, noProxyEnv()...), repoID, data)
 			},
@@ -217,7 +83,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 		{
 			name: "UpGitSSHLFS",
 			repo: "matrix-org/updown-git-ssh",
-			upload: func(t *testing.T, s *transferMatrixServer, _ *requestRecorder, repoID string, data []byte) {
+			upload: func(t *testing.T, s *e2eServer, _ *requestRecorder, repoID string, data []byte) {
 				remote, env := s.sshRemote(repoID)
 				pushViaGitLFS(t, s, remote, append(env, noProxyEnv()...), repoID, data)
 			},
@@ -225,7 +91,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 		{
 			name: "UpXetGoBatch",
 			repo: "matrix-org/updown-xet-go",
-			upload: func(t *testing.T, s *transferMatrixServer, _ *requestRecorder, repoID string, data []byte) {
+			upload: func(t *testing.T, s *e2eServer, _ *requestRecorder, repoID string, data []byte) {
 				pushViaXetBatch(t, s, repoID, data)
 			},
 		},
@@ -234,7 +100,7 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 	for i, up := range uploads {
 		t.Run(up.name, func(t *testing.T) {
 			rec := &requestRecorder{}
-			s := newTransferMatrixServer(t, rec.wrap)
+			s := newE2EServer(t, withWrap(rec.wrap), withSSH())
 			org, name, _ := strings.Cut(up.repo, "/")
 			s.createRepo(t, org, name)
 

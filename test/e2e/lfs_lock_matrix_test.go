@@ -1,134 +1,18 @@
 package e2e_test
 
 import (
-	"bytes"
-	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"golang.org/x/crypto/ssh"
-
-	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
-
-// lfsLockMatrixServer bundles an HTTP server (hf + LFS + git + xet data
-// plane) and an SSH git server sharing the same storage and mirror. Unlike
-// the transfer matrix server, the SSH server is configured with the HTTP base
-// URL so git-lfs discovers the LFS (and lock) endpoint on a pure SSH remote
-// through git-lfs-authenticate, with no lfs.url override on the client.
-type lfsLockMatrixServer struct {
-	httpURL string
-	sshURL  string
-	sshEnv  []string
-}
-
-func newLFSLockMatrixServer(t *testing.T) *lfsLockMatrixServer {
-	t.Helper()
-
-	dataDir := newDataDir(t, "lfs-lock-matrix-data")
-	st := newTestStorage(t, dataDir)
-
-	// The LFS-tracked fixture push lands through the basic transfer PUT
-	// endpoint, which ingests into the xet data plane; locks themselves are
-	// pure metadata and never touch it.
-	upstream := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(upstream.Close)
-
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, upstream.URL, testS3Client != nil,
-		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-	)
-
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(st),
-		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(dataPlane),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(st),
-		backendlfs.WithNext(handler),
-		backendlfs.WithMirror(sharedMirror),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(st),
-		backendhttp.WithNext(handler),
-	)
-
-	httpServer := httptest.NewServer(handler)
-	t.Cleanup(httpServer.Close)
-
-	keyFile := filepath.Join(t.TempDir(), "id_lock_matrix")
-	pubKey := generateTestKeyFile(t, keyFile)
-
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate host key: %v", err)
-	}
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("create host key signer: %v", err)
-	}
-	sshServer := backendssh.NewServer(
-		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(st),
-		backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback([]ssh.PublicKey{pubKey})),
-		backendssh.WithLFSURL(httpServer.URL),
-	)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for SSH: %v", err)
-	}
-	t.Cleanup(func() { listener.Close() })
-	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
-	}()
-
-	addr := listener.Addr().(*net.TCPAddr)
-	return &lfsLockMatrixServer{
-		httpURL: httpServer.URL,
-		sshURL:  "ssh://git@" + addr.String() + "/",
-		sshEnv:  sshGitEnv(keyFile, strconv.Itoa(addr.Port)),
-	}
-}
-
-func (s *lfsLockMatrixServer) createRepo(t *testing.T, org, name string) {
-	t.Helper()
-	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
-	resp, err := http.Post(s.httpURL+"/api/repos/create", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("create repo: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("create repo status = %d, want 200", resp.StatusCode)
-	}
-}
-
-func (s *lfsLockMatrixServer) httpRemote(repoID string) (string, []string) {
-	return s.httpURL + "/" + repoID + ".git", []string{"GIT_TERMINAL_PROMPT=0"}
-}
-
-func (s *lfsLockMatrixServer) sshRemote(repoID string) (string, []string) {
-	return s.sshURL + repoID + ".git", s.sshEnv
-}
 
 // TestLFSLockMatrix exercises the LFS file locking API end to end with the
 // git-lfs CLI over both git protocols: lock, list, duplicate-lock conflict,
@@ -142,15 +26,15 @@ func TestLFSLockMatrix(t *testing.T) {
 	protocols := []struct {
 		name   string
 		repo   string
-		remote func(s *lfsLockMatrixServer, repoID string) (string, []string)
+		remote func(s *e2eServer, repoID string) (string, []string)
 	}{
-		{name: "HTTP", repo: "matrix-org/lock-http", remote: (*lfsLockMatrixServer).httpRemote},
-		{name: "SSH", repo: "matrix-org/lock-ssh", remote: (*lfsLockMatrixServer).sshRemote},
+		{name: "HTTP", repo: "matrix-org/lock-http", remote: (*e2eServer).httpRemote},
+		{name: "SSH", repo: "matrix-org/lock-ssh", remote: (*e2eServer).sshRemote},
 	}
 
 	for _, p := range protocols {
 		t.Run(p.name, func(t *testing.T) {
-			s := newLFSLockMatrixServer(t)
+			s := newE2EServer(t, withSSHLFSURL())
 			org, name, _ := strings.Cut(p.repo, "/")
 			s.createRepo(t, org, name)
 			remote, env := p.remote(s, p.repo)
@@ -159,7 +43,7 @@ func TestLFSLockMatrix(t *testing.T) {
 			dir := pushLockFixture(t, remote, env, "data.bin", "extra.bin")
 
 			// Step 2: lock data.bin and see it listed.
-			runLockGitCmd(t, dir, env, "lfs", "lock", "data.bin")
+			runGit(t, dir, env, "lfs", "lock", "data.bin")
 			locks := listLFSLocks(t, dir, env)
 			if findLFSLock(locks, "data.bin") == nil {
 				t.Fatalf("git lfs locks after lock = %+v, want entry for data.bin", locks)
@@ -168,7 +52,7 @@ func TestLFSLockMatrix(t *testing.T) {
 			// Step 3: locking the same path again must fail; the server
 			// replies 409 "lock already created". The message assertion stays
 			// loose to not overfit any particular git-lfs version wording.
-			stdout, stderr, err := lockGitCmd(t, dir, env, "lfs", "lock", "data.bin")
+			stdout, stderr, err := gitCmd(t, dir, env, "lfs", "lock", "data.bin")
 			if err == nil {
 				t.Fatalf("duplicate git lfs lock succeeded, want failure\nstdout: %s\nstderr: %s", stdout, stderr)
 			}
@@ -197,19 +81,19 @@ func TestLFSLockMatrix(t *testing.T) {
 			}
 
 			// Step 5: unlock by path.
-			runLockGitCmd(t, dir, env, "lfs", "unlock", "data.bin")
+			runGit(t, dir, env, "lfs", "unlock", "data.bin")
 			if locks := listLFSLocks(t, dir, env); findLFSLock(locks, "data.bin") != nil {
 				t.Fatalf("git lfs locks after unlock = %+v, want no entry for data.bin", locks)
 			}
 
 			// Step 6: unlock by id.
-			runLockGitCmd(t, dir, env, "lfs", "lock", "extra.bin")
+			runGit(t, dir, env, "lfs", "lock", "extra.bin")
 			locks = listLFSLocks(t, dir, env)
 			entry := findLFSLock(locks, "extra.bin")
 			if entry == nil {
 				t.Fatalf("git lfs locks after lock = %+v, want entry for extra.bin", locks)
 			}
-			runLockGitCmd(t, dir, env, "lfs", "unlock", "--id="+entry.ID)
+			runGit(t, dir, env, "lfs", "unlock", "--id="+entry.ID)
 			if locks := listLFSLocks(t, dir, env); len(locks) != 0 {
 				t.Fatalf("git lfs locks after unlock by id = %+v, want empty", locks)
 			}
@@ -224,19 +108,19 @@ func TestLFSLockMatrix(t *testing.T) {
 func pushLockFixture(t *testing.T, remote string, env []string, files ...string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "clone")
-	runLockGitCmd(t, "", env, "clone", remote, dir)
-	runLockGitCmd(t, dir, env, "config", "user.email", "matrix@test.com")
-	runLockGitCmd(t, dir, env, "config", "user.name", "Matrix Test")
-	runLockGitCmd(t, dir, env, "lfs", "install", "--local")
-	runLockGitCmd(t, dir, env, "lfs", "track", "*.bin")
+	runGit(t, "", env, "clone", remote, dir)
+	runGit(t, dir, env, "config", "user.email", "matrix@test.com")
+	runGit(t, dir, env, "config", "user.name", "Matrix Test")
+	runGit(t, dir, env, "lfs", "install", "--local")
+	runGit(t, dir, env, "lfs", "track", "*.bin")
 	for i, name := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), makeBinaryData(64, byte(i)), 0644); err != nil {
 			t.Fatalf("write fixture file %s: %v", name, err)
 		}
 	}
-	runLockGitCmd(t, dir, env, "add", ".")
-	runLockGitCmd(t, dir, env, "commit", "-m", "add lock fixture files")
-	runLockGitCmd(t, dir, env, "push", "origin", "main")
+	runGit(t, dir, env, "add", ".")
+	runGit(t, dir, env, "commit", "-m", "add lock fixture files")
+	runGit(t, dir, env, "push", "origin", "main")
 	return dir
 }
 
@@ -246,10 +130,14 @@ type lfsLockEntry struct {
 	Path string `json:"path"`
 }
 
-// listLFSLocks returns the locks git-lfs sees on the origin remote.
+// listLFSLocks returns the locks git-lfs sees on the origin remote. It goes
+// through gitCmd because the JSON parse needs stdout unmixed with stderr.
 func listLFSLocks(t *testing.T, dir string, env []string) []lfsLockEntry {
 	t.Helper()
-	out := runLockGitCmd(t, dir, env, "lfs", "locks", "--json")
+	out, stderr, err := gitCmd(t, dir, env, "lfs", "locks", "--json")
+	if err != nil {
+		t.Fatalf("git lfs locks --json failed: %v\nstdout: %s\nstderr: %s", err, out, stderr)
+	}
 	var locks []lfsLockEntry
 	if err := json.Unmarshal([]byte(out), &locks); err != nil {
 		t.Fatalf("parse git lfs locks --json: %v\noutput: %s", err, out)
@@ -312,33 +200,4 @@ func postLFSLocksVerify(t *testing.T, httpURL, repoID string) *lfs.VerifiableLoc
 		t.Fatalf("decode locks/verify response: %v", err)
 	}
 	return &vl
-}
-
-// lockGitCmd runs a git command for the lock matrix, keeping stdout separate
-// for JSON parsing. A watchdog kills wedged subprocesses so hangs fail fast.
-func lockGitCmd(t *testing.T, dir string, env []string, args ...string) (stdout, stderr string, err error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = append(testEnv(), env...)
-	cmd.WaitDelay = 10 * time.Second
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err = cmd.Run()
-	return outBuf.String(), errBuf.String(), err
-}
-
-// runLockGitCmd is lockGitCmd failing the test on error, returning stdout.
-func runLockGitCmd(t *testing.T, dir string, env []string, args ...string) string {
-	t.Helper()
-	stdout, stderr, err := lockGitCmd(t, dir, env, args...)
-	if err != nil {
-		t.Fatalf("git %s failed: %v\nstdout: %s\nstderr: %s", strings.Join(args, " "), err, stdout, stderr)
-	}
-	return stdout
 }

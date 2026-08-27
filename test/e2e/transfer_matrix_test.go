@@ -2,16 +2,12 @@ package e2e_test
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,122 +16,9 @@ import (
 
 	xetclient "github.com/wzshiming/xet/client"
 	xethf "github.com/wzshiming/xet/hf"
-	"golang.org/x/crypto/ssh"
-
-	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
 const transferMatrixFile = "model.bin"
-
-// transferMatrixServer bundles an HTTP server (hf + LFS + git + xet data
-// plane) and an SSH git server sharing the same storage and mirror.
-type transferMatrixServer struct {
-	httpURL string
-	sshURL  string
-	sshEnv  []string
-}
-
-// newTransferMatrixServer wires the full production handler chain. During the
-// S3 pass the xet storage lives in the fake S3 bucket, like production.
-// Optional wrappers are applied outermost, so they observe every request
-// including CAS traffic.
-func newTransferMatrixServer(t *testing.T, wrap ...func(http.Handler) http.Handler) *transferMatrixServer {
-	t.Helper()
-
-	dataDir := newDataDir(t, "transfer-matrix-data")
-	st := newTestStorage(t, dataDir)
-
-	// The mirror handler serves the xet token routes, so the data plane needs
-	// an upstream; fully ingested objects never contact it. During the S3
-	// pass the xet storage lives in the fake S3 bucket, like production.
-	upstream := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(upstream.Close)
-
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, upstream.URL, testS3Client != nil,
-		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-	)
-
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(st),
-		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(dataPlane),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(st),
-		backendlfs.WithNext(handler),
-		backendlfs.WithMirror(sharedMirror),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(st),
-		backendhttp.WithNext(handler),
-	)
-	for _, w := range wrap {
-		handler = w(handler)
-	}
-
-	httpServer := httptest.NewServer(handler)
-	t.Cleanup(httpServer.Close)
-
-	keyFile := filepath.Join(t.TempDir(), "id_matrix")
-	pubKey := generateTestKeyFile(t, keyFile)
-
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate host key: %v", err)
-	}
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("create host key signer: %v", err)
-	}
-	sshServer := backendssh.NewServer(
-		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(st),
-		backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback([]ssh.PublicKey{pubKey})),
-	)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for SSH: %v", err)
-	}
-	t.Cleanup(func() { listener.Close() })
-	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
-	}()
-
-	addr := listener.Addr().(*net.TCPAddr)
-	port := strings.Split(addr.String(), ":")[1]
-
-	return &transferMatrixServer{
-		httpURL: httpServer.URL,
-		sshURL:  "ssh://git@" + addr.String() + "/",
-		sshEnv:  sshGitEnv(keyFile, port),
-	}
-}
-
-func (s *transferMatrixServer) createRepo(t *testing.T, org, name string) {
-	t.Helper()
-	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
-	resp, err := http.Post(s.httpURL+"/api/repos/create", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("create repo: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("create repo status = %d, want 200", resp.StatusCode)
-	}
-}
-
-func (s *transferMatrixServer) httpRemote(repoID string) (string, []string) {
-	return s.httpURL + "/" + repoID + ".git", []string{"GIT_TERMINAL_PROMPT=0"}
-}
-
-func (s *transferMatrixServer) sshRemote(repoID string) (string, []string) {
-	return s.sshURL + repoID + ".git", s.sshEnv
-}
 
 // TestTransferProtocolMatrix pushes one LFS-tracked file through each write
 // path (git-lfs over HTTP, git-lfs over SSH, xet transfer via the batch API)
@@ -150,38 +33,38 @@ func TestTransferProtocolMatrix(t *testing.T) {
 	pushes := []struct {
 		name   string
 		repo   string
-		push   func(t *testing.T, s *transferMatrixServer, repoID string, data []byte)
-		remote func(s *transferMatrixServer, repoID string) (string, []string)
+		push   func(t *testing.T, s *e2eServer, repoID string, data []byte)
+		remote func(s *e2eServer, repoID string) (string, []string)
 	}{
 		{
 			name: "GitHTTPBasicLFS",
 			repo: "matrix-org/transfer-git-http",
-			push: func(t *testing.T, s *transferMatrixServer, repoID string, data []byte) {
+			push: func(t *testing.T, s *e2eServer, repoID string, data []byte) {
 				remote, env := s.httpRemote(repoID)
 				pushViaGitLFS(t, s, remote, env, repoID, data)
 			},
-			remote: (*transferMatrixServer).httpRemote,
+			remote: (*e2eServer).httpRemote,
 		},
 		{
 			name: "GitSSHBasicLFS",
 			repo: "matrix-org/transfer-git-ssh",
-			push: func(t *testing.T, s *transferMatrixServer, repoID string, data []byte) {
+			push: func(t *testing.T, s *e2eServer, repoID string, data []byte) {
 				remote, env := s.sshRemote(repoID)
 				pushViaGitLFS(t, s, remote, env, repoID, data)
 			},
-			remote: (*transferMatrixServer).sshRemote,
+			remote: (*e2eServer).sshRemote,
 		},
 		{
 			name:   "XetTransferUpload",
 			repo:   "matrix-org/transfer-xet",
 			push:   pushViaXetBatch,
-			remote: (*transferMatrixServer).httpRemote,
+			remote: (*e2eServer).httpRemote,
 		},
 	}
 
 	for i, p := range pushes {
 		t.Run(p.name, func(t *testing.T) {
-			s := newTransferMatrixServer(t)
+			s := newE2EServer(t, withSSH())
 			org, name, _ := strings.Cut(p.repo, "/")
 			s.createRepo(t, org, name)
 
@@ -211,49 +94,49 @@ func TestTransferProtocolMatrix(t *testing.T) {
 // pushViaGitLFS clones over the given remote and pushes an LFS-tracked file;
 // the content lands through the basic transfer PUT endpoint. The server's
 // initial .gitattributes already tracks *.bin.
-func pushViaGitLFS(t *testing.T, s *transferMatrixServer, remote string, env []string, repoID string, data []byte) {
+func pushViaGitLFS(t *testing.T, s *e2eServer, remote string, env []string, repoID string, data []byte) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "push")
 	env = append(append([]string{}, env...), "GIT_LFS_SKIP_SMUDGE=1")
 
-	runXETGitCmd(t, "", env, "clone", remote, dir)
-	runXETGitCmd(t, dir, env, "config", "user.email", "matrix@test.com")
-	runXETGitCmd(t, dir, env, "config", "user.name", "Matrix Test")
-	runXETGitCmd(t, dir, env, "lfs", "install", "--local")
+	runGit(t, "", env, "clone", remote, dir)
+	runGit(t, dir, env, "config", "user.email", "matrix@test.com")
+	runGit(t, dir, env, "config", "user.name", "Matrix Test")
+	runGit(t, dir, env, "lfs", "install", "--local")
 	// The SSH server has no LFS endpoint; point git-lfs at the HTTP server.
-	runXETGitCmd(t, dir, env, "config", "lfs.url", s.httpURL+"/"+repoID+".git/info/lfs")
+	runGit(t, dir, env, "config", "lfs.url", s.httpURL+"/"+repoID+".git/info/lfs")
 
 	if err := os.WriteFile(filepath.Join(dir, transferMatrixFile), data, 0644); err != nil {
 		t.Fatalf("write LFS file: %v", err)
 	}
-	runXETGitCmd(t, dir, env, "add", ".")
-	runXETGitCmd(t, dir, env, "commit", "-m", "add lfs file")
-	runXETGitCmd(t, dir, env, "push", "origin", "main")
+	runGit(t, dir, env, "add", ".")
+	runGit(t, dir, env, "commit", "-m", "add lfs file")
+	runGit(t, dir, env, "push", "origin", "main")
 }
 
 // pushViaXetBatch commits the LFS pointer with plain git the way hub-style
 // clients do, negotiates the xet transfer through the batch API, uploads the
 // bytes to the CAS with the minted credentials, and fires the verify action.
-func pushViaXetBatch(t *testing.T, s *transferMatrixServer, repoID string, data []byte) {
+func pushViaXetBatch(t *testing.T, s *e2eServer, repoID string, data []byte) {
 	t.Helper()
 	sum := sha256.Sum256(data)
 	oid := hex.EncodeToString(sum[:])
 
 	dir := filepath.Join(t.TempDir(), "push")
 	remote, env := s.httpRemote(repoID)
-	runXETGitCmd(t, "", env, "clone", remote, dir)
-	runXETGitCmd(t, dir, env, "config", "user.email", "matrix@test.com")
-	runXETGitCmd(t, dir, env, "config", "user.name", "Matrix Test")
+	runGit(t, "", env, "clone", remote, dir)
+	runGit(t, dir, env, "config", "user.email", "matrix@test.com")
+	runGit(t, dir, env, "config", "user.name", "Matrix Test")
 	// The object bytes go through the CAS, not the pre-push hook.
-	runXETGitCmd(t, dir, env, "config", "lfs.allowincompletepush", "true")
+	runGit(t, dir, env, "config", "lfs.allowincompletepush", "true")
 
 	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(data))
 	if err := os.WriteFile(filepath.Join(dir, transferMatrixFile), []byte(pointer), 0644); err != nil {
 		t.Fatalf("write pointer file: %v", err)
 	}
-	runXETGitCmd(t, dir, env, "add", ".")
-	runXETGitCmd(t, dir, env, "commit", "-m", "add lfs pointer")
-	runXETGitCmd(t, dir, env, "push", "origin", "main")
+	runGit(t, dir, env, "add", ".")
+	runGit(t, dir, env, "commit", "-m", "add lfs pointer")
+	runGit(t, dir, env, "push", "origin", "main")
 
 	// Batch negotiation: advertising xet must select the xet transfer and
 	// hand out CAS credentials on the upload action.
@@ -336,14 +219,14 @@ func pushViaXetBatch(t *testing.T, s *transferMatrixServer, repoID string, data 
 
 // verifyGitLFSPull clones over the given remote and pulls the LFS content
 // through the basic transfer (batch API + /objects download).
-func verifyGitLFSPull(t *testing.T, s *transferMatrixServer, remote string, env []string, repoID string, want []byte) {
+func verifyGitLFSPull(t *testing.T, s *e2eServer, remote string, env []string, repoID string, want []byte) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "read")
 	env = append(append([]string{}, env...), "GIT_LFS_SKIP_SMUDGE=1")
 
-	runXETGitCmd(t, "", env, "clone", remote, dir)
-	runXETGitCmd(t, dir, env, "config", "lfs.url", s.httpURL+"/"+repoID+".git/info/lfs")
-	runXETGitCmd(t, dir, env, "lfs", "pull")
+	runGit(t, "", env, "clone", remote, dir)
+	runGit(t, dir, env, "config", "lfs.url", s.httpURL+"/"+repoID+".git/info/lfs")
+	runGit(t, dir, env, "lfs", "pull")
 
 	got, err := os.ReadFile(filepath.Join(dir, transferMatrixFile))
 	if err != nil {
@@ -356,7 +239,7 @@ func verifyGitLFSPull(t *testing.T, s *transferMatrixServer, remote string, env 
 
 // verifyHFResolvePlain checks the hub resolve contract for plain clients:
 // metadata headers plus a 302 to the sha256 bridge that serves the bytes.
-func verifyHFResolvePlain(t *testing.T, s *transferMatrixServer, repoID, oid string, want []byte) {
+func verifyHFResolvePlain(t *testing.T, s *e2eServer, repoID, oid string, want []byte) {
 	t.Helper()
 	noRedirect := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -401,7 +284,7 @@ func verifyHFResolvePlain(t *testing.T, s *transferMatrixServer, repoID, oid str
 // verifyHFResolveXet downloads through the xet protocol the way xet-capable
 // hub clients do: Link headers to token and reconstruction info, then chunk
 // fetches through the CAS.
-func verifyHFResolveXet(t *testing.T, s *transferMatrixServer, repoID string, want []byte) {
+func verifyHFResolveXet(t *testing.T, s *e2eServer, repoID string, want []byte) {
 	t.Helper()
 	resolveURL := s.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile
 	// nil client: the xet metadata rides on the 302 itself, so redirects
@@ -437,7 +320,7 @@ func verifyHFResolveXet(t *testing.T, s *transferMatrixServer, repoID string, wa
 
 // verifyObjectsEndpoint fetches the object through the basic transfer
 // download route the batch API hands out.
-func verifyObjectsEndpoint(t *testing.T, s *transferMatrixServer, oid string, want []byte) {
+func verifyObjectsEndpoint(t *testing.T, s *e2eServer, oid string, want []byte) {
 	t.Helper()
 	resp, err := http.Get(s.httpURL + "/objects/" + oid)
 	if err != nil {
