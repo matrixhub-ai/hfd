@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 
 	"github.com/gorilla/handlers"
 
+	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
@@ -21,20 +23,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	st, err := buildStorage(ctx, cfg)
-	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing storage", "error", err)
+	if err := run(ctx, cfg); err != nil {
+		slog.ErrorContext(ctx, "hfd exited", "error", err)
 		os.Exit(1)
 	}
+}
 
+// run assembles all components in dependency order and serves until a listener fails.
+func run(ctx context.Context, cfg *config) error {
+	// Phase 1: storage layer.
+	st, err := buildStorage(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("prepare storage: %w", err)
+	}
 	xs, err := buildXETStorage(ctx, cfg)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing XET storage", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare XET storage: %w", err)
 	}
 
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
+	// Phase 2: auth layer.
 	// Integrators may assemble e.g. permission.SplitReadWrite(permission.AllowAll(), permission.RequireAuthenticated()).
 	hooks := &serverHooks{
 		storage:    st,
@@ -43,57 +52,56 @@ func main() {
 	}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing authenticators", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare authenticators: %w", err)
 	}
-
 	mint, authFn, err := mirror.NewXETTokenScheme(auth.TokenSign)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing XET token scheme", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare XET token scheme: %w", err)
 	}
 
+	// Phase 3: xet/mirror layer.
 	xetC, err := buildXETClient(cfg)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing XET client", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare XET client: %w", err)
 	}
-
 	mirrorHandler, err := buildXETMirrorHandler(cfg, xs, xetC, mint)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing XET mirror handler", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare XET mirror handler: %w", err)
 	}
-
 	// The mirror is built with the hooks and the hooks call back into the mirror.
 	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, mint, xetC, mirrorHandler)
 	if err != nil {
-		slog.ErrorContext(ctx, "Error preparing mirror", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("prepare mirror: %w", err)
 	}
 	hooks.mirror = sharedMirror
 
+	// Phase 4: frontends.
 	xetComposition := buildXETComposition(xs, authFn, mirrorHandler)
 	handler := buildHTTPHandler(st, hooks, sharedMirror, auth, authFn, xetComposition)
-
+	var sshServer *backendssh.Server
 	if cfg.SSHAddr != "" {
-		sshServer, err := buildSSHServer(ctx, cfg, st, hooks, sharedMirror, auth)
+		sshServer, err = buildSSHServer(ctx, cfg, st, hooks, sharedMirror, auth)
 		if err != nil {
-			slog.ErrorContext(ctx, "Error preparing SSH protocol server", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("prepare SSH server: %w", err)
 		}
-		slog.InfoContext(ctx, "Starting SSH protocol server", "addr", cfg.SSHAddr)
+	}
+
+	return serve(ctx, cfg, handler, sshServer)
+}
+
+// serve starts the optional SSH listener and the HTTP listener, returning the first failure.
+func serve(ctx context.Context, cfg *config, handler http.Handler, sshServer *backendssh.Server) error {
+	loggedHandler := handlers.CombinedLoggingHandler(os.Stderr, handler)
+
+	errCh := make(chan error, 2)
+	if sshServer != nil {
+		slog.InfoContext(ctx, "Starting SSH server", "addr", cfg.SSHAddr)
 		go func() {
-			if err := sshServer.ListenAndServe(ctx, cfg.SSHAddr); err != nil {
-				slog.ErrorContext(ctx, "Error starting SSH protocol server", "addr", cfg.SSHAddr, "error", err)
-				os.Exit(1)
-			}
+			errCh <- fmt.Errorf("SSH server: %w", sshServer.ListenAndServe(ctx, cfg.SSHAddr))
 		}()
 	}
-
-	handler = handlers.CombinedLoggingHandler(os.Stderr, handler)
-	if err := http.ListenAndServe(cfg.Addr, handler); err != nil {
-		slog.ErrorContext(ctx, "Error starting server", "error", err)
-		os.Exit(1)
-	}
+	go func() {
+		errCh <- fmt.Errorf("HTTP server: %w", http.ListenAndServe(cfg.Addr, loggedHandler))
+	}()
+	return <-errCh
 }
