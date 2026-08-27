@@ -427,6 +427,83 @@ func requirePyXetTokenContract(t *testing.T) {
 	}
 }
 
+// setupTestServer is the pre-harness fixture: the same handler chain as
+// newE2EServer without SSH/upstream/wrap options, returning the raw
+// httptest.Server and data dir. Kept for lfs_matrix and proxy tests.
+func setupTestServer(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+
+	dataDir := newDataDir(t, "hf-e2e-data")
+
+	storage := newTestStorage(t, dataDir)
+
+	// Data-plane-only mirror: holds all LFS content in xet storage.
+	sharedMirror, dataPlane := newTestMirror(t, dataDir, "", false,
+		mirror.WithRepositoriesFS(storage.RepositoriesFS()),
+	)
+
+	// Set up handler chain (same order as main.go)
+	var handler http.Handler
+
+	handler = backendhf.NewHandler(
+		backendhf.WithStorage(storage),
+		backendhf.WithMirror(sharedMirror),
+		backendhf.WithNext(dataPlane),
+	)
+
+	handler = backendlfs.NewHandler(
+		backendlfs.WithStorage(storage),
+		backendlfs.WithNext(handler),
+		backendlfs.WithMirror(sharedMirror),
+	)
+
+	handler = backendhttp.NewHandler(
+		backendhttp.WithStorage(storage),
+		backendhttp.WithNext(handler),
+	)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(func() { server.Close() })
+
+	return server, dataDir
+}
+
+// runHFCmd runs the hf CLI with the given endpoint and arguments.
+func runHFCmd(t *testing.T, endpoint string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "hf", args...)
+	cmd.Env = append(testEnv(),
+		"HF_ENDPOINT="+endpoint,
+		"HF_HUB_DISABLE_TELEMETRY=1",
+		"HF_HUB_DISABLE_XET=1",
+		"HF_TOKEN=dummy-token",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("HF command failed: hf %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+// runPyScript runs a Python3 script with HF_ENDPOINT and HF_TOKEN set and
+// xet disabled: runPyXet's non-xet form under the pre-matrix helper name.
+func runPyScript(t *testing.T, endpoint, script string) {
+	t.Helper()
+	runPyXet(t, endpoint, false, script)
+}
+
+// checkPythonHFHub skips the test if Python3 or huggingface_hub are not available.
+func checkPythonHFHub(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available, skipping Python huggingface_hub test")
+	}
+	cmd := exec.CommandContext(t.Context(), "python3", "-c", "import huggingface_hub")
+	if err := cmd.Run(); err != nil {
+		t.Skip("huggingface_hub not installed, skipping Python huggingface_hub test")
+	}
+}
+
 // runPyXet runs a Python3 snippet driving huggingface_hub against endpoint
 // with xet-core (hf_xet) enabled or disabled, mirroring runHFCmdXet. HF_HOME
 // is isolated per call so nothing is served from cache. A watchdog kills
