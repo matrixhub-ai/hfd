@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/handlers"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 func main() {
@@ -34,9 +35,11 @@ func main() {
 
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
+	// Integrators may assemble e.g. permission.SplitReadWrite(permission.AllowAll(), permission.RequireAuthenticated()).
 	hooks := &serverHooks{
 		storage:    st,
 		proxyToken: cfg.ProxyToken,
+		permission: permission.Logged(permission.AllowAll()),
 	}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {

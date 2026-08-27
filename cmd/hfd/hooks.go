@@ -22,14 +22,9 @@ import (
 type serverHooks struct {
 	storage    *storage.Storage
 	proxyToken string
+	// permission is the authorization policy, assembled in main.
+	permission permission.PermissionHookFunc
 	mirror     *mirror.Mirror
-}
-
-// permission logs and allows every operation.
-func (h *serverHooks) permission(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-	userInfo, _ := authenticate.GetUserInfo(ctx)
-	slog.InfoContext(ctx, "Permission check", "user", userInfo.User, "op", op, "repo", repoName, "context", opCtx)
-	return true, nil // or return false, nil to deny, or return an error to indicate an error
 }
 
 // preOpen syncs mirror sources from the remote before the repository is opened.

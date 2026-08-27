@@ -220,24 +220,14 @@ func (h *Handler) checkMirrorAccess(w http.ResponseWriter, r *http.Request, repo
 // checkPermission runs the permission hook for the service, writing the
 // failure response. It returns true when the request may proceed.
 func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, repoName, service string) bool {
-	if h.permissionHookFunc == nil {
-		return true
-	}
 	op := permission.OperationReadRepo
 	if service == repository.GitReceivePack {
 		op = permission.OperationUpdateRepo
 	}
-	ok, err := h.permissionHookFunc(r.Context(), op, repoName, permission.Context{})
-	if err != nil {
-		slog.ErrorContext(r.Context(), "permission hook error", "service", service, "repo", repoName, "error", err)
-		responseText(w, err.Error(), http.StatusInternalServerError)
-		return false
-	}
-	if !ok {
-		responseText(w, "permission denied", http.StatusForbidden)
-		return false
-	}
-	return true
+	return permission.Guard{
+		Hook:    h.permissionHookFunc,
+		Respond: func(w http.ResponseWriter, msg string, sc int) { responseText(w, msg, sc) },
+	}.Allow(w, r, op, repoName, permission.Context{})
 }
 
 // openRepoChecked opens the repository, mapping open errors to HTTP responses.

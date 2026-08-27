@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -51,19 +52,18 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 		return
 	}
 
-	if s.permissionHookFunc != nil {
-		op := permission.OperationReadRepo
-		if operation == "upload" {
-			op = permission.OperationUpdateRepo
-		}
-		if ok, err := s.permissionHookFunc(ctx, op, repoName, permission.Context{}); err != nil {
+	op := permission.OperationReadRepo
+	if operation == "upload" {
+		op = permission.OperationUpdateRepo
+	}
+	if err := s.permissionHookFunc.Check(ctx, op, repoName, permission.Context{}); err != nil {
+		if errors.Is(err, permission.ErrDenied) {
+			sendExitStatus(channel, 1, "permission denied")
+		} else {
 			slog.WarnContext(ctx, "ssh protocol: permission hook error", "operation", operation, "repo", repoName, "error", err)
 			sendExitStatus(channel, 1, "")
-			return
-		} else if !ok {
-			sendExitStatus(channel, 1, "permission denied")
-			return
 		}
+		return
 	}
 
 	// Build the LFS API href

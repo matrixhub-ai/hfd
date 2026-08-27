@@ -159,6 +159,17 @@ func (a *simpleTokenValidator) Validate(_ context.Context, token string) (string
 	return "", false, false, nil
 }
 
+// NewTokenRecognizer creates a TokenValidator that maps recognized tokens to
+// the fixed user; unrecognized tokens fall through to the next validator.
+func NewTokenRecognizer(user string, recognize func(token string) bool) TokenValidator {
+	return TokenValidatorFunc(func(_ context.Context, token string) (string, bool, bool, error) {
+		if recognize != nil && recognize(token) {
+			return user, false, true, nil
+		}
+		return "", true, false, nil
+	})
+}
+
 type tokenSignValidator struct {
 	key []byte
 }
