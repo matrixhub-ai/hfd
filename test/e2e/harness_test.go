@@ -147,10 +147,13 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 // xet CAS data plane), with one known deviation from the production wiring:
 // the mirror reaches the git transports only under withMirrorSource, because
 // injecting it unconditionally — as wire.go does — would make
-// checkMirrorAccess refuse every non-mirror repository. The data plane needs
-// an upstream; tests never leave local content, so it points at an
-// always-404 server that fully ingested objects never contact. During the S3
-// pass the xet storage lives in the fake S3 bucket, like production.
+// checkMirrorAccess refuse every non-mirror repository. The xet engine
+// ingests from the mirror source when one is set — like cmd/hfd does with
+// --pull-mirror-url — so mirrored LFS resolves stream through the engine
+// instead of racing the batch-API fallback; plain servers only serve local
+// content, so their engine points at an always-404 server that fully
+// ingested objects never contact. During the S3 pass the xet storage lives
+// in the fake S3 bucket, like production.
 func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	t.Helper()
 	cfg := &e2eConfig{}
@@ -161,8 +164,12 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	dataDir := newDataDir(t, "e2e-server-data")
 	st := newTestStorage(t, dataDir)
 
-	upstream := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(upstream.Close)
+	engineUpstream := cfg.mirrorSource
+	if engineUpstream == "" {
+		notFound := httptest.NewServer(http.NotFoundHandler())
+		t.Cleanup(notFound.Close)
+		engineUpstream = notFound.URL
+	}
 
 	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
 	if cfg.mirrorSource != "" {
@@ -171,7 +178,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
 	}
-	sharedMirror, dataPlane := newTestMirror(t, dataDir, upstream.URL, testS3Client != nil, mirrorOpts...)
+	sharedMirror, xet := newTestMirror(t, dataDir, engineUpstream, testS3Client != nil, mirrorOpts...)
 
 	// The git transports get the mirror (and its access rules) only in
 	// pull-through mode: with a mirror set they refuse to serve non-mirror
@@ -184,7 +191,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(dataPlane),
+		backendhf.WithNext(xet.tail),
 	}
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))

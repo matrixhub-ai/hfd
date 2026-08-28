@@ -43,6 +43,9 @@ type config struct {
 	ProxyCacheTTL           time.Duration
 	ProxyConcurrencyPerFile int
 	ProxyCacheSize          int64
+
+	// Internal management
+	Internal bool
 }
 
 func defaultConfig() *config {
@@ -89,6 +92,8 @@ func parseConfig() (*config, error) {
 	flag.DurationVar(&cfg.ProxyCacheTTL, "proxy-cache-ttl", cfg.ProxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
 	flag.IntVar(&cfg.ProxyConcurrencyPerFile, "proxy-concurrency-per-file", cfg.ProxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
 	flag.Int64Var(&cfg.ProxyCacheSize, "proxy-cache-size", cfg.ProxyCacheSize, "Maximum size in bytes of the content chunk cache used for proxy transfers")
+
+	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (file listing, unlink, GC sweep); expose only on trusted networks")
 	flag.Parse()
 
 	if cfg.HostURL == "" {

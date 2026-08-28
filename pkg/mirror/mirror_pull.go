@@ -121,7 +121,7 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 // prefetches the referenced objects through the xet data plane, keyed by the
 // immutable commit each pointer was seen at.
 func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL string) error {
-	if m.mirrorHandler == nil {
+	if m.xetMirror == nil {
 		return nil
 	}
 

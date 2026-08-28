@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
 const (
@@ -309,7 +308,7 @@ func runAuthResolve(t *testing.T, s *e2eServer, c authMatrixCred) {
 // check runs before the per-URL sign validator that would otherwise 401 it.
 func TestCASTokenTraversesAuth(t *testing.T) {
 	validator := authenticate.NewTokenSignValidator([]byte("secret"))
-	mint, authFn, err := mirror.NewXETTokenScheme(validator)
+	mint, authFn, err := authenticate.NewXETTokenScheme(validator)
 	if err != nil {
 		t.Fatalf("new token scheme: %v", err)
 	}

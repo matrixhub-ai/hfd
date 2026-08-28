@@ -39,7 +39,7 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 
 	// Select the xet transfer for uploads when the client advertises it and
 	// the data plane can receive xorbs; uploaded objects land in xet storage.
-	xetUpload := bv.Operation == "upload" && h.mirror != nil && h.mirror.XETUploadEnabled() &&
+	xetUpload := bv.Operation == "upload" && h.mirror != nil && h.mirror.CanMintToken() &&
 		slices.ContainsFunc(bv.Transfers, func(tr string) bool { return strings.EqualFold(tr, "xet") })
 	var casURL, casToken string
 	var casExpiresAt time.Time
@@ -124,8 +124,23 @@ func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 // no presignable location for reconstructed files.
 func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
-	if h.mirror != nil && h.mirror.ServeObject(w, r, rv.Oid) {
-		return
+	if h.mirror != nil {
+		// Fully ingested objects serve straight from the xet storage, with
+		// the hub metadata and xet Link headers.
+		if rs, size, err := h.mirror.OpenObject(r.Context(), rv.Oid); err == nil {
+			defer func() {
+				_ = rs.Close()
+			}()
+			h.mirror.SetXETLinkHeaders(w, r, rv.Oid, size)
+			w.Header().Set("Content-Type", "application/octet-stream")
+			http.ServeContent(w, r, rv.Oid, time.Time{}, rs)
+			return
+		}
+		// Objects known from a pull scan or a resolve delegate to the hub
+		// front end, streaming while they ingest.
+		if h.mirror.ServeOID(w, r, rv.Oid) {
+			return
+		}
 	}
 	responseJSON(w, fmt.Sprintf("LFS object %s not found", rv.Oid), http.StatusNotFound)
 }

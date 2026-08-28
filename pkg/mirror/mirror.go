@@ -42,8 +42,10 @@ type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
 type SyncUserInfoFunc func(ctx context.Context, repoName string) (*url.Userinfo, error)
 
 // Mirror handles repository mirror operations: git ref syncing (pull and
-// push) plus an xet-backed data plane that caches upstream file bytes as
-// xorbs/shards and serves them to both xet-capable and plain LFS clients.
+// push) plus an xet-backed data plane that ingests file bytes as
+// xorbs/shards and answers object queries. It also carries the HTTP
+// data-plane surface: xet Link headers, CAS token minting, and OID
+// resolves served directly from the ingest engine.
 type Mirror struct {
 	mirrorSourceFunc      SourceFunc
 	mirrorDestinationFunc DestinationFunc
@@ -61,8 +63,8 @@ type Mirror struct {
 
 	xetStorage     xetstorage.Storage
 	xetClient      *xetclient.Client
-	mirrorHandler  *xetmirror.Handler // nil without a pull upstream
-	mintToken      func(time.Time) (token string, exp int64)
+	xetMirror      *xetmirror.Mirror // ingest engine; nil without a pull upstream
+	mint           func(time.Time) (string, int64)
 	externalURL    string
 	concurrency    int
 	dataDir        string
@@ -125,26 +127,27 @@ func WithXETClient(c *xetclient.Client) Option {
 	}
 }
 
-// WithMirrorHandler sets the xet mirror module serving reconstruct-on-miss,
-// read tokens, and ingest; optional — without it the upstream features are off.
-func WithMirrorHandler(h *xetmirror.Handler) Option {
+// WithXETMirror sets the xet mirror engine that ingests upstream files into
+// the xet storage; optional — without it the upstream features are off.
+func WithXETMirror(x *xetmirror.Mirror) Option {
 	return func(m *Mirror) {
-		m.mirrorHandler = h
+		m.xetMirror = x
 	}
 }
 
-// WithMintToken sets the mint for short-lived CAS access tokens; see NewXETTokenScheme.
-func WithMintToken(mint func(time.Time) (token string, exp int64)) Option {
+// WithMintToken sets the function that mints short-lived CAS access tokens;
+// see authenticate.NewXETTokenScheme.
+func WithMintToken(fn func(time.Time) (string, int64)) Option {
 	return func(m *Mirror) {
-		m.mintToken = mint
+		m.mint = fn
 	}
 }
 
 // WithExternalURL sets the externally visible base URL for minted casUrl and
-// redirect Locations; derived from the request when empty.
-func WithExternalURL(external string) Option {
+// Link headers; derived from the request when empty.
+func WithExternalURL(u string) Option {
 	return func(m *Mirror) {
-		m.externalURL = external
+		m.externalURL = u
 	}
 }
 
@@ -193,7 +196,7 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 
 // NewMirror creates a new Mirror with the provided options. It does not
 // assemble the xet stack; the caller (cmd/hfd) builds the client, storage,
-// token scheme, and mirror handler and injects each piece.
+// and mirror engine and injects each piece.
 func NewMirror(opts ...Option) (*Mirror, error) {
 	m := &Mirror{}
 	for _, opt := range opts {
@@ -206,8 +209,8 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 	// long; the stall guard bounds no-progress phases instead.
 	m.httpClient = http.DefaultClient
 	m.downloadClient = newDownloadClient()
-	if m.xetStorage == nil || m.xetClient == nil || m.mintToken == nil {
-		return nil, fmt.Errorf("mirror requires the xet pieces: WithXETStorage, WithXETClient, WithMintToken")
+	if m.xetStorage == nil || m.xetClient == nil {
+		return nil, fmt.Errorf("mirror requires the xet pieces: WithXETStorage, WithXETClient")
 	}
 
 	return m, nil

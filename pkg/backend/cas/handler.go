@@ -15,7 +15,7 @@ import (
 )
 
 // Handler answers the hub-style xet-write-token route with a CAS credential
-// minted by the mirror.
+// minted by the data plane.
 type Handler struct {
 	root               *mux.Router
 	next               http.Handler
@@ -40,7 +40,7 @@ func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
 	}
 }
 
-// WithMirror sets the mirror that mints the CAS credentials.
+// WithMirror sets the mirror whose data plane mints the write tokens.
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
@@ -85,7 +85,7 @@ func (h *Handler) handleWriteToken(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationUpdateRepo, typedRepoName(mux.Vars(r))) {
 		return
 	}
-	if h.mirror == nil || h.next == nil {
+	if h.mirror == nil || !h.mirror.CanMintToken() || h.next == nil {
 		http.NotFound(w, r)
 		return
 	}

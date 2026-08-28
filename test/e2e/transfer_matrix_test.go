@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	xetclient "github.com/wzshiming/xet/client"
-	xethf "github.com/wzshiming/xet/hf"
+	xethf "github.com/wzshiming/xet/client/hf"
 )
 
 const transferMatrixFile = "model.bin"

@@ -17,6 +17,8 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
+	xethf "github.com/wzshiming/xet/server/hf"
+	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
@@ -148,37 +150,51 @@ func buildXETClient(cfg *config) (*xetclient.Client, error) {
 	return xetC, nil
 }
 
-// buildXETMirrorHandler creates the upstream ingest handler when a pull
-// upstream is configured; nil otherwise.
-func buildXETMirrorHandler(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client, mint func(time.Time) (string, int64)) (*xetmirror.Handler, error) {
+// buildXETMirror creates the upstream ingest engine when a pull upstream is
+// configured; nil otherwise.
+func buildXETMirror(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client) (*xetmirror.Mirror, error) {
 	if cfg.PullMirrorURL == "" {
 		return nil, nil
 	}
-	mirrorHandler, err := xetmirror.NewHandler(
+	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
 		xetmirror.WithUpstream(strings.TrimSuffix(cfg.PullMirrorURL, "/")),
 		xetmirror.WithUpstreamToken(cfg.ProxyToken),
 		xetmirror.WithCacheDir(filepath.Join(cfg.DataDir, "xet", "mirror")),
 		xetmirror.WithClient(xetC),
-		xetmirror.WithMintToken(mint),
-		xetmirror.WithExternalURL(cfg.HostURL),
-		// hfd serves its own control plane; unmatched requests must not
-		// be proxied upstream.
-		xetmirror.WithNext(http.NotFoundHandler()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create xet mirror handler: %w", err)
+		return nil, fmt.Errorf("create xet mirror engine: %w", err)
 	}
-	return mirrorHandler, nil
+	return engine, nil
 }
 
-// buildMirror builds the shared mirror around the injected xet pieces. Pull
-// and push mirroring activate when their URLs are configured.
-func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *serverHooks, mint func(time.Time) (string, int64), xetC *xetclient.Client, mirrorHandler *xetmirror.Handler) (*mirror.Mirror, error) {
+// buildXETHubHandler creates the hub front end over the mirror engine,
+// serving reconstruct-on-miss resolves and read tokens; nil without an
+// engine.
+func buildXETHubHandler(cfg *config, engine *xetmirror.Mirror, mint func(time.Time) (string, int64)) http.Handler {
+	if engine == nil {
+		return nil
+	}
+	return xethf.NewHandler(
+		xethf.WithMirror(engine),
+		xethf.WithMintToken(mint),
+		xethf.WithExternalURL(cfg.HostURL),
+		// hfd serves its own control plane; unmatched requests must not
+		// be proxied upstream.
+		xethf.WithNext(http.NotFoundHandler()),
+	)
+}
+
+// buildMirror builds the shared mirror around the injected xet pieces; the
+// mirror carries the data plane (token mint, external URL) and serves OID
+// resolves straight off the ingest engine. Pull and push mirroring activate
+// when their URLs are configured.
+func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *serverHooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(time.Time) (string, int64)) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(xetC),
-		mirror.WithMirrorHandler(mirrorHandler),
+		mirror.WithXETMirror(engine),
 		mirror.WithMintToken(mint),
 		mirror.WithExternalURL(cfg.HostURL),
 		mirror.WithDataDir(filepath.Join(cfg.DataDir, "xet")),
@@ -246,13 +262,13 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 }
 
 // buildXETComposition assembles the xet CAS composition — the CAS server
-// falling through to the mirror handler, following xetd.
-func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool, mirrorHandler *xetmirror.Handler) http.Handler {
+// falling through to the hub handler, following xetd.
+func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool, hubHandler http.Handler) http.Handler {
 	// The CAS server always runs so xet clients can upload LFS objects; the
-	// upstream ingest handler is added only when a pull upstream exists.
+	// upstream hub handler is added only when a pull upstream exists.
 	handler := http.Handler(http.NotFoundHandler())
-	if mirrorHandler != nil {
-		handler = mirrorHandler
+	if hubHandler != nil {
+		handler = hubHandler
 	}
 	handler = xetserver.NewHandler(
 		xetserver.WithStorage(xs),
@@ -264,7 +280,8 @@ func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool, mirror
 
 // buildHTTPHandler composes the HTTP handler chain: HF API → LFS → HTTP Git
 // backends over the CAS write-token backend and the injected xet composition
-// tail, with authentication and CAS-credential recognition at the head.
+// tail, with authentication and CAS-credential recognition at the head. The
+// hf/lfs/cas backends serve from the assembled data plane.
 func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool, xetComposition http.Handler) http.Handler {
 	handler := xetComposition
 
@@ -314,6 +331,22 @@ func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mir
 	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), handler)
 
 	return handler
+}
+
+// wrapInternalAPI mounts the /internal/ management endpoints (file listing,
+// unlink, GC sweep) around the whole chain when enabled; no-op otherwise.
+// Outermost because operator requests bypass user authentication, as in xetd.
+func wrapInternalAPI(ctx context.Context, cfg *config, xs xetstorage.Storage, next http.Handler) http.Handler {
+	if !cfg.Internal {
+		return next
+	}
+	slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
+	return xetinternalapi.NewHandler(
+		xetinternalapi.WithStorage(xs),
+		xetinternalapi.WithGCGrace(1*time.Hour),
+		xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
+		xetinternalapi.WithNext(next),
+	)
 }
 
 // loadOrGenerateHostKey loads the SSH host key from the configured path, or
