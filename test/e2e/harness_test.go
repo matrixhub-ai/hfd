@@ -507,8 +507,8 @@ func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string
 // requirePyXetTokenContract gates the python xet cells on the token
 // contract this server speaks (JSON body parsed by the hf_xet core):
 // pre-1.x hub releases demand X-Xet-* response headers instead, and 1.29+
-// bootstraps through /api/agent-harnesses, which this server does not
-// implement yet. Skips locally, fails on CI, like requireUpDownMatrixTools.
+// returned to that header contract, which this server does not serve
+// yet. Skips locally, fails on CI, like requireUpDownMatrixTools.
 func requirePyXetTokenContract(t *testing.T) {
 	t.Helper()
 	missing := func(format string, args ...any) {
