@@ -504,11 +504,11 @@ func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string
 	return string(output)
 }
 
-// requirePyXetTokenContract gates the python xet cells: old huggingface_hub
-// releases fetch CAS tokens in Python and demand X-Xet-* response headers on
-// the token routes, while this server speaks the current hub contract (JSON
-// body, parsed by the hf_xet core). Skips locally, fails on CI, like
-// requireUpDownMatrixTools.
+// requirePyXetTokenContract gates the python xet cells on the token
+// contract this server speaks (JSON body parsed by the hf_xet core):
+// pre-1.x hub releases demand X-Xet-* response headers instead, and 1.29+
+// bootstraps through /api/agent-harnesses, which this server does not
+// implement yet. Skips locally, fails on CI, like requireUpDownMatrixTools.
 func requirePyXetTokenContract(t *testing.T) {
 	t.Helper()
 	missing := func(format string, args ...any) {
@@ -521,7 +521,7 @@ func requirePyXetTokenContract(t *testing.T) {
 	probe := "import hf_xet; import sys, huggingface_hub.utils._xet as x; " +
 		"sys.exit(1 if hasattr(x, 'parse_xet_connection_info_from_headers') else 0)"
 	if out, err := exec.CommandContext(t.Context(), "python3", "-c", probe).CombinedOutput(); err != nil {
-		missing("python huggingface_hub/hf_xet too old for the JSON xet token contract; pip install -U 'huggingface_hub[hf_xet]': %v\n%s", err, out)
+		missing("python huggingface_hub/hf_xet does not speak this server's xet token contract (need >=1.28,<1.29): %v\n%s", err, out)
 	}
 }
 
