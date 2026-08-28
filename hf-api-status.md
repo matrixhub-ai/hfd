@@ -120,7 +120,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `POST` | `/api/repos/create` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/create) | Create a new repository |
 | ✅ | `POST` | `/api/repos/move` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/move) | Move repo |
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
-| ❌ | `GET` | `/api/agent-harnesses` | [agents](https://huggingface.co/spaces/huggingface/openapi#tag/agents/GET/api/agent-harnesses) | Get agent harnesses |
+| ✅ | `GET` | `/api/agent-harnesses` | [agents](https://huggingface.co/spaces/huggingface/openapi#tag/agents/GET/api/agent-harnesses) | Get agent harnesses |
 | ❌ | `POST` | `/api/agentic/provisioning/account_requests` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/account_requests) | Create account request |
 | ❌ | `POST` | `/api/agentic/provisioning/deep_links` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/deep_links) | Create deep link |
 | ❌ | `GET` | `/api/agentic/provisioning/health` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/health) | Get health |
