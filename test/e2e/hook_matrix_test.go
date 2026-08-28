@@ -2,44 +2,40 @@ package e2e_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
-	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
-	"golang.org/x/crypto/ssh"
 )
+
+// setupHookServer starts a harness server with the given option, creates the
+// hook test repo, and returns the remote for the requested protocol.
+func setupHookServer(t *testing.T, sshProto bool, opt e2eOption) (repoURL string, env []string) {
+	t.Helper()
+	opts := []e2eOption{opt}
+	if sshProto {
+		opts = append(opts, withSSH())
+	}
+	s := newE2EServer(t, opts...)
+	s.createRepo(t, "hook-org", "hook-repo")
+	if sshProto {
+		return s.sshRemote("hook-org/hook-repo")
+	}
+	return s.httpRemote("hook-org/hook-repo")
+}
 
 // TestReceiveHooksMatrix tests receive hooks across HTTP and SSH protocols
 func TestReceiveHooksMatrix(t *testing.T) {
-	type hookProtocol struct {
-		name      string
-		setupFunc func(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
-	}
-
-	protocols := []hookProtocol{
-		{
-			name:      "HTTP",
-			setupFunc: setupHTTPWithHooks,
-		},
-		{
-			name:      "SSH",
-			setupFunc: setupSSHWithHooks,
-		},
+	protocols := []struct {
+		name string
+		ssh  bool
+	}{
+		{name: "HTTP"},
+		{name: "SSH", ssh: true},
 	}
 
 	type hookTest struct {
@@ -59,9 +55,7 @@ func TestReceiveHooksMatrix(t *testing.T) {
 			for _, test := range tests {
 				t.Run(test.name, func(t *testing.T) {
 					recorder := &matrixHookRecorder{}
-					repoURL, env, createRepo, cleanup := protocol.setupFunc(t, nil, recorder.hook)
-					defer cleanup()
-					createRepo()
+					repoURL, env := setupHookServer(t, protocol.ssh, withHooks(nil, recorder.hook))
 					test.test(t, repoURL, env, recorder)
 				})
 			}
@@ -71,20 +65,12 @@ func TestReceiveHooksMatrix(t *testing.T) {
 
 // TestPreReceiveHookDenyMatrix tests pre-receive hook denial across protocols
 func TestPreReceiveHookDenyMatrix(t *testing.T) {
-	type hookProtocol struct {
-		name      string
-		setupFunc func(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
-	}
-
-	protocols := []hookProtocol{
-		{
-			name:      "HTTP",
-			setupFunc: setupHTTPWithHooks,
-		},
-		{
-			name:      "SSH",
-			setupFunc: setupSSHWithHooks,
-		},
+	protocols := []struct {
+		name string
+		ssh  bool
+	}{
+		{name: "HTTP"},
+		{name: "SSH", ssh: true},
 	}
 
 	for _, protocol := range protocols {
@@ -99,9 +85,7 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 			}
 
 			postRecorder := &matrixHookRecorder{}
-			repoURL, env, createRepo, cleanup := protocol.setupFunc(t, preHook, postRecorder.hook)
-			defer cleanup()
-			createRepo()
+			repoURL, env := setupHookServer(t, protocol.ssh, withHooks(preHook, postRecorder.hook))
 
 			clientDir, err := os.MkdirTemp("", "hook-deny-client")
 			if err != nil {
@@ -111,20 +95,20 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 
 			// Clone and push commit (should succeed)
 			cloneDir := filepath.Join(clientDir, "clone")
-			runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-			runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-			runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+			runGit(t, "", env, "clone", repoURL, cloneDir)
+			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 			if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 				t.Fatalf("Failed to create file: %v", err)
 			}
 
-			runHookGitCmd(t, cloneDir, env, "add", "README.md")
-			runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
-			runHookGitCmd(t, cloneDir, env, "push", "origin", "main")
+			runGit(t, cloneDir, env, "add", "README.md")
+			runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
+			runGit(t, cloneDir, env, "push", "origin", "main")
 
 			// Tag push should be denied
-			runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
+			runGit(t, cloneDir, env, "tag", "v1.0")
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "v1.0")
 			cmd.Dir = cloneDir
 			cmd.Env = append(testEnv(), env...)
@@ -136,150 +120,6 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 	}
 }
 
-func setupHTTPWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "hook-http-data")
-
-	storage := newTestStorage(t, dataDir)
-
-	var httpOpts []backendhttp.Option
-	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
-	if preHook != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(preHook))
-	}
-	if postHook != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(postHook))
-	}
-
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	httpOpts = append(httpOpts, backendhttp.WithNext(handler))
-	handler = backendhttp.NewHandler(httpOpts...)
-
-	server := httptest.NewServer(handler)
-
-	return server.URL + "/hook-org/hook-repo.git",
-		[]string{"GIT_TERMINAL_PROMPT=0"},
-		func() {
-			resp, err := http.Post(server.URL+"/api/repos/create", "application/json",
-				strings.NewReader(`{"type":"model","name":"hook-repo","organization":"hook-org"}`))
-			if err != nil {
-				t.Fatalf("Failed to create repo: %v", err)
-			}
-			resp.Body.Close()
-		},
-		func() {
-			server.Close()
-			os.RemoveAll(dataDir)
-		}
-}
-
-func setupSSHWithHooks(t *testing.T, preHook receive.PreReceiveHookFunc, postHook receive.PostReceiveHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "hook-ssh-data")
-
-	clientDir, err := os.MkdirTemp("", "hook-ssh-client")
-	if err != nil {
-		os.RemoveAll(dataDir)
-		t.Fatalf("Failed to create client dir: %v", err)
-	}
-
-	storage := newTestStorage(t, dataDir)
-
-	// HTTP handler for repo creation
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
-		backendhttp.WithNext(handler),
-	)
-
-	httpServer := httptest.NewServer(handler)
-
-	// Generate SSH host key
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to generate host key: %v", err)
-	}
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to create host key signer: %v", err)
-	}
-
-	// Generate client key
-	keyFile := filepath.Join(clientDir, "id_ed25519")
-	generateTestKeyFile(t, keyFile)
-
-	// SSH server with hooks
-	sshOpts := []backendssh.Option{
-		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(storage),
-	}
-	if preHook != nil {
-		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(preHook))
-	}
-	if postHook != nil {
-		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(postHook))
-	}
-
-	sshServer := backendssh.NewServer(sshOpts...)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to listen for SSH: %v", err)
-	}
-
-	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
-	}()
-
-	addr := listener.Addr().(*net.TCPAddr)
-	port := strings.Split(addr.String(), ":")[1]
-	sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", keyFile, port)
-
-	return "ssh://git@" + addr.String() + "/hook-org/hook-repo.git",
-		[]string{
-			"GIT_TERMINAL_PROMPT=0",
-			"GIT_SSH_COMMAND=" + sshCmd,
-		},
-		func() {
-			resp, err := http.Post(httpServer.URL+"/api/repos/create", "application/json",
-				strings.NewReader(`{"type":"model","name":"hook-repo","organization":"hook-org"}`))
-			if err != nil {
-				t.Fatalf("Failed to create repo: %v", err)
-			}
-			resp.Body.Close()
-		},
-		func() {
-			listener.Close()
-			httpServer.Close()
-			os.RemoveAll(dataDir)
-			os.RemoveAll(clientDir)
-		}
-}
-
 func testHookBranchPush(t *testing.T, repoURL string, env []string, recorder *matrixHookRecorder) {
 	clientDir, err := os.MkdirTemp("", "hook-test-client")
 	if err != nil {
@@ -288,17 +128,17 @@ func testHookBranchPush(t *testing.T, repoURL string, env []string, recorder *ma
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-	runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+	runGit(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 	if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	runHookGitCmd(t, cloneDir, env, "add", "README.md")
-	runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "main")
+	runGit(t, cloneDir, env, "add", "README.md")
+	runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
+	runGit(t, cloneDir, env, "push", "origin", "main")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -326,10 +166,10 @@ func testHookTagCreate(t *testing.T, repoURL string, env []string, recorder *mat
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, "", env, "clone", repoURL, cloneDir)
 
-	runHookGitCmd(t, cloneDir, env, "tag", "v1.0")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "v1.0")
+	runGit(t, cloneDir, env, "tag", "v1.0")
+	runGit(t, cloneDir, env, "push", "origin", "v1.0")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -360,9 +200,9 @@ func testHookTagDelete(t *testing.T, repoURL string, env []string, recorder *mat
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, "", env, "clone", repoURL, cloneDir)
 
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "v1.0")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -393,18 +233,18 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 	defer os.RemoveAll(clientDir)
 
 	cloneDir := filepath.Join(clientDir, "clone")
-	runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
-	runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-	runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+	runGit(t, "", env, "clone", repoURL, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
-	runHookGitCmd(t, cloneDir, env, "checkout", "-b", "feature")
+	runGit(t, cloneDir, env, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(cloneDir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	runHookGitCmd(t, cloneDir, env, "add", "feature.txt")
-	runHookGitCmd(t, cloneDir, env, "commit", "-m", "Feature commit")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "feature")
+	runGit(t, cloneDir, env, "add", "feature.txt")
+	runGit(t, cloneDir, env, "commit", "-m", "Feature commit")
+	runGit(t, cloneDir, env, "push", "origin", "feature")
 
 	calls := recorder.getCalls()
 	if len(calls) == 0 {
@@ -424,8 +264,8 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 
 	// Delete the branch
 	recorder.reset()
-	runHookGitCmd(t, cloneDir, env, "checkout", "main")
-	runHookGitCmd(t, cloneDir, env, "push", "origin", "--delete", "feature")
+	runGit(t, cloneDir, env, "checkout", "main")
+	runGit(t, cloneDir, env, "push", "origin", "--delete", "feature")
 
 	calls = recorder.getCalls()
 	if len(calls) == 0 {
@@ -444,23 +284,10 @@ func testHookBranchCreateDelete(t *testing.T, repoURL string, env []string, reco
 	}
 }
 
-func runHookGitCmd(t *testing.T, dir string, env []string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Env = append(testEnv(), env...)
-	if output, err := cmd.Output(); err != nil {
-		t.Fatalf("Git command failed: git %s\nError: %v\nOutput: %s", strings.Join(args, " "), err, output)
-	}
-}
-
 // matrixHookRecorder records receive hook calls in a thread-safe manner (for matrix tests)
 type matrixHookRecorder struct {
-	mu      sync.Mutex
-	calls   []matrixHookCall
-	hookErr error
+	mu    sync.Mutex
+	calls []matrixHookCall
 }
 
 type matrixHookCall struct {
@@ -472,7 +299,7 @@ func (r *matrixHookRecorder) hook(ctx context.Context, repoName string, updates 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, matrixHookCall{repoName: repoName, updates: updates})
-	return r.hookErr
+	return nil
 }
 
 func (r *matrixHookRecorder) getCalls() []matrixHookCall {
@@ -491,20 +318,12 @@ func (r *matrixHookRecorder) reset() {
 
 // TestPermissionHookMatrix tests permission hooks across protocols
 func TestPermissionHookMatrix(t *testing.T) {
-	type hookProtocol struct {
-		name      string
-		setupFunc func(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func())
-	}
-
-	protocols := []hookProtocol{
-		{
-			name:      "HTTP",
-			setupFunc: setupHTTPWithPermission,
-		},
-		{
-			name:      "SSH",
-			setupFunc: setupSSHWithPermission,
-		},
+	protocols := []struct {
+		name string
+		ssh  bool
+	}{
+		{name: "HTTP"},
+		{name: "SSH", ssh: true},
 	}
 
 	for _, protocol := range protocols {
@@ -517,9 +336,7 @@ func TestPermissionHookMatrix(t *testing.T) {
 				return true, nil
 			}
 
-			repoURL, env, createRepo, cleanup := protocol.setupFunc(t, permHook)
-			defer cleanup()
-			createRepo()
+			repoURL, env := setupHookServer(t, protocol.ssh, withPermissionHook(permHook))
 
 			clientDir, err := os.MkdirTemp("", "perm-test-client")
 			if err != nil {
@@ -529,18 +346,18 @@ func TestPermissionHookMatrix(t *testing.T) {
 
 			// Clone should succeed (read permission)
 			cloneDir := filepath.Join(clientDir, "clone")
-			runHookGitCmd(t, "", env, "clone", repoURL, cloneDir)
+			runGit(t, "", env, "clone", repoURL, cloneDir)
 
 			// Push should fail (write denied)
-			runHookGitCmd(t, cloneDir, env, "config", "user.email", "test@test.com")
-			runHookGitCmd(t, cloneDir, env, "config", "user.name", "Test User")
+			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
 			if err := os.WriteFile(filepath.Join(cloneDir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 				t.Fatalf("Failed to create file: %v", err)
 			}
 
-			runHookGitCmd(t, cloneDir, env, "add", "README.md")
-			runHookGitCmd(t, cloneDir, env, "commit", "-m", "Initial commit")
+			runGit(t, cloneDir, env, "add", "README.md")
+			runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
 
 			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "main")
 			cmd.Dir = cloneDir
@@ -551,142 +368,4 @@ func TestPermissionHookMatrix(t *testing.T) {
 			}
 		})
 	}
-}
-
-func setupHTTPWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "perm-http-data")
-
-	storage := newTestStorage(t, dataDir)
-
-	var httpOpts []backendhttp.Option
-	httpOpts = append(httpOpts, backendhttp.WithStorage(storage))
-	if permHook != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(permHook))
-	}
-
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	httpOpts = append(httpOpts, backendhttp.WithNext(handler))
-	handler = backendhttp.NewHandler(httpOpts...)
-
-	server := httptest.NewServer(handler)
-
-	return server.URL + "/perm-org/perm-repo.git",
-		[]string{"GIT_TERMINAL_PROMPT=0"},
-		func() {
-			resp, err := http.Post(server.URL+"/api/repos/create", "application/json",
-				strings.NewReader(`{"type":"model","name":"perm-repo","organization":"perm-org"}`))
-			if err != nil {
-				t.Fatalf("Failed to create repo: %v", err)
-			}
-			resp.Body.Close()
-		},
-		func() {
-			server.Close()
-			os.RemoveAll(dataDir)
-		}
-}
-
-func setupSSHWithPermission(t *testing.T, permHook permission.PermissionHookFunc) (repoURL string, env []string, createRepo func(), cleanup func()) {
-	t.Helper()
-
-	dataDir := newDataDir(t, "perm-ssh-data")
-
-	clientDir, err := os.MkdirTemp("", "perm-ssh-client")
-	if err != nil {
-		os.RemoveAll(dataDir)
-		t.Fatalf("Failed to create client dir: %v", err)
-	}
-
-	storage := newTestStorage(t, dataDir)
-
-	// HTTP handler for repo creation
-	var handler http.Handler
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(storage),
-	)
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(storage),
-		backendlfs.WithNext(handler),
-	)
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(storage),
-		backendhttp.WithNext(handler),
-	)
-
-	httpServer := httptest.NewServer(handler)
-
-	// Generate SSH host key
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to generate host key: %v", err)
-	}
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to create host key signer: %v", err)
-	}
-
-	// Generate client key
-	keyFile := filepath.Join(clientDir, "id_ed25519")
-	generateTestKeyFile(t, keyFile)
-
-	// SSH server with permission hook
-	sshOpts := []backendssh.Option{
-		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(storage),
-	}
-	if permHook != nil {
-		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(permHook))
-	}
-
-	sshServer := backendssh.NewServer(sshOpts...)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		httpServer.Close()
-		os.RemoveAll(dataDir)
-		os.RemoveAll(clientDir)
-		t.Fatalf("Failed to listen for SSH: %v", err)
-	}
-
-	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
-	}()
-
-	addr := listener.Addr().(*net.TCPAddr)
-	port := strings.Split(addr.String(), ":")[1]
-	sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s", keyFile, port)
-
-	return "ssh://git@" + addr.String() + "/perm-org/perm-repo.git",
-		[]string{
-			"GIT_TERMINAL_PROMPT=0",
-			"GIT_SSH_COMMAND=" + sshCmd,
-		},
-		func() {
-			resp, err := http.Post(httpServer.URL+"/api/repos/create", "application/json",
-				strings.NewReader(`{"type":"model","name":"perm-repo","organization":"perm-org"}`))
-			if err != nil {
-				t.Fatalf("Failed to create repo: %v", err)
-			}
-			resp.Body.Close()
-		},
-		func() {
-			listener.Close()
-			httpServer.Close()
-			os.RemoveAll(dataDir)
-			os.RemoveAll(clientDir)
-		}
 }

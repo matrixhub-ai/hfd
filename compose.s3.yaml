@@ -14,7 +14,7 @@ services:
       - --s3-access-key=adminadmin
       - --s3-secret-key=adminadmin
     volumes:
-      - ./data/xet/:/data/xet/
+      - ./data/hfd/:/data/
   s3:
     image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     ports:

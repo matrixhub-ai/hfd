@@ -30,7 +30,9 @@ jobs:
           python-version: "3.x"
 
       - name: Install huggingface_hub
-        run: pip install 'huggingface_hub[cli,hf_xet]'
+        # Pinned below 1.29: its xet bootstrap calls /api/agent-harnesses,
+        # which this server does not implement yet.
+        run: pip install 'huggingface_hub[cli,hf_xet]>=1.28,<1.29'
 
       # Unit tests and e2e tests are run together.
       # E2e tests use httptest.NewServer with a local temp dir and require
