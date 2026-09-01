@@ -62,26 +62,19 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
-	mint, _, err := NewXETTokenScheme(nil)
-	if err != nil {
-		t.Fatalf("new token scheme: %v", err)
-	}
-	mirrorHandler, err := xetmirror.NewHandler(
+	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
 		xetmirror.WithUpstream(srv.URL),
 		xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
 		xetmirror.WithClient(client),
-		xetmirror.WithMintToken(mint),
-		xetmirror.WithNext(http.NotFoundHandler()),
 	)
 	if err != nil {
-		t.Fatalf("new xet mirror handler: %v", err)
+		t.Fatalf("new xet mirror engine: %v", err)
 	}
 	m, err := NewMirror(
 		WithXETStorage(xs),
 		WithXETClient(client),
-		WithMirrorHandler(mirrorHandler),
-		WithMintToken(mint),
+		WithXETMirror(engine),
 		WithDataDir(dataDir),
 	)
 	if err != nil {

@@ -16,10 +16,9 @@ import (
 	"time"
 
 	"github.com/wzshiming/httpseek"
-	xettoken "github.com/wzshiming/xet/token"
+	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
@@ -36,85 +35,122 @@ type resolveTarget struct {
 	size     int64
 }
 
-func (t resolveTarget) key() string {
-	return "/" + strings.TrimPrefix(t.repoName, "/") + "/resolve/" + t.commit + "/" + t.path
+// RegisterObject registers the upstream resolve target for an OID so
+// ServeOID (and LFS batch KnowsObject) can serve it, e.g. for revisions
+// outside pull-scan tips.
+func (m *Mirror) RegisterObject(oid, repoName, commit, path string, size int64) {
+	m.oidIndex.Store(oid, resolveTarget{repoName: repoName, commit: commit, path: path, size: size})
 }
 
-// ServeResolve delegates a hub-style resolve request to the xet mirror data
-// plane, which serves cached bytes, streams during ingest, or starts an
-// ingest from the upstream. It reports false when no pull upstream is
-// configured.
-func (m *Mirror) ServeResolve(w http.ResponseWriter, r *http.Request, repoName, rev, filePath string) bool {
-	if m.mirrorHandler == nil {
+// ServeOID serves the object by OID straight from the ingest engine: ready
+// entries are served from storage, in-flight ingests are streamed from the
+// growing spool (ingest-on-miss). It reports false when the OID is
+// unregistered, there is no engine, or the upstream has no file, letting the
+// caller answer its own 404.
+func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bool {
+	if m.xetMirror == nil {
 		return false
 	}
-	target := resolveTarget{repoName: repoName, commit: rev, path: filePath}
-	m.serveKey(w, r, target.key())
+	v, ok := m.oidIndex.Load(oid)
+	if !ok {
+		return false
+	}
+	t := v.(resolveTarget)
+	res, err := m.resolve(r.Context(), t)
+	if err != nil {
+		return false
+	}
+	if res.Entry != nil {
+		return m.serveIngested(w, r, oid)
+	}
+	if _, _, err := res.Stream.WaitMeta(r.Context()); err != nil {
+		return false
+	}
+	size, ok := res.Stream.WaitSize(r.Context())
+	if !ok {
+		return false
+	}
+	if size >= 0 {
+		rs := res.Stream.NewSeekReader(r.Context(), size)
+		if rs == nil {
+			return m.serveDrained(w, r, oid, t)
+		}
+		defer func() { _ = rs.Close() }()
+		m.SetXETLinkHeaders(w, r, oid, size)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		http.ServeContent(w, r, oid, time.Time{}, rs)
+		return true
+	}
+	rc := res.Stream.NewReader(r.Context(), 0)
+	if rc == nil {
+		return m.serveDrained(w, r, oid, t)
+	}
+	defer func() { _ = rc.Close() }()
+	// Size unknown until the ingest completes: stream the body; a copy error
+	// after the first write cannot be reported anymore.
+	_, _ = io.Copy(w, rc)
 	return true
 }
 
-// ServeObject serves an LFS object by OID from the data plane: directly from
-// xet storage when ingested, or by delegating to the mirror's resolve path
-// when the object is known from a pull scan (streaming while it ingests).
-// It reports false when the object cannot be served.
-func (m *Mirror) ServeObject(w http.ResponseWriter, r *http.Request, oid string) bool {
-	if m.xetStorage == nil {
-		return false
-	}
-	if m.ServeIngested(w, r, oid) {
-		return true
-	}
-	if t, ok := m.oidIndex.Load(oid); ok {
-		m.serveKey(w, r, t.(resolveTarget).key())
-		return true
-	}
-	return false
+// resolve runs one engine resolution for the target, with the components in
+// the escaped URL path form Resolve shares tasks and entries under.
+func (m *Mirror) resolve(ctx context.Context, t resolveTarget) (*xetmirror.Resolution, error) {
+	return m.xetMirror.Resolve(ctx,
+		escapePath(strings.TrimPrefix(t.repoName, "/")),
+		t.commit,
+		escapePath(t.path),
+	)
 }
 
-// ServeIngested serves a fully ingested object straight from the xet storage,
-// with the hub metadata headers and the xet Link headers so capable clients
-// can fetch chunks through the CAS. It reports false when the object is not
-// fully ingested.
-func (m *Mirror) ServeIngested(w http.ResponseWriter, r *http.Request, oid string) bool {
+// serveIngested serves a fully ingested object from the xet storage.
+func (m *Mirror) serveIngested(w http.ResponseWriter, r *http.Request, oid string) bool {
 	rs, size, err := m.OpenObject(r.Context(), oid)
 	if err != nil {
 		return false
 	}
-	defer func() {
-		_ = rs.Close()
-	}()
-	m.setXETLinkHeaders(w, r, oid)
-	setLinkedMetadataHeaders(w, oid, size)
+	defer func() { _ = rs.Close() }()
+	m.SetXETLinkHeaders(w, r, oid, size)
+	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, oid, time.Time{}, rs)
 	return true
 }
 
-// ServeIngestedRedirect answers a resolve request for a fully ingested object
-// the way the hub does: metadata plus xet Link headers, and a redirect to the
-// sha256 bridge for the bytes. It reports false when the object is not fully
-// ingested, so callers stream in-flight ingests instead.
-func (m *Mirror) ServeIngestedRedirect(w http.ResponseWriter, r *http.Request, oid string) bool {
-	rs, size, err := m.OpenObject(r.Context(), oid)
-	if err != nil {
+// serveDrained covers the rare race where the ingest finished and its spool
+// was drained before the stream was attached: one re-resolve picks up the
+// published terminal entry.
+func (m *Mirror) serveDrained(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) bool {
+	res, err := m.resolve(r.Context(), t)
+	if err != nil || res.Entry == nil {
 		return false
 	}
-	_ = rs.Close()
-	m.setXETLinkHeaders(w, r, oid)
-	setLinkedMetadataHeaders(w, oid, size)
-	if size == 0 {
-		w.Header().Set("Content-Length", "0")
-		w.WriteHeader(http.StatusOK)
-		return true
-	}
-	// The Location must be absolute: hub clients follow relative redirects
-	// before reading metadata off the response they end up looking at.
-	http.Redirect(w, r, m.externalBase(r)+"/xet-bridge/"+oid, http.StatusFound)
-	return true
+	return m.serveIngested(w, r, oid)
 }
 
-// setXETLinkHeaders attaches the xet Link headers and file hash when the
-// object's reconstruction is known, steering capable clients to the CAS.
-func (m *Mirror) setXETLinkHeaders(w http.ResponseWriter, r *http.Request, oid string) {
+// MintXETToken mints a short-lived CAS access token for xet transfers,
+// returning the externally visible CAS base URL, the token, and its expiry.
+func (m *Mirror) MintXETToken(r *http.Request) (casURL, token string, expiresAt time.Time) {
+	if m.mint == nil {
+		return "", "", time.Time{}
+	}
+	tok, exp := m.mint(time.Now())
+	return m.ExternalBase(r), tok, time.Unix(exp, 0)
+}
+
+// CanMintToken reports whether the mirror can mint CAS access tokens.
+func (m *Mirror) CanMintToken() bool {
+	return m.mint != nil
+}
+
+// SetXETLinkHeaders writes the hub metadata headers for an LFS object, plus
+// the xet Link headers and file hash when the object's reconstruction is
+// known, steering capable clients to the CAS.
+func (m *Mirror) SetXETLinkHeaders(w http.ResponseWriter, r *http.Request, oid string, size int64) {
+	w.Header().Set("ETag", fmt.Sprintf("%q", oid))
+	w.Header().Set("X-Linked-Etag", fmt.Sprintf("%q", oid))
+	w.Header().Set("X-Linked-Size", strconv.FormatInt(size, 10))
+	if m.xetStorage == nil {
+		return
+	}
 	digest, ok := parseOID(oid)
 	if !ok {
 		return
@@ -123,32 +159,25 @@ func (m *Mirror) setXETLinkHeaders(w http.ResponseWriter, r *http.Request, oid s
 	if err != nil {
 		return
 	}
-	base := m.externalBase(r)
+	base := m.ExternalBase(r)
 	w.Header().Add("Link", fmt.Sprintf("<%s/xet-token>; rel=\"xet-auth\", <%s/v1/reconstructions/%s>; rel=\"xet-reconstruction-info\"", base, base, fh.String()))
 	w.Header().Set("X-Xet-Hash", fh.String())
 }
 
-// setLinkedMetadataHeaders writes the hub metadata headers for an LFS object.
-func setLinkedMetadataHeaders(w http.ResponseWriter, oid string, size int64) {
-	w.Header().Set("ETag", fmt.Sprintf("%q", oid))
-	w.Header().Set("X-Linked-Etag", fmt.Sprintf("%q", oid))
-	w.Header().Set("X-Linked-Size", strconv.FormatInt(size, 10))
-}
-
-// serveKey rewrites the request to the given resolve key and hands it to the
-// xet mirror handler, preserving the original headers and host so Range
-// requests and externally visible URLs keep working.
-func (m *Mirror) serveKey(w http.ResponseWriter, r *http.Request, key string) {
-	if m.mirrorHandler == nil {
-		http.NotFound(w, r)
-		return
+// ExternalBase returns the externally visible base URL, derived from the
+// request when no external URL is configured.
+func (m *Mirror) ExternalBase(r *http.Request) string {
+	if m.externalURL != "" {
+		return strings.TrimRight(m.externalURL, "/")
 	}
-	r2 := r.Clone(r.Context())
-	r2.URL = &url.URL{Path: key}
-	r2.RequestURI = ""
-	r2.Body = http.NoBody
-	r2.ContentLength = 0
-	m.mirrorHandler.ServeHTTP(w, r2)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	}
+	return scheme + "://" + r.Host
 }
 
 // HasObject reports whether the xet storage holds a fully ingested file with
@@ -163,35 +192,6 @@ func (m *Mirror) HasObject(ctx context.Context, oid string) bool {
 	}
 	_, err := m.xetStorage.GetFileHashBySHA256(ctx, xetNamespace, digest)
 	return err == nil
-}
-
-// XETUploadEnabled reports whether the data plane can accept xet uploads.
-func (m *Mirror) XETUploadEnabled() bool {
-	return m.xetStorage != nil
-}
-
-// MintXETToken mints a short-lived CAS access token for xet transfers,
-// returning the externally visible CAS base URL, the token, and its expiry.
-func (m *Mirror) MintXETToken(r *http.Request) (casURL, token string, expiresAt time.Time) {
-	now := time.Now()
-	tok, exp := m.mintToken(now)
-	return m.externalBase(r), tok, time.Unix(exp, 0)
-}
-
-// externalBase returns the externally visible base URL, derived from the
-// request when no external URL is configured.
-func (m *Mirror) externalBase(r *http.Request) string {
-	if m.externalURL != "" {
-		return strings.TrimRight(m.externalURL, "/")
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
-	}
-	return scheme + "://" + r.Host
 }
 
 // KnowsObject reports whether the object is either fully ingested or known
@@ -247,11 +247,12 @@ func parseOID(oid string) ([32]byte, bool) {
 // missing ones sequentially in the background, falling back to the source's
 // git-lfs batch API when an ingest fails.
 func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string]resolveTarget) {
-	if m.mirrorHandler == nil || len(oids) == 0 {
+	if m.xetMirror == nil || len(oids) == 0 {
 		return
 	}
 	for _, oid := range oids {
-		m.oidIndex.Store(oid, targets[oid])
+		t := targets[oid]
+		m.RegisterObject(oid, t.repoName, t.commit, t.path, t.size)
 	}
 	m.background.Add(1)
 	go func() {
@@ -347,7 +348,7 @@ func (m *Mirror) fallbackDownload(ctx context.Context, sourceURL, oid string, si
 // ingest runs one ingest through the xet mirror and waits for the entry to
 // land; abandoning the wait on ctx cancel never cancels the ingest itself.
 func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
-	in, err := m.mirrorHandler.Ingest(
+	in, err := m.xetMirror.Ingest(
 		escapePath(strings.TrimPrefix(target.repoName, "/")),
 		target.commit,
 		escapePath(target.path),
@@ -368,43 +369,4 @@ func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
 // Ingest shares tasks and entries with the HTTP resolve path.
 func escapePath(p string) string {
 	return (&url.URL{Path: p}).EscapedPath()
-}
-
-// xetTokenTTL bounds the life of minted CAS tokens.
-const xetTokenTTL = 60 * time.Minute
-
-// xetTokenMethod and xetTokenPath are the fixed signing scope of CAS
-// tokens: one grant covers the whole CAS surface. The slash makes the
-// method an invalid HTTP token, so no wire request can ever replay a CAS
-// token through the method+URL-bound user auth chain, and vice versa.
-const (
-	xetTokenMethod = "xet/cas"
-	xetTokenPath   = "/"
-)
-
-// NewXETTokenScheme returns the CAS token mint/validate pair: hfd's signed
-// token mechanism when a validator is injected, otherwise a process-local
-// random-key issuer.
-func NewXETTokenScheme(v authenticate.TokenSignValidator) (mint func(time.Time) (token string, exp int64), authFn func(string) bool, err error) {
-	if v != nil {
-		mint = func(now time.Time) (string, int64) {
-			tok, err := v.Sign(context.Background(), xetTokenMethod, xetTokenPath, "xet-cas", xetTokenTTL)
-			if err != nil || tok == "" {
-				// Fail closed: an empty token cannot pass the CAS AuthFunc.
-				slog.Error("mint CAS token", "error", err)
-				return "", 0
-			}
-			return tok, now.Add(xetTokenTTL).Unix()
-		}
-		authFn = func(tok string) bool {
-			_, _, ok, err := v.Validate(context.Background(), xetTokenMethod, xetTokenPath, tok)
-			return err == nil && ok
-		}
-		return mint, authFn, nil
-	}
-	issuer, err := xettoken.NewIssuer(nil, xetTokenTTL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create token issuer: %w", err)
-	}
-	return issuer.Mint, func(tok string) bool { return issuer.Validate(tok, time.Now()) }, nil
 }

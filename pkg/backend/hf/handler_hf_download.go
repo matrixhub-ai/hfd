@@ -178,17 +178,30 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			// Hub parity: fully ingested files answer with metadata and a
 			// redirect to the sha256 bridge; only in-flight ingests stream
 			// bytes on this response (via the mirror's spool).
-			if h.mirror.ServeIngestedRedirect(w, r, ptr.OID()) {
+			if h.mirror.HasObject(r.Context(), ptr.OID()) {
+				h.mirror.SetXETLinkHeaders(w, r, ptr.OID(), ptr.Size())
+				if ptr.Size() == 0 {
+					w.Header().Set("Content-Length", "0")
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				// Absolute Location: hub clients follow relative redirects
+				// before reading metadata off the response they end up
+				// looking at.
+				http.Redirect(w, r, h.mirror.ExternalBase(r)+"/xet-bridge/"+ptr.OID(), http.StatusFound)
 				return
 			}
-			// Delegate to the xet mirror data plane: it streams while
-			// ingesting and ingests on miss. Prefer the commit hash so cache
-			// entries stay immutable.
 			resolveRev := commitHash
 			if resolveRev == "" {
 				resolveRev = rev
 			}
-			if h.mirror.ServeResolve(w, r, ri.RepoName, resolveRev, path) {
+			// Register the pointer's target so the OID-keyed data plane
+			// (and later LFS batch lookups) also covers revisions outside
+			// pull-scan tips. ServeOID streams while ingesting and ingests
+			// on miss; prefer the commit hash so cache entries stay
+			// immutable.
+			h.mirror.RegisterObject(ptr.OID(), ri.RepoName, resolveRev, path, ptr.Size())
+			if h.mirror.ServeOID(w, r, ptr.OID()) {
 				return
 			}
 		}

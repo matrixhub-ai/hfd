@@ -9,8 +9,8 @@ import (
 
 	"github.com/gorilla/handlers"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
@@ -54,7 +54,7 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return fmt.Errorf("prepare authenticators: %w", err)
 	}
-	mint, authFn, err := mirror.NewXETTokenScheme(auth.TokenSign)
+	mint, authFn, err := authenticate.NewXETTokenScheme(auth.TokenSign)
 	if err != nil {
 		return fmt.Errorf("prepare XET token scheme: %w", err)
 	}
@@ -64,20 +64,23 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return fmt.Errorf("prepare XET client: %w", err)
 	}
-	mirrorHandler, err := buildXETMirrorHandler(cfg, xs, xetC, mint)
+	engine, err := buildXETMirror(cfg, xs, xetC)
 	if err != nil {
-		return fmt.Errorf("prepare XET mirror handler: %w", err)
+		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
+	hubHandler := buildXETHubHandler(cfg, engine, mint)
 	// The mirror is built with the hooks and the hooks call back into the mirror.
-	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, mint, xetC, mirrorHandler)
+	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, xetC, engine, mint)
 	if err != nil {
 		return fmt.Errorf("prepare mirror: %w", err)
 	}
 	hooks.mirror = sharedMirror
 
 	// Phase 4: frontends.
-	xetComposition := buildXETComposition(xs, authFn, mirrorHandler)
+	// The backends serve from the mirror's data plane.
+	xetComposition := buildXETComposition(xs, authFn, hubHandler)
 	handler := buildHTTPHandler(st, hooks, sharedMirror, auth, authFn, xetComposition)
+	handler = wrapInternalAPI(ctx, cfg, xs, handler)
 	var sshServer *backendssh.Server
 	if cfg.SSHAddr != "" {
 		sshServer, err = buildSSHServer(ctx, cfg, st, hooks, sharedMirror, auth)

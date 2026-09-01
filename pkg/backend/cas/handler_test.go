@@ -14,8 +14,10 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
+	xethf "github.com/wzshiming/xet/server/hf"
 	xetstorage "github.com/wzshiming/xet/storage"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
@@ -27,10 +29,10 @@ func (sentinelNext) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusTeapot)
 }
 
-// newXETMirror assembles a mirror and the xet CAS composition the way
-// cmd/hfd does; the xet mirror answers the read-token routes when an
+// newXETStack assembles the minting mirror and the xet CAS composition the
+// way cmd/hfd does; the hub front end answers the read-token routes when an
 // upstream exists, as the ungated pass-through test observes.
-func newXETMirror(t *testing.T) (*mirror.Mirror, http.Handler) {
+func newXETStack(t *testing.T) (m *mirror.Mirror, composition http.Handler) {
 	t.Helper()
 	upstream := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(upstream.Close)
@@ -45,45 +47,45 @@ func newXETMirror(t *testing.T) (*mirror.Mirror, http.Handler) {
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
-	mint, authFn, err := mirror.NewXETTokenScheme(nil)
+	mint, authFn, err := authenticate.NewXETTokenScheme(nil)
 	if err != nil {
 		t.Fatalf("new token scheme: %v", err)
 	}
-	mirrorHandler, err := xetmirror.NewHandler(
+	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
 		xetmirror.WithUpstream(upstream.URL),
 		xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
 		xetmirror.WithClient(client),
-		xetmirror.WithMintToken(mint),
-		xetmirror.WithNext(http.NotFoundHandler()),
 	)
 	if err != nil {
-		t.Fatalf("new xet mirror handler: %v", err)
+		t.Fatalf("new xet mirror engine: %v", err)
 	}
-	dataPlane := xetserver.NewHandler(
+	var hubHandler http.Handler = xethf.NewHandler(
+		xethf.WithMirror(engine),
+		xethf.WithMintToken(mint),
+		xethf.WithNext(http.NotFoundHandler()),
+	)
+	composition = xetserver.NewHandler(
 		xetserver.WithStorage(xs),
 		xetserver.WithAuthFunc(authFn),
-		xetserver.WithNext(mirrorHandler),
+		xetserver.WithNext(hubHandler),
 	)
-	m, err := mirror.NewMirror(
+	m, err = mirror.NewMirror(
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),
-		mirror.WithMirrorHandler(mirrorHandler),
 		mirror.WithMintToken(mint),
-		mirror.WithDataDir(dataDir),
 	)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
-	t.Cleanup(m.Wait)
-	return m, dataPlane
+	return m, composition
 }
 
-// newTokenHandler builds a handler over the mirror with the sentinel as
-// next, so tests observe requests that delegate past the route table.
+// newTokenHandler builds a handler over the minting mirror with the sentinel
+// as next, so tests observe requests that delegate past the route table.
 func newTokenHandler(t *testing.T, hook permission.PermissionHookFunc) *Handler {
 	t.Helper()
-	m, _ := newXETMirror(t)
+	m, _ := newXETStack(t)
 	return NewHandler(
 		WithMirror(m),
 		WithPermissionHookFunc(hook),
@@ -201,15 +203,15 @@ func TestReadTokenDelegates(t *testing.T) {
 		hookCalls = append(hookCalls, fmt.Sprintf("%v %s", op, repoName))
 		return true, nil
 	}
-	m, dataPlane := newXETMirror(t)
+	m, composition := newXETStack(t)
 	h := NewHandler(
 		WithMirror(m),
 		WithPermissionHookFunc(hook),
-		WithNext(dataPlane),
+		WithNext(composition),
 	)
 
-	// Read-token and /xet-token carry no gate route; the xet mirror answers
-	// them past the chain.
+	// Read-token and /xet-token carry no gate route; the xet hub front end
+	// answers them past the chain.
 	for _, path := range []string{"/api/models/org/repo/xet-read-token/main", "/xet-token"} {
 		rec := get(h, path)
 		if rec.Code != http.StatusOK {
