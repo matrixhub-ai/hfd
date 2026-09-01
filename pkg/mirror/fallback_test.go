@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,7 +52,13 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 
 	lfsSrv := srv // batch and content live on the same server
 
-	dataDir := filepath.Join(t.TempDir(), "xet")
+	// Removed best-effort: the engine's ingest finalize can outlive the test
+	// body, and strict t.TempDir cleanup races it.
+	dataDir, err := os.MkdirTemp("", "mirror-xet-data")
+	if err != nil {
+		t.Fatalf("create xet data dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
 	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)

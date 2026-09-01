@@ -33,7 +33,7 @@ import (
 // is built over.
 func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Storage) xetstorage.Storage) (*mirror.Mirror, http.Handler) {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "xet")
+	dataDir := newXETDataDir(t)
 	chunksDir := filepath.Join(dataDir, "chunks")
 	if err := os.MkdirAll(chunksDir, 0755); err != nil {
 		t.Fatalf("create xet chunk cache dir: %v", err)
@@ -86,6 +86,18 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	// Background work must not outlive the temp data dir.
 	t.Cleanup(m.Wait)
 	return m, cas
+}
+
+// newXETDataDir returns a data dir removed best-effort: the engine's ingest
+// finalize can outlive the test body, and strict t.TempDir cleanup races it.
+func newXETDataDir(t *testing.T) string {
+	t.Helper()
+	dataDir, err := os.MkdirTemp("", "hf-xet-data")
+	if err != nil {
+		t.Fatalf("create xet data dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+	return dataDir
 }
 
 // newLFSRepo creates org/repo in the storage with the given LFS pointer

@@ -71,7 +71,7 @@ func staticDestination(path string) mirror.DestinationFunc {
 // a Mirror over them with the extra options appended.
 func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirror {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "xet")
+	dataDir := newXETDataDir(t)
 	chunksDir := filepath.Join(dataDir, "chunks")
 	if err := os.MkdirAll(chunksDir, 0755); err != nil {
 		t.Fatalf("create xet chunk cache dir: %v", err)
@@ -111,6 +111,18 @@ func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirr
 	// Background prefetches must not outlive the temp data dir.
 	t.Cleanup(m.Wait)
 	return m
+}
+
+// newXETDataDir returns a data dir removed best-effort: the engine's ingest
+// finalize can outlive the test body, and strict t.TempDir cleanup races it.
+func newXETDataDir(t *testing.T) string {
+	t.Helper()
+	dataDir, err := os.MkdirTemp("", "mirror-xet-data")
+	if err != nil {
+		t.Fatalf("create xet data dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+	return dataDir
 }
 
 func TestIsMirrorSourceAndDestinationUnset(t *testing.T) {
