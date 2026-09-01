@@ -13,9 +13,6 @@ import (
 	"time"
 
 	xetclient "github.com/wzshiming/xet/client"
-	xetmirror "github.com/wzshiming/xet/mirror"
-	xetserver "github.com/wzshiming/xet/server"
-	xethf "github.com/wzshiming/xet/server/hf"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -30,12 +27,10 @@ func (sentinelNext) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusTeapot)
 }
 
-// newXETStack assembles the minting mirror and the xet CAS composition the
-// way cmd/hfd does; the shadow test mounts the composition as next.
-func newXETStack(t *testing.T) (m *mirror.Mirror, composition http.Handler) {
+// newMintingMirror assembles a mirror that can mint CAS credentials, the
+// pieces built the way cmd/hfd does.
+func newMintingMirror(t *testing.T) *mirror.Mirror {
 	t.Helper()
-	upstream := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(upstream.Close)
 	dataDir := filepath.Join(t.TempDir(), "xet")
 	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
 	if err != nil {
@@ -47,30 +42,11 @@ func newXETStack(t *testing.T) (m *mirror.Mirror, composition http.Handler) {
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
-	mint, authFn, err := authenticate.NewXETTokenScheme(nil)
+	mint, _, err := authenticate.NewXETTokenScheme(nil)
 	if err != nil {
 		t.Fatalf("new token scheme: %v", err)
 	}
-	engine, err := xetmirror.NewMirror(
-		xetmirror.WithStorage(xs),
-		xetmirror.WithUpstream(upstream.URL),
-		xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
-		xetmirror.WithClient(client),
-	)
-	if err != nil {
-		t.Fatalf("new xet mirror engine: %v", err)
-	}
-	var hubHandler http.Handler = xethf.NewHandler(
-		xethf.WithMirror(engine),
-		xethf.WithMintToken(mint),
-		xethf.WithNext(http.NotFoundHandler()),
-	)
-	composition = xetserver.NewHandler(
-		xetserver.WithStorage(xs),
-		xetserver.WithAuthFunc(authFn),
-		xetserver.WithNext(hubHandler),
-	)
-	m, err = mirror.NewMirror(
+	m, err := mirror.NewMirror(
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),
 		mirror.WithMintToken(mint),
@@ -78,16 +54,15 @@ func newXETStack(t *testing.T) (m *mirror.Mirror, composition http.Handler) {
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
-	return m, composition
+	return m
 }
 
 // newTokenHandler builds a handler over the minting mirror with the sentinel
 // as next, so tests observe requests that delegate past the route table.
 func newTokenHandler(t *testing.T, hook permission.PermissionHookFunc) *Handler {
 	t.Helper()
-	m, _ := newXETStack(t)
 	return NewHandler(
-		WithMirror(m),
+		WithMirror(newMintingMirror(t)),
 		WithPermissionHookFunc(hook),
 		WithNext(sentinelNext{}),
 	)
@@ -256,14 +231,14 @@ func TestTokenDelegatesNonGET(t *testing.T) {
 		events = append(events, fmt.Sprintf("gate %v", op))
 		return true, nil
 	}
-	m, _ := newXETStack(t)
+	m := newMintingMirror(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		events = append(events, "next")
 		w.WriteHeader(http.StatusTeapot)
 	})
 	h := NewHandler(WithMirror(m), WithPermissionHookFunc(hook), WithNext(next))
 
-	// Non-GET token semantics belong to the composition mounted as next.
+	// Non-GET token semantics belong to the chain behind this handler.
 	for _, tt := range []struct {
 		path       string
 		wantEvents []string
@@ -328,35 +303,6 @@ func TestNoMintMirrorDelegates(t *testing.T) {
 		if rec := get(h, path); rec.Code != http.StatusTeapot {
 			t.Errorf("no-mint GET %s status = %d, want 418 delegated to next", path, rec.Code)
 		}
-	}
-}
-
-func TestTokenRoutesShadowHubFrontEnd(t *testing.T) {
-	var hookCalls []string
-	hook := func(_ context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-		hookCalls = append(hookCalls, fmt.Sprintf("%v %s", op, repoName))
-		return true, nil
-	}
-	m, composition := newXETStack(t)
-	h := NewHandler(
-		WithMirror(m),
-		WithPermissionHookFunc(hook),
-		WithNext(composition),
-	)
-
-	// The hub front end behind next also answers these routes but never sets
-	// Cache-Control — assertMintedToken proves cas answered first.
-	rec := get(h, "/api/models/org/repo/xet-read-token/main")
-	assertMintedToken(t, "/api/models/org/repo/xet-read-token/main", rec)
-	wantCalls := []string{fmt.Sprintf("%v org/repo", permission.OperationReadRepo)}
-	if !slices.Equal(hookCalls, wantCalls) {
-		t.Errorf("read-token hook calls = %v, want %v", hookCalls, wantCalls)
-	}
-
-	hookCalls = nil
-	assertMintedToken(t, "/xet-token", get(h, "/xet-token"))
-	if len(hookCalls) != 0 {
-		t.Errorf("hook called for /xet-token: %v", hookCalls)
 	}
 }
 

@@ -813,8 +813,7 @@ func TestXETTokenRoutes(t *testing.T) {
 		if got := resp.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("GET %s Content-Type = %q, want application/json", url, got)
 		}
-		// The xet hub front end never sets Cache-Control: no-store proves the
-		// cas backend answered, not a handler behind it.
+		// The cas backend marks minted credentials uncacheable.
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 			t.Errorf("GET %s Cache-Control = %q, want no-store", url, got)
 		}

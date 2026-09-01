@@ -1,13 +1,12 @@
 // Package cas serves the hub-side control plane of the xet CAS data plane:
 // the three token routes that mint CAS credentials. Write-token is gated on
 // the update operation, read-token on read, and /xet-token is ungated. The
-// xet library ships no server-side write-token, so this is the sole mint
-// source for uploads; the read routes shadow the xet hub front end's
-// equivalents so they keep working without a pull upstream (which
-// Mirror.SetXETLinkHeaders advertises). Responses carry both the X-Xet-*
-// headers and the JSON body, serving huggingface_hub >= 1.29 (headers-only)
-// and older clients (body) alike. Everything else falls through to the next
-// handler.
+// xet library's server side carries no token routes in this chain, so this
+// backend is the sole mint source — including the /xet-token endpoint that
+// Mirror.SetXETLinkHeaders advertises on downloads. Responses carry both the
+// X-Xet-* headers and the JSON body, serving huggingface_hub >= 1.29
+// (headers-only) and older clients (body) alike. Everything else falls
+// through to the next handler.
 package cas
 
 import (
