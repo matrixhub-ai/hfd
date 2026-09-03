@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/gorilla/handlers"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
@@ -243,86 +245,141 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 	return auth, nil
 }
 
-// buildXETComposition assembles the xet CAS transfer tail: the CAS server
-// over the xet storage, answering 404 for everything else. Unlike xetd there
-// is no hub front end behind it — hfd's own backends serve the hub control
-// plane (resolve/tree in backendhf, the token routes in backendcas).
-func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool) http.Handler {
-	return xetserver.NewHandler(
-		xetserver.WithStorage(xs),
-		xetserver.WithAuthFunc(authFn),
-		xetserver.WithNext(http.NotFoundHandler()),
-	)
+type middleware func(next http.Handler) http.Handler
+
+// chain composes middlewares so the first one is the outermost, i.e. the
+// argument order is the request order.
+func chain(tail http.Handler, mws ...middleware) http.Handler {
+	for i := len(mws) - 1; i >= 0; i-- {
+		tail = mws[i](tail)
+	}
+	return tail
 }
 
-// buildHTTPHandler composes the HTTP handler chain: HF API → LFS → HTTP Git
-// backends over the CAS token backend and the injected xet composition
-// tail, with authentication and CAS-credential recognition at the head. The
-// hf/lfs/cas backends serve from the assembled data plane.
-func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool, xetComposition http.Handler) http.Handler {
-	handler := xetComposition
+// passthrough is the middleware for a layer that is not enabled.
+func passthrough(next http.Handler) http.Handler { return next }
 
-	handler = backendcas.NewHandler(
-		backendcas.WithMirror(sharedMirror),
-		backendcas.WithPermissionHookFunc(hooks.permission),
-		backendcas.WithNext(handler),
-	)
-
-	handler = backendhf.NewHandler(
-		backendhf.WithStorage(st),
-		backendhf.WithNext(handler),
-		backendhf.WithMirror(sharedMirror),
-		backendhf.WithPreOpenHookFunc(hooks.preOpen),
-		backendhf.WithPermissionHookFunc(hooks.permission),
-		backendhf.WithPreReceiveHookFunc(hooks.preReceive),
-		backendhf.WithPostReceiveHookFunc(hooks.postReceive),
-	)
-
-	handler = backendlfs.NewHandler(
-		backendlfs.WithStorage(st),
-		backendlfs.WithNext(handler),
-		backendlfs.WithMirror(sharedMirror),
-		backendlfs.WithPermissionHookFunc(hooks.permission),
-		backendlfs.WithTokenSignValidator(auth.TokenSign),
-	)
-
-	handler = backendhttp.NewHandler(
-		backendhttp.WithStorage(st),
-		backendhttp.WithNext(handler),
-		backendhttp.WithMirror(sharedMirror),
-		backendhttp.WithPreOpenHookFunc(hooks.preOpen),
-		backendhttp.WithPermissionHookFunc(hooks.permission),
-		backendhttp.WithPreReceiveHookFunc(hooks.preReceive),
-		backendhttp.WithPostReceiveHookFunc(hooks.postReceive),
-	)
-
-	handler = authenticate.NewHandler(
-		authenticate.WithNext(handler),
-		authenticate.WithBasicAuthValidator(auth.BasicAuth),
-		authenticate.WithTokenValidator(auth.Token),
-		authenticate.WithTokenSignValidator(auth.TokenSign),
-	)
-
-	// CAS credentials are hfd-signed with a fixed scope; recognize them ahead
-	// of the per-URL validators, which would otherwise 401 them.
-	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), handler)
-
-	return handler
+func requestLogging(w io.Writer) middleware {
+	return func(next http.Handler) http.Handler {
+		return handlers.CombinedLoggingHandler(w, next)
+	}
 }
 
-// wrapInternalAPI mounts the /internal/ management endpoints (file listing,
-// unlink, GC sweep) around the whole chain when enabled; no-op otherwise.
-// Outermost because operator requests bypass user authentication, as in xetd.
-func wrapInternalAPI(ctx context.Context, cfg *config, xs xetstorage.Storage, next http.Handler) http.Handler {
+// internalAPI mounts the /internal/ management endpoints (file listing,
+// unlink, GC sweep) when enabled; they are unauthenticated, as in xetd.
+func internalAPI(ctx context.Context, cfg *config, xs xetstorage.Storage) middleware {
 	if !cfg.Internal {
-		return next
+		return passthrough
 	}
 	slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
-	return xetinternalapi.NewHandler(
-		xetinternalapi.WithStorage(xs),
-		xetinternalapi.WithGCGrace(1*time.Hour),
-		xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
-		xetinternalapi.WithNext(next),
+	return func(next http.Handler) http.Handler {
+		return xetinternalapi.NewHandler(
+			xetinternalapi.WithStorage(xs),
+			xetinternalapi.WithGCGrace(1*time.Hour),
+			xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
+			xetinternalapi.WithNext(next),
+		)
+	}
+}
+
+// casTokenRecognizer maps hfd-signed CAS credentials, which carry a fixed
+// scope rather than a URL, to the xet-cas user.
+func casTokenRecognizer(authFn func(string) bool) middleware {
+	return func(next http.Handler) http.Handler {
+		return authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), next)
+	}
+}
+
+func authentication(auth *authenticate.Authenticators) middleware {
+	return func(next http.Handler) http.Handler {
+		return authenticate.NewHandler(
+			authenticate.WithNext(next),
+			authenticate.WithBasicAuthValidator(auth.BasicAuth),
+			authenticate.WithTokenValidator(auth.Token),
+			authenticate.WithTokenSignValidator(auth.TokenSign),
+		)
+	}
+}
+
+// gitHTTPBackend serves the git smart HTTP protocol.
+func gitHTTPBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror) middleware {
+	return func(next http.Handler) http.Handler {
+		return backendhttp.NewHandler(
+			backendhttp.WithStorage(st),
+			backendhttp.WithNext(next),
+			backendhttp.WithMirror(m),
+			backendhttp.WithPreOpenHookFunc(hooks.preOpen),
+			backendhttp.WithPermissionHookFunc(hooks.permission),
+			backendhttp.WithPreReceiveHookFunc(hooks.preReceive),
+			backendhttp.WithPostReceiveHookFunc(hooks.postReceive),
+		)
+	}
+}
+
+// lfsBackend serves the git LFS API from the mirror's data plane.
+func lfsBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators) middleware {
+	return func(next http.Handler) http.Handler {
+		return backendlfs.NewHandler(
+			backendlfs.WithStorage(st),
+			backendlfs.WithNext(next),
+			backendlfs.WithMirror(m),
+			backendlfs.WithPermissionHookFunc(hooks.permission),
+			backendlfs.WithTokenSignValidator(auth.TokenSign),
+		)
+	}
+}
+
+// hfBackend serves the HF hub API (resolve/tree) from the mirror's data plane.
+func hfBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror) middleware {
+	return func(next http.Handler) http.Handler {
+		return backendhf.NewHandler(
+			backendhf.WithStorage(st),
+			backendhf.WithNext(next),
+			backendhf.WithMirror(m),
+			backendhf.WithPreOpenHookFunc(hooks.preOpen),
+			backendhf.WithPermissionHookFunc(hooks.permission),
+			backendhf.WithPreReceiveHookFunc(hooks.preReceive),
+			backendhf.WithPostReceiveHookFunc(hooks.postReceive),
+		)
+	}
+}
+
+// casBackend serves the CAS token routes from the mirror's data plane.
+func casBackend(hooks *serverHooks, m *mirror.Mirror) middleware {
+	return func(next http.Handler) http.Handler {
+		return backendcas.NewHandler(
+			backendcas.WithMirror(m),
+			backendcas.WithPermissionHookFunc(hooks.permission),
+			backendcas.WithNext(next),
+		)
+	}
+}
+
+// xetCASServer serves the xet CAS transfer routes over the xet storage. Unlike
+// xetd there is no hub front end behind it — hfd's own backends serve the hub
+// control plane (resolve/tree in hfBackend, the token routes in casBackend).
+func xetCASServer(xs xetstorage.Storage, authFn func(string) bool) middleware {
+	return func(next http.Handler) http.Handler {
+		return xetserver.NewHandler(
+			xetserver.WithStorage(xs),
+			xetserver.WithAuthFunc(authFn),
+			xetserver.WithNext(next),
+		)
+	}
+}
+
+// buildHTTPHandler lists the HTTP layers in request order, outermost first.
+func buildHTTPHandler(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool) http.Handler {
+	return chain(http.NotFoundHandler(),
+		requestLogging(os.Stderr),
+		internalAPI(ctx, cfg, xs),  // operator endpoints bypass user auth
+		casTokenRecognizer(authFn), // hfd-signed CAS credentials would 401 in the per-URL validators
+		authentication(auth),
+		gitHTTPBackend(st, hooks, m),
+		lfsBackend(st, hooks, m, auth),
+		hfBackend(st, hooks, m),
+		casBackend(hooks, m),
+		xetCASServer(xs, authFn),
 	)
 }
 
