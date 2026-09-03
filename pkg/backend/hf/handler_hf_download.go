@@ -180,14 +180,14 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			// bytes on this response (via the mirror's spool).
 			if h.mirror.HasObject(r.Context(), ptr.OID()) {
 				h.mirror.SetXETLinkHeaders(w, r, ptr.OID(), ptr.Size())
-				if ptr.Size() == 0 {
-					w.Header().Set("Content-Length", "0")
+				// huggingface_hub >= 1.30 follows same-host redirects on its
+				// metadata HEAD and reads the headers off the final response,
+				// which the bridge cannot supply; answer the probe here.
+				if ptr.Size() == 0 || r.Method == http.MethodHead {
+					w.Header().Set("Content-Length", strconv.FormatInt(ptr.Size(), 10))
 					w.WriteHeader(http.StatusOK)
 					return
 				}
-				// Absolute Location: hub clients follow relative redirects
-				// before reading metadata off the response they end up
-				// looking at.
 				http.Redirect(w, r, h.mirror.ExternalBase(r)+"/xet-bridge/"+ptr.OID(), http.StatusFound)
 				return
 			}

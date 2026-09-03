@@ -188,6 +188,29 @@ func TestResolveLFSRedirectsIngested(t *testing.T) {
 			t.Fatalf("status = %d, want 404", rec.Code)
 		}
 	})
+
+	// huggingface_hub >= 1.30 follows same-host redirects on the metadata
+	// HEAD, so the probe must carry the metadata itself instead of a 302.
+	t.Run("HeadAnswersMetadata", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, "/org/repo/resolve/main/model.bin", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		hd := rec.Result().Header
+		if hd.Get("Location") != "" {
+			t.Fatalf("Location = %q, want none", hd.Get("Location"))
+		}
+		if hd.Get("X-Repo-Commit") == "" || hd.Get("X-Xet-Hash") == "" {
+			t.Fatalf("metadata headers missing: X-Repo-Commit=%q X-Xet-Hash=%q", hd.Get("X-Repo-Commit"), hd.Get("X-Xet-Hash"))
+		}
+		if got := hd.Get("X-Linked-Etag"); got != `"`+oid+`"` {
+			t.Fatalf("X-Linked-Etag = %q", got)
+		}
+		if got, want := hd.Get("X-Linked-Size"), fmt.Sprint(len(data)); got != want || hd.Get("Content-Length") != want {
+			t.Fatalf("X-Linked-Size = %q, Content-Length = %q, want %s", got, hd.Get("Content-Length"), want)
+		}
+	})
 }
 
 // zeroSizeStorage fakes the index entry for one OID whose reconstruction is
