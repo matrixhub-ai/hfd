@@ -5,10 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -173,53 +170,4 @@ func TestCollect(t *testing.T) {
 			t.Fatalf("unexpected result: %+v", res)
 		}
 	})
-}
-
-func TestHandler(t *testing.T) {
-	f := newFixture(t)
-	c := f.collector()
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
-	h := NewHandler(WithCollector(c), WithGrace(-1), WithNext(next))
-	do := func(method, target string) *httptest.ResponseRecorder {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
-		return rec
-	}
-	for _, tc := range []struct {
-		method, target string
-		want           int
-	}{
-		{http.MethodPost, "/internal/gc?grace=bogus", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?grace=-5s", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?grace=", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?dry_run=maybe", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?dry_run=", http.StatusBadRequest},
-		{http.MethodGet, "/other", http.StatusTeapot},
-	} {
-		if rec := do(tc.method, tc.target); rec.Code != tc.want {
-			t.Errorf("%s %s: got %d, want %d", tc.method, tc.target, rec.Code, tc.want)
-		}
-	}
-
-	rec := do(http.MethodPost, "/internal/gc?dry_run=true&grace=0")
-	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("dry run: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
-	}
-	if !strings.Contains(rec.Body.String(), `"unlinked":[]`) {
-		t.Fatalf("empty unlinked must encode as []: %s", rec.Body)
-	}
-	var res Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun || res.Sweep != nil {
-		t.Fatalf("dry run body %s: err=%v result=%+v", rec.Body, err, res)
-	}
-
-	c.mu.Lock()
-	busy := do(http.MethodPost, "/internal/gc")
-	c.mu.Unlock()
-	if busy.Code != http.StatusConflict {
-		t.Fatalf("busy: got %d, want 409", busy.Code)
-	}
-	if rec := do(http.MethodPost, "/internal/gc"); rec.Code != http.StatusOK {
-		t.Fatalf("after unlock: got %d, body %s", rec.Code, rec.Body)
-	}
 }

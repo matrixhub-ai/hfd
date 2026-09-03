@@ -27,6 +27,7 @@ import (
 	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
@@ -281,10 +282,10 @@ func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetSt
 	slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
 	collector := gc.NewCollector(st.RepositoriesFS(), xs)
 	return func(next http.Handler) http.Handler {
-		return gc.NewHandler(
-			gc.WithCollector(collector),
-			gc.WithGrace(time.Hour),
-			gc.WithNext(xetinternalapi.NewHandler(
+		return backendinternalapi.NewHandler(
+			backendinternalapi.WithCollector(collector),
+			backendinternalapi.WithGCGrace(time.Hour),
+			backendinternalapi.WithNext(xetinternalapi.NewHandler(
 				xetinternalapi.WithStorage(xs),
 				xetinternalapi.WithGCGrace(1*time.Hour),
 				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),

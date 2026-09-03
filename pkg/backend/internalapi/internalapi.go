@@ -1,4 +1,5 @@
-package gc
+// Package internalapi serves the internal management endpoints hfd adds in front of xet's.
+package internalapi
 
 import (
 	"encoding/json"
@@ -9,14 +10,16 @@ import (
 
 	"github.com/gorilla/mux"
 	xetstorage "github.com/wzshiming/xet/storage"
+
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 )
 
-// Handler serves POST /internal/gc?dry_run=&grace= over a Collector.
+// Handler serves POST /internal/gc?dry_run=&grace= over a gc.Collector.
 // The endpoint is unauthenticated and meant to be mounted behind the operator-only --internal gate.
 // The collector's sweep lock is independent of xet's own /internal/gc/sweep handler, so the two must not be run concurrently.
 type Handler struct {
-	collector *Collector
-	grace     time.Duration
+	collector *gc.Collector
+	gcGrace   time.Duration
 	root      *mux.Router
 	next      http.Handler
 }
@@ -24,21 +27,21 @@ type Handler struct {
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
 
-// WithCollector sets the collector the endpoint runs.
-func WithCollector(c *Collector) Option {
+// WithCollector sets the collector the GC endpoint runs.
+func WithCollector(c *gc.Collector) Option {
 	return func(h *Handler) {
 		h.collector = c
 	}
 }
 
-// WithGrace sets the grace used when the request omits ?grace; zero = xetstorage.DefaultSweepGrace, negative = disabled.
-func WithGrace(d time.Duration) Option {
+// WithGCGrace sets the grace used when the request omits ?grace; zero = xetstorage.DefaultSweepGrace, negative = disabled.
+func WithGCGrace(d time.Duration) Option {
 	return func(h *Handler) {
-		h.grace = d
+		h.gcGrace = d
 	}
 }
 
-// WithNext sets the next http.Handler to call if a request does not match the gc route.
+// WithNext sets the next http.Handler to call if a request does not match any internal route.
 func WithNext(next http.Handler) Option {
 	return func(h *Handler) {
 		h.next = next
@@ -56,7 +59,7 @@ func NewHandler(opts ...Option) *Handler {
 	if h.next == nil {
 		h.next = http.NotFoundHandler()
 	}
-	h.root.HandleFunc("/internal/gc", h.handleCollect).Methods(http.MethodPost)
+	h.root.HandleFunc("/internal/gc", h.handleGC).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
 	return h
 }
@@ -66,8 +69,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.ServeHTTP(w, r)
 }
 
-func (h *Handler) handleCollect(w http.ResponseWriter, r *http.Request) {
-	opts := Options{Grace: h.grace}
+func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
+	opts := gc.Options{Grace: h.gcGrace}
 	q := r.URL.Query()
 	if q.Has("dry_run") {
 		dryRun, err := strconv.ParseBool(q.Get("dry_run"))

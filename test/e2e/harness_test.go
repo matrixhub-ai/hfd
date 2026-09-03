@@ -27,6 +27,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
@@ -245,10 +246,10 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		if !ok {
 			t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
 		}
-		handler = gc.NewHandler(
-			gc.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
-			gc.WithGrace(time.Hour),
-			gc.WithNext(xetinternalapi.NewHandler(
+		handler = backendinternalapi.NewHandler(
+			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
+			backendinternalapi.WithGCGrace(time.Hour),
+			backendinternalapi.WithNext(xetinternalapi.NewHandler(
 				xetinternalapi.WithStorage(xet.xs),
 				xetinternalapi.WithGCGrace(time.Hour),
 				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
