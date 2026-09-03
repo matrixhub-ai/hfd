@@ -21,11 +21,15 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
+	xetstorage "github.com/wzshiming/xet/storage"
+
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -45,6 +49,7 @@ type e2eServer struct {
 type e2eConfig struct {
 	ssh          bool
 	sshLFSURL    bool
+	internalAPI  bool
 	wraps        []func(http.Handler) http.Handler
 	authUser     string
 	authPass     string
@@ -69,6 +74,11 @@ func withSSH() e2eOption {
 // the client.
 func withSSHLFSURL() e2eOption {
 	return func(c *e2eConfig) { c.ssh = true; c.sshLFSURL = true }
+}
+
+// withInternalAPI mounts the /internal/ management endpoints outside auth the way cmd/hfd's internalAPI does.
+func withInternalAPI() e2eOption {
+	return func(c *e2eConfig) { c.internalAPI = true }
 }
 
 // withWrap applies mw outermost, so it observes every request including CAS
@@ -230,6 +240,22 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 			authenticate.WithTokenSignValidator(authenticate.NewTokenSignValidator([]byte(cfg.authPass))),
 		)
 	}
+	if cfg.internalAPI {
+		gcs, ok := xet.xs.(xetstorage.GCStore)
+		if !ok {
+			t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
+		}
+		handler = gc.NewHandler(
+			gc.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
+			gc.WithGrace(time.Hour),
+			gc.WithNext(xetinternalapi.NewHandler(
+				xetinternalapi.WithStorage(xet.xs),
+				xetinternalapi.WithGCGrace(time.Hour),
+				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
+				xetinternalapi.WithNext(handler),
+			)),
+		)
+	}
 	for _, w := range cfg.wraps {
 		handler = w(handler)
 	}
@@ -304,6 +330,24 @@ func (s *e2eServer) createRepo(t *testing.T, org, name string) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create repo status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func (s *e2eServer) deleteRepo(t *testing.T, org, name string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, s.httpURL+"/api/repos/delete", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build delete repo request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete repo status = %d, want 200", resp.StatusCode)
 	}
 }
 

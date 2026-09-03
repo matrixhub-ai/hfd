@@ -29,6 +29,7 @@ import (
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -98,8 +99,8 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 // buildXETStorage creates the xet content storage holding all LFS bytes: in
 // the S3 bucket when configured, under the data directory otherwise. In S3
 // mode xorb downloads presign straight to S3 — everything else is proxied.
-func buildXETStorage(ctx context.Context, cfg *config) (xetstorage.Storage, error) {
-	var xs xetstorage.Storage
+func buildXETStorage(ctx context.Context, cfg *config) (xetStore, error) {
+	var xs xetStore
 	var err error
 	if s3Configured(cfg) {
 		s3Opts := []xetstorage.S3Option{
@@ -247,6 +248,12 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 
 type middleware func(next http.Handler) http.Handler
 
+// xetStore is the xet storage together with the GC surface both xet backends implement.
+type xetStore interface {
+	xetstorage.Storage
+	xetstorage.GCStore
+}
+
 // chain composes middlewares so the first one is the outermost, i.e. the
 // argument order is the request order.
 func chain(tail http.Handler, mws ...middleware) http.Handler {
@@ -265,19 +272,24 @@ func requestLogging(w io.Writer) middleware {
 	}
 }
 
-// internalAPI mounts the /internal/ management endpoints (file listing,
-// unlink, GC sweep) when enabled; they are unauthenticated, as in xetd.
-func internalAPI(ctx context.Context, cfg *config, xs xetstorage.Storage) middleware {
+// internalAPI mounts the unauthenticated /internal/ management endpoints when enabled:
+// hfd's repository-aware POST /internal/gc in front of xet's file listing, unlink and GC sweep.
+func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore) middleware {
 	if !cfg.Internal {
 		return passthrough
 	}
 	slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
+	collector := gc.NewCollector(st.RepositoriesFS(), xs)
 	return func(next http.Handler) http.Handler {
-		return xetinternalapi.NewHandler(
-			xetinternalapi.WithStorage(xs),
-			xetinternalapi.WithGCGrace(1*time.Hour),
-			xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
-			xetinternalapi.WithNext(next),
+		return gc.NewHandler(
+			gc.WithCollector(collector),
+			gc.WithGrace(time.Hour),
+			gc.WithNext(xetinternalapi.NewHandler(
+				xetinternalapi.WithStorage(xs),
+				xetinternalapi.WithGCGrace(1*time.Hour),
+				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
+				xetinternalapi.WithNext(next),
+			)),
 		)
 	}
 }
@@ -369,11 +381,11 @@ func xetCASServer(xs xetstorage.Storage, authFn func(string) bool) middleware {
 }
 
 // buildHTTPHandler lists the HTTP layers in request order, outermost first.
-func buildHTTPHandler(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool) http.Handler {
+func buildHTTPHandler(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool) http.Handler {
 	return chain(http.NotFoundHandler(),
 		requestLogging(os.Stderr),
-		internalAPI(ctx, cfg, xs),  // operator endpoints bypass user auth
-		casTokenRecognizer(authFn), // hfd-signed CAS credentials would 401 in the per-URL validators
+		internalAPI(ctx, cfg, st, xs), // operator endpoints bypass user auth
+		casTokenRecognizer(authFn),    // hfd-signed CAS credentials would 401 in the per-URL validators
 		authentication(auth),
 		gitHTTPBackend(st, hooks, m),
 		lfsBackend(st, hooks, m, auth),

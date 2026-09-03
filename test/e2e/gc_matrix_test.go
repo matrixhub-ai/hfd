@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"slices"
 	"testing"
 	"time"
 
@@ -35,13 +36,41 @@ type gcSweepResult struct {
 	Done        bool              `json:"done"`
 }
 
+// gcCollectResult carries the gc.Result fields the test asserts on.
+type gcCollectResult struct {
+	DryRun         bool           `json:"dry_run"`
+	Repositories   int            `json:"repositories"`
+	LiveObjects    int            `json:"live_objects"`
+	Unlinked       []string       `json:"unlinked"`
+	SkippedInGrace int            `json:"skipped_in_grace"`
+	Sweep          *gcSweepResult `json:"sweep"`
+}
+
+// mustGet follows redirects and returns the 200 body, failing the test otherwise.
+func mustGet(t *testing.T, url string) []byte {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read GET %s body: %v", url, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want 200 (body %q)", url, resp.StatusCode, body)
+	}
+	return body
+}
+
 // TestGCLifecycle drives the /internal/ management API end to end over the
 // assembled hfd chain: a pull-through mirror ingests an LFS object from an
 // upstream hfd server, /internal/files lists it, an anchored sweep leaves it
 // alone, unlinking both anchors lets the next sweep reclaim the bytes, and
 // the next resolve self-heals by re-ingesting from upstream. The internal
 // API wraps the chain outermost with the same options as cmd/hfd's
-// wrapInternalAPI. Library-level GC semantics stay covered upstream in xet;
+// internalAPI. Library-level GC semantics stay covered upstream in xet;
 // this test pins the hfd wiring. TestMain runs it under local and S3
 // storage; both xet storages implement GCStore, so the GC endpoints never
 // answer 501.
@@ -87,7 +116,7 @@ func TestGCLifecycle(t *testing.T) {
 		backendhttp.WithPreOpenHookFunc(preOpen),
 	)
 	// The wiring under test: the internal management API wraps the whole
-	// chain outermost, with the options cmd/hfd's wrapInternalAPI uses.
+	// chain outermost, with the options cmd/hfd's internalAPI uses.
 	handler = xetinternalapi.NewHandler(
 		xetinternalapi.WithStorage(xet.xs),
 		xetinternalapi.WithGCGrace(1*time.Hour),
@@ -106,23 +135,6 @@ func TestGCLifecycle(t *testing.T) {
 		if !t.Run(name, fn) {
 			t.FailNow()
 		}
-	}
-
-	mustGet := func(t *testing.T, url string) []byte {
-		t.Helper()
-		resp, err := http.Get(url)
-		if err != nil {
-			t.Fatalf("GET %s: %v", url, err)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read GET %s body: %v", url, err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s status = %d, want 200 (body %q)", url, resp.StatusCode, body)
-		}
-		return body
 	}
 
 	listFiles := func(t *testing.T) []gcFileEntry {
@@ -288,6 +300,105 @@ func TestGCLifecycle(t *testing.T) {
 		waitIngested(t)
 		if findEntry(listFiles(t)) == nil {
 			t.Fatalf("GET /internal/files misses sha256 %s after re-ingest", oid)
+		}
+	})
+}
+
+// TestGCCollect drives POST /internal/gc over the assembled chain: a deleted repository's LFS object becomes collectable once outside the grace window.
+func TestGCCollect(t *testing.T) {
+	s := newE2EServer(t, withInternalAPI())
+	s.createRepo(t, "gc-org", "keep")
+	s.createRepo(t, "gc-org", "drop")
+	keepData, dropData := makeBinaryData(128*1024, 11), makeBinaryData(128*1024, 22)
+	keepSum, dropSum := sha256.Sum256(keepData), sha256.Sum256(dropData)
+	keepOID, dropOID := hex.EncodeToString(keepSum[:]), hex.EncodeToString(dropSum[:])
+	pushViaXetBatch(t, s, "gc-org/keep", keepData)
+	pushViaXetBatch(t, s, "gc-org/drop", dropData)
+
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+
+	collect := func(t *testing.T, query string) gcCollectResult {
+		t.Helper()
+		resp, err := http.Post(s.httpURL+"/internal/gc"+query, "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /internal/gc%s: %v", query, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read collect body: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("collect status = %d, want 200 (body %q)", resp.StatusCode, body)
+		}
+		var res gcCollectResult
+		if err := json.Unmarshal(body, &res); err != nil {
+			t.Fatalf("decode collect result: %v", err)
+		}
+		return res
+	}
+
+	listed := func(t *testing.T) map[string]bool {
+		t.Helper()
+		var entries []gcFileEntry
+		if err := json.Unmarshal(mustGet(t, s.httpURL+"/internal/files"), &entries); err != nil {
+			t.Fatalf("decode /internal/files: %v", err)
+		}
+		set := map[string]bool{}
+		for _, e := range entries {
+			set[e.SHA256] = true
+		}
+		return set
+	}
+
+	step("DryRunKeepsAll", func(t *testing.T) {
+		res := collect(t, "?dry_run=true")
+		if !res.DryRun || res.Repositories != 2 || res.LiveObjects != 2 || len(res.Unlinked) != 0 || res.Sweep != nil {
+			t.Fatalf("dry run = %+v, want 2 repositories, 2 live objects, nothing unlinked, no sweep", res)
+		}
+	})
+
+	step("DeleteRepo", func(t *testing.T) {
+		s.deleteRepo(t, "gc-org", "drop")
+	})
+
+	step("GraceShields", func(t *testing.T) {
+		res := collect(t, "")
+		if len(res.Unlinked) != 0 || res.SkippedInGrace != 1 || res.Repositories != 1 {
+			t.Fatalf("collect in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", res)
+		}
+		if !listed(t)[dropOID] {
+			t.Fatalf("/internal/files lost %s inside the grace window", dropOID)
+		}
+	})
+
+	step("Collect", func(t *testing.T) {
+		// The fresh upload sits inside the default 1h grace window; grace=0 disables it.
+		res := collect(t, "?grace=0")
+		if !slices.Equal(res.Unlinked, []string{dropOID}) {
+			t.Fatalf("unlinked = %v, want [%s]", res.Unlinked, dropOID)
+		}
+		if res.Sweep == nil || !res.Sweep.Done || len(res.Sweep.SweptShards) == 0 || len(res.Sweep.SweptXorbs) == 0 {
+			t.Fatalf("sweep = %+v, want a finished sweep reclaiming shards and xorbs", res.Sweep)
+		}
+		files := listed(t)
+		if files[dropOID] || !files[keepOID] {
+			t.Fatalf("/internal/files lists drop=%v keep=%v, want false/true", files[dropOID], files[keepOID])
+		}
+		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
+			t.Fatalf("keep resolve after collect: got %d bytes, want %d", len(got), len(keepData))
+		}
+	})
+
+	step("Idempotent", func(t *testing.T) {
+		res := collect(t, "?grace=0")
+		if len(res.Unlinked) != 0 || res.Sweep == nil || len(res.Sweep.SweptShards) != 0 || len(res.Sweep.SweptXorbs) != 0 {
+			t.Fatalf("second collect = %+v, want nothing unlinked or swept", res)
 		}
 	})
 }

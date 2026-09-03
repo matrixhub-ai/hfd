@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 
@@ -23,7 +24,17 @@ func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
 			return nil
 		}
 
-		ptr, _ := r.parseLFS(obj.Hash)
+		reader, err := obj.Reader()
+		if err != nil {
+			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+		}
+		data, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+		}
+		// Only a decode failure means "not a pointer"; read errors above must surface.
+		ptr, _ := lfs.DecodePointer(bytes.NewReader(data))
 		if ptr == nil {
 			return nil
 		}
