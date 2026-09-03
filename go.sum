@@ -160,8 +160,8 @@ github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc h1:6gGzrCy
 github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc/go.mod h1:SbTiiiyXThcTnxcKtSZlHfYyJvGdiyvNB6lynLVye/8=
 github.com/wzshiming/httpseek v0.7.0 h1:fF5DkcNGoEAWbSmaiCn5r5TZB9Evw+EXERVkZbsqW+4=
 github.com/wzshiming/httpseek v0.7.0/go.mod h1:YoZhlLIwNjTBDXIT8NpK5zRjOgZouRXPaBfjVXdqMMs=
-github.com/wzshiming/xet v0.0.0-20260828154316-947d5b2aeb8c h1:4vA+fBTy/rp8sKDP6z7kShFkzwvZZ2vVV08YCBiabbg=
-github.com/wzshiming/xet v0.0.0-20260828154316-947d5b2aeb8c/go.mod h1:81Zzh2snBUsu61oZ3Mh4jWyCKmv9gyE68FvOaU1/Q+E=
+github.com/wzshiming/xet v0.0.0-20260903051423-4a0280fc754d h1:VGwuMmJfVY4XAac+np7OyvbbrMnMUepOurEH3xhnx/8=
+github.com/wzshiming/xet v0.0.0-20260903051423-4a0280fc754d/go.mod h1:81Zzh2snBUsu61oZ3Mh4jWyCKmv9gyE68FvOaU1/Q+E=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f h1:J9EGpcZtP0E/raorCMxlFGSTBrsSlaDGf3jU/qvAE2c=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
 github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 h1:EzJWgHovont7NscjpAxXsDA8S8BMYve8Y5+7cuRE7R0=
