@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/gorilla/handlers"
-
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -76,10 +74,7 @@ func run(ctx context.Context, cfg *config) error {
 	hooks.mirror = sharedMirror
 
 	// Phase 4: frontends.
-	// The backends serve from the mirror's data plane.
-	xetComposition := buildXETComposition(xs, authFn)
-	handler := buildHTTPHandler(st, hooks, sharedMirror, auth, authFn, xetComposition)
-	handler = wrapInternalAPI(ctx, cfg, xs, handler)
+	handler := buildHTTPHandler(ctx, cfg, st, xs, hooks, sharedMirror, auth, authFn)
 	var sshServer *backendssh.Server
 	if cfg.SSHAddr != "" {
 		sshServer, err = buildSSHServer(ctx, cfg, st, hooks, sharedMirror, auth)
@@ -93,8 +88,6 @@ func run(ctx context.Context, cfg *config) error {
 
 // serve starts the optional SSH listener and the HTTP listener, returning the first failure.
 func serve(ctx context.Context, cfg *config, handler http.Handler, sshServer *backendssh.Server) error {
-	loggedHandler := handlers.CombinedLoggingHandler(os.Stderr, handler)
-
 	errCh := make(chan error, 2)
 	if sshServer != nil {
 		slog.InfoContext(ctx, "Starting SSH server", "addr", cfg.SSHAddr)
@@ -103,7 +96,7 @@ func serve(ctx context.Context, cfg *config, handler http.Handler, sshServer *ba
 		}()
 	}
 	go func() {
-		errCh <- fmt.Errorf("HTTP server: %w", http.ListenAndServe(cfg.Addr, loggedHandler))
+		errCh <- fmt.Errorf("HTTP server: %w", http.ListenAndServe(cfg.Addr, handler))
 	}()
 	return <-errCh
 }
