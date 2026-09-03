@@ -144,7 +144,6 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 			name: "UpPyLibXet",
 			repo: "matrix-org/updown-py-xet",
 			upload: func(t *testing.T, s *e2eServer, rec *requestRecorder, repoID string, data []byte) {
-				requirePyXetTokenContract(t)
 				pyUploadFile(t, s, repoID, true, data)
 				// Chunk dedup queries are reads; only xorb/shard uploads prove a write.
 				if !rec.saw("", "/xorbs/") && !rec.saw("", "/shards") {
@@ -210,7 +209,6 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 				}
 			})
 			t.Run("DownPyLibXet", func(t *testing.T) {
-				requirePyXetTokenContract(t)
 				rec.reset()
 				got := pyDownloadFile(t, s, up.repo, true)
 				if !bytes.Equal(got, data) {

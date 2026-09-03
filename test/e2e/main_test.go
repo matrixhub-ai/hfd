@@ -18,7 +18,6 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
-	xethf "github.com/wzshiming/xet/server/hf"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -118,7 +117,7 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 }
 
 // xetStack carries the xet pieces the backends get injected with: the chain
-// tail (the write-token backend over the CAS-server composition) and the xet
+// tail (the token backend over the CAS-server composition) and the xet
 // storage.
 type xetStack struct {
 	tail http.Handler
@@ -129,9 +128,9 @@ type xetStack struct {
 // client, storage, token scheme, and the CAS-server composition — under
 // dataDir/xet and builds the shared mirror over them with gitOpts appended,
 // returning the mirror and the xet stack the backends are wired with.
-// upstreamURL enables the
-// xet mirror engine and hub front end; s3Storage puts the xet storage in the
-// fake S3 bucket like production. Background work is waited out on cleanup.
+// upstreamURL enables the xet mirror engine; s3Storage puts the xet storage
+// in the fake S3 bucket like production. Background work is waited out on
+// cleanup.
 func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
 	t.Helper()
 	xetDir := filepath.Join(dataDir, "xet")
@@ -162,9 +161,7 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 	if err != nil {
 		t.Fatalf("create token scheme: %v", err)
 	}
-	casNext := http.Handler(http.NotFoundHandler())
 	var engine *xetmirror.Mirror
-	var hubHandler http.Handler
 	if upstreamURL != "" {
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
@@ -175,17 +172,11 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
 		}
-		hubHandler = xethf.NewHandler(
-			xethf.WithMirror(engine),
-			xethf.WithMintToken(mint),
-			xethf.WithNext(http.NotFoundHandler()),
-		)
-		casNext = hubHandler
 	}
 	dataPlane := xetserver.NewHandler(
 		xetserver.WithStorage(xs),
 		xetserver.WithAuthFunc(authFn),
-		xetserver.WithNext(casNext),
+		xetserver.WithNext(http.NotFoundHandler()),
 	)
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
@@ -199,8 +190,8 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 		t.Fatalf("create mirror: %v", err)
 	}
 	t.Cleanup(m.Wait)
-	// The write-token backend fronts the composition the way cmd/hfd
-	// mounts it, so upload clients can mint CAS credentials.
+	// The token backend fronts the composition the way cmd/hfd mounts it,
+	// so xet clients can mint CAS credentials.
 	tail := backendcas.NewHandler(
 		backendcas.WithMirror(m),
 		backendcas.WithNext(dataPlane),

@@ -1,14 +1,17 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // hubClient is the client axis of the hub API matrix: the hf CLI or the
@@ -758,6 +761,61 @@ func TestCreateRepoDefaultGitAttributes(t *testing.T) {
 	for _, pattern := range []string{"*.bin", "*.safetensors", "*.pt", "filter=lfs"} {
 		if !strings.Contains(body, pattern) {
 			t.Errorf("Expected .gitattributes to contain %q, got:\n%s", pattern, body)
+		}
+	}
+}
+
+// TestXETTokenRoutes pins that a plain server (no pull upstream) answers the
+// xet token routes with the dual header+body contract; tokens are global.
+func TestXETTokenRoutes(t *testing.T) {
+	t.Parallel()
+	s := newE2EServer(t)
+
+	for _, url := range []string{
+		s.httpURL + "/xet-token",
+		s.httpURL + "/api/models/org/repo/xet-read-token/main",
+	} {
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatalf("GET %s: %v", url, err)
+		}
+		var tok struct {
+			CasURL      string `json:"casUrl"`
+			AccessToken string `json:"accessToken"`
+			Exp         int64  `json:"exp"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&tok)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", url, resp.StatusCode)
+		}
+		if decodeErr != nil {
+			t.Fatalf("decode %s: %v", url, decodeErr)
+		}
+		if tok.AccessToken == "" {
+			t.Errorf("GET %s missing accessToken", url)
+		}
+		if tok.CasURL != s.httpURL {
+			t.Errorf("GET %s casUrl = %q, want %q", url, tok.CasURL, s.httpURL)
+		}
+		if got := resp.Header.Get("X-Xet-Access-Token"); got != tok.AccessToken {
+			t.Errorf("GET %s X-Xet-Access-Token = %q, want body accessToken %q", url, got, tok.AccessToken)
+		}
+		if got := resp.Header.Get("X-Xet-Cas-Url"); got != tok.CasURL {
+			t.Errorf("GET %s X-Xet-Cas-Url = %q, want body casUrl %q", url, got, tok.CasURL)
+		}
+		if tok.Exp <= time.Now().Unix() {
+			t.Errorf("GET %s exp = %d, want future unix seconds", url, tok.Exp)
+		}
+		if got := resp.Header.Get("X-Xet-Token-Expiration"); got != strconv.FormatInt(tok.Exp, 10) {
+			t.Errorf("GET %s X-Xet-Token-Expiration = %q, want body exp %d", url, got, tok.Exp)
+		}
+		if got := resp.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("GET %s Content-Type = %q, want application/json", url, got)
+		}
+		// The cas backend marks minted credentials uncacheable.
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s Cache-Control = %q, want no-store", url, got)
 		}
 	}
 }

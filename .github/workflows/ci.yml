@@ -30,10 +30,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install huggingface_hub
-        # Pinned below 1.29: it moved the xet token contract from the JSON
-        # body to X-Xet-* response headers, which this server does not
-        # serve yet.
-        run: pip install 'huggingface_hub[cli,hf_xet]>=1.28,<1.29'
+        run: pip install 'huggingface_hub'
 
       # Unit tests and e2e tests are run together.
       # E2e tests use httptest.NewServer with a local temp dir and require

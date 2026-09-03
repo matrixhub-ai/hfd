@@ -17,7 +17,6 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
-	xethf "github.com/wzshiming/xet/server/hf"
 	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
 	xetstorage "github.com/wzshiming/xet/storage"
 
@@ -169,23 +168,6 @@ func buildXETMirror(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client) 
 	return engine, nil
 }
 
-// buildXETHubHandler creates the hub front end over the mirror engine,
-// serving reconstruct-on-miss resolves and read tokens; nil without an
-// engine.
-func buildXETHubHandler(cfg *config, engine *xetmirror.Mirror, mint func(time.Time) (string, int64)) http.Handler {
-	if engine == nil {
-		return nil
-	}
-	return xethf.NewHandler(
-		xethf.WithMirror(engine),
-		xethf.WithMintToken(mint),
-		xethf.WithExternalURL(cfg.HostURL),
-		// hfd serves its own control plane; unmatched requests must not
-		// be proxied upstream.
-		xethf.WithNext(http.NotFoundHandler()),
-	)
-}
-
 // buildMirror builds the shared mirror around the injected xet pieces; the
 // mirror carries the data plane (token mint, external URL) and serves OID
 // resolves straight off the ingest engine. Pull and push mirroring activate
@@ -261,25 +243,20 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 	return auth, nil
 }
 
-// buildXETComposition assembles the xet CAS composition — the CAS server
-// falling through to the hub handler, following xetd.
-func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool, hubHandler http.Handler) http.Handler {
-	// The CAS server always runs so xet clients can upload LFS objects; the
-	// upstream hub handler is added only when a pull upstream exists.
-	handler := http.Handler(http.NotFoundHandler())
-	if hubHandler != nil {
-		handler = hubHandler
-	}
-	handler = xetserver.NewHandler(
+// buildXETComposition assembles the xet CAS transfer tail: the CAS server
+// over the xet storage, answering 404 for everything else. Unlike xetd there
+// is no hub front end behind it — hfd's own backends serve the hub control
+// plane (resolve/tree in backendhf, the token routes in backendcas).
+func buildXETComposition(xs xetstorage.Storage, authFn func(string) bool) http.Handler {
+	return xetserver.NewHandler(
 		xetserver.WithStorage(xs),
 		xetserver.WithAuthFunc(authFn),
-		xetserver.WithNext(handler),
+		xetserver.WithNext(http.NotFoundHandler()),
 	)
-	return handler
 }
 
 // buildHTTPHandler composes the HTTP handler chain: HF API → LFS → HTTP Git
-// backends over the CAS write-token backend and the injected xet composition
+// backends over the CAS token backend and the injected xet composition
 // tail, with authentication and CAS-credential recognition at the head. The
 // hf/lfs/cas backends serve from the assembled data plane.
 func buildHTTPHandler(st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool, xetComposition http.Handler) http.Handler {
