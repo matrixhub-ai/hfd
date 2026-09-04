@@ -17,9 +17,8 @@ import (
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
 // GET /internal/objects and DELETE /internal/objects/{oid} list and unlink stored objects,
-// POST /internal/gc?dry_run=&grace= runs a repository-aware collect, and
-// POST /internal/gc/sweep?dry_run=&grace=&max=&budget= runs one bounded sha256-anchored sweep step;
-// all over one gc.Collector, so the store has a single sweeper.
+// POST /internal/gc runs a repository-aware collect and POST /internal/gc/sweep one sha256-anchored sweep step,
+// both taking ?dry_run=&grace=&max=&budget=; all over one gc.Collector, so the store has a single sweeper.
 type Handler struct {
 	collector *gc.Collector
 	gcGrace   time.Duration
@@ -75,14 +74,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.ServeHTTP(w, r)
 }
 
-// query parses the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
-func query(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+// parseOptions reads ?dry_run=&grace=&max=&budget= for both GC endpoints, answering 400 itself on a bad value.
+func (h *Handler) parseOptions(w http.ResponseWriter, r *http.Request) (gc.Options, bool) {
+	var opts gc.Options
+	// Parse the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		http.Error(w, "Invalid query string", http.StatusBadRequest)
-		return nil, false
+		return opts, false
 	}
-	return q, true
+	if opts.DryRun, err = parseDryRun(q); err != nil {
+		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
+		return opts, false
+	}
+	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
+		http.Error(w, "Invalid grace value", http.StatusBadRequest)
+		return opts, false
+	}
+	if q.Has("max") {
+		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
+			http.Error(w, "Invalid max value", http.StatusBadRequest)
+			return opts, false
+		}
+	}
+	if q.Has("budget") {
+		if opts.Budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.Budget < 0 {
+			http.Error(w, "Invalid budget value", http.StatusBadRequest)
+			return opts, false
+		}
+	}
+	return opts, true
 }
 
 // parseDryRun reads ?dry_run; a present but unparsable value is an error.
@@ -135,18 +156,8 @@ func (h *Handler) handleUnlink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
-	q, ok := query(w, r)
+	opts, ok := h.parseOptions(w, r)
 	if !ok {
-		return
-	}
-	var opts gc.Options
-	var err error
-	if opts.DryRun, err = parseDryRun(q); err != nil {
-		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return
-	}
-	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
-		http.Error(w, "Invalid grace value", http.StatusBadRequest)
 		return
 	}
 	res, err := h.collector.Collect(r.Context(), opts)
@@ -168,31 +179,9 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
-	q, ok := query(w, r)
+	opts, ok := h.parseOptions(w, r)
 	if !ok {
 		return
-	}
-	var opts gc.SweepOptions
-	var err error
-	if opts.DryRun, err = parseDryRun(q); err != nil {
-		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return
-	}
-	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
-		http.Error(w, "Invalid grace value", http.StatusBadRequest)
-		return
-	}
-	if q.Has("max") {
-		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
-			http.Error(w, "Invalid max value", http.StatusBadRequest)
-			return
-		}
-	}
-	if q.Has("budget") {
-		if opts.Budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.Budget < 0 {
-			http.Error(w, "Invalid budget value", http.StatusBadRequest)
-			return
-		}
 	}
 	res, err := h.collector.SweepStep(r.Context(), opts)
 	if err != nil {

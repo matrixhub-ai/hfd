@@ -168,6 +168,27 @@ func TestCollect(t *testing.T) {
 			t.Fatalf("unexpected result: %+v stored=%v", res, f.stored(t, dead))
 		}
 	})
+	t.Run("BoundedSweepContinues", func(t *testing.T) {
+		f := newFixture(t)
+		c := f.collector()
+		dead := []string{f.put(t, "dead-h "), f.put(t, "dead-i ")}
+		slices.Sort(dead)
+		res, err := c.Collect(ctx, Options{Grace: -1, MaxDeletes: 1})
+		if err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		// Unlink is unbounded; the cap stops the sweep after one shard, leaving the rest to SweepStep.
+		if !slices.Equal(res.Unlinked, dead) || res.Sweep == nil || res.Sweep.Done || res.Sweep.SweptShards != 1 || res.Sweep.RemainingShards == 0 {
+			t.Fatalf("unexpected result: %+v sweep=%+v", res, res.Sweep)
+		}
+		sweep, err := c.SweepStep(ctx, Options{Grace: -1})
+		if err != nil {
+			t.Fatalf("sweep step: %v", err)
+		}
+		if !sweep.Done || sweep.SweptShards == 0 || sweep.SweptXorbs == 0 {
+			t.Fatalf("unexpected sweep: %+v", sweep)
+		}
+	})
 	t.Run("Layouts", func(t *testing.T) {
 		// Every layout hfd's own APIs can produce: root, namespaced, type-prefixed, deeper than three
 		// components (create/move do not bound slashes), and a .git-suffixed namespace.
@@ -240,11 +261,11 @@ func TestSweepSharesLock(t *testing.T) {
 	f := newFixture(t)
 	c := f.collector()
 	c.mu.Lock()
-	if _, err := c.SweepStep(context.Background(), SweepOptions{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
+	if _, err := c.SweepStep(context.Background(), Options{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
 		t.Fatalf("sweep during collect: got %v, want ErrGCBusy", err)
 	}
 	c.mu.Unlock()
-	res, err := c.SweepStep(context.Background(), SweepOptions{Grace: -1})
+	res, err := c.SweepStep(context.Background(), Options{Grace: -1})
 	if err != nil || !res.Done {
 		t.Fatalf("sweep: err=%v result=%+v", err, res)
 	}
@@ -259,7 +280,7 @@ func TestSweepStepAnchorsSHA256(t *testing.T) {
 	if removed, err := c.Unlink(ctx, oid); err != nil || !removed {
 		t.Fatalf("unlink: removed=%v err=%v", removed, err)
 	}
-	res, err := c.SweepStep(ctx, SweepOptions{Grace: -1})
+	res, err := c.SweepStep(ctx, Options{Grace: -1})
 	if err != nil {
 		t.Fatalf("sweep step: %v", err)
 	}

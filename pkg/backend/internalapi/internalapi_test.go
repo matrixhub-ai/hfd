@@ -57,6 +57,8 @@ func TestHandler(t *testing.T) {
 		{http.MethodPost, "/internal/gc/sweep?grace=-1s", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?max=-1", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?budget=nope", http.StatusBadRequest},
 		{http.MethodDelete, "/internal/objects/zz", http.StatusBadRequest},
 		{http.MethodDelete, "/internal/objects/" + strings.Repeat("0", 64), http.StatusBadRequest},
 		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusNotFound},
@@ -84,8 +86,13 @@ func TestHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun || res.Sweep != nil {
 		t.Fatalf("dry run body %s: err=%v result=%+v", rec.Body, err, res)
 	}
-	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusOK {
+	rec = do(h, http.MethodPost, "/internal/gc?max=1&budget=1s")
+	if rec.Code != http.StatusOK {
 		t.Fatalf("collect: got %d, body %s", rec.Code, rec.Body)
+	}
+	var collect gc.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &collect); err != nil || collect.Sweep == nil || !collect.Sweep.Done {
+		t.Fatalf("collect body %s: err=%v result=%+v", rec.Body, err, collect)
 	}
 
 	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&max=1&budget=1s&dry_run=false")

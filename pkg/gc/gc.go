@@ -44,12 +44,12 @@ func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
 }
 
-// SweepOptions configures one SweepStep.
-type SweepOptions struct {
+// Options configures one Collect run or SweepStep; MaxDeletes and Budget bound the sweep only, mark and unlink are uncharged.
+type Options struct {
 	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
 	DryRun     bool
-	MaxDeletes int           // max shard+xorb deletions per step, 0 = unlimited
-	Budget     time.Duration // wall-clock cap per step, 0 = unlimited
+	MaxDeletes int           // max shard+xorb deletions per sweep, 0 = unlimited
+	Budget     time.Duration // wall-clock cap per sweep, 0 = unlimited
 }
 
 // SweepResult reports one sweep step.
@@ -67,7 +67,7 @@ type SweepResult struct {
 }
 
 // SweepStep runs one bounded sha256-anchored sweep step under the same lock as Collect, so the store has a single sweeper.
-func (c *Collector) SweepStep(ctx context.Context, opts SweepOptions) (*SweepResult, error) {
+func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
 	}
@@ -76,7 +76,7 @@ func (c *Collector) SweepStep(ctx context.Context, opts SweepOptions) (*SweepRes
 }
 
 // sweep is the only place hfd builds xet's sweep options, always sha256-anchored; the caller holds c.mu.
-func (c *Collector) sweep(ctx context.Context, opts SweepOptions) (*SweepResult, error) {
+func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, error) {
 	xr, err := c.gc.SweepStep(ctx, xetstorage.SweepOptions{
 		Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace, DryRun: opts.DryRun, MaxDeletes: opts.MaxDeletes, Budget: opts.Budget,
 	})
@@ -97,12 +97,6 @@ func (c *Collector) sweep(ctx context.Context, opts SweepOptions) (*SweepResult,
 	}, nil
 }
 
-// Options configures one Collect run.
-type Options struct {
-	Grace  time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
-	DryRun bool
-}
-
 // Result reports one Collect run.
 type Result struct {
 	DryRun         bool         `json:"dry_run"`
@@ -114,7 +108,8 @@ type Result struct {
 	Error          string       `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
 }
 
-// Collect unlinks unreferenced OIDs past the grace window, then runs one sha256-anchored sweep; busy runs fail with xetstorage.ErrGCBusy.
+// Collect unlinks unreferenced OIDs past the grace window, then runs one sha256-anchored sweep step; busy runs fail with xetstorage.ErrGCBusy.
+// A sweep stopped by MaxDeletes or Budget reports Sweep.Done false; SweepStep continues it.
 // An error after unlinking began comes with the partial Result, whose Unlinked lists the entries already removed.
 func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) {
 	if !c.mu.TryLock() {
@@ -182,7 +177,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 				res.Unlinked = append(res.Unlinked, h)
 			}
 		}
-		res.Sweep, err = c.sweep(ctx, SweepOptions{Grace: opts.Grace})
+		res.Sweep, err = c.sweep(ctx, opts)
 		if err != nil {
 			return res, c.failed(ctx, res, fmt.Errorf("sweep: %w", err))
 		}
@@ -190,12 +185,13 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 
 	var sweptShards, sweptXorbs int
 	var reclaimed int64
+	var done bool
 	if res.Sweep != nil {
-		sweptShards, sweptXorbs, reclaimed = res.Sweep.SweptShards, res.Sweep.SweptXorbs, res.Sweep.ReclaimedBytes
+		sweptShards, sweptXorbs, reclaimed, done = res.Sweep.SweptShards, res.Sweep.SweptXorbs, res.Sweep.ReclaimedBytes, res.Sweep.Done
 	}
 	slog.InfoContext(ctx, "gc collect", "repositories", res.Repositories, "live", res.LiveObjects,
 		"unlinked", len(res.Unlinked), "skipped_in_grace", res.SkippedInGrace, "swept_shards", sweptShards,
-		"swept_xorbs", sweptXorbs, "reclaimed_bytes", reclaimed, "dry_run", res.DryRun)
+		"swept_xorbs", sweptXorbs, "reclaimed_bytes", reclaimed, "sweep_done", done, "dry_run", res.DryRun)
 	return res, nil
 }
 
