@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
@@ -228,31 +227,6 @@ func TestPullFromRemoteNotAMirror(t *testing.T) {
 	err := m.PullFromRemote(context.Background(), filepath.Join(t.TempDir(), "dest.git"), "org/repo", nil)
 	if err == nil || !strings.Contains(err.Error(), "not configured as a mirror") {
 		t.Fatalf("expected not-a-mirror error, got %v", err)
-	}
-}
-
-func TestPullFromRemoteTTLSkipsFreshSync(t *testing.T) {
-	root := t.TempDir()
-	src, srcPath := initSourceRepo(t, root, "src")
-
-	m := newMirror(t, "",
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-		mirror.WithTTL(time.Hour),
-	)
-
-	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("initial pull: %v", err)
-	}
-	oldHash := refsAt(t, destPath)["refs/heads/main"]
-
-	addCommit(t, src, "main", "new.txt", "new\n")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("second pull: %v", err)
-	}
-
-	if got := refsAt(t, destPath)["refs/heads/main"]; got != oldHash {
-		t.Fatalf("refs/heads/main = %s, want unchanged %s (TTL should skip sync)", got, oldHash)
 	}
 }
 

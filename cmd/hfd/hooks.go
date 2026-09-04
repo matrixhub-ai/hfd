@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
@@ -25,9 +27,11 @@ type serverHooks struct {
 	// permission is the authorization policy, assembled in main.
 	permission permission.PermissionHookFunc
 	mirror     *mirror.Mirror
+	pullTTL    time.Duration
+	lastPull   sync.Map // repoPath -> time.Time of the last successful pull
 }
 
-// preOpen syncs mirror sources from the remote before the repository is opened.
+// preOpen syncs mirror sources from the remote before the repository is opened, at most once per pullTTL per repository.
 func (h *serverHooks) preOpen(ctx context.Context, repoName string, write bool) error {
 	if h.mirror == nil {
 		return nil
@@ -46,7 +50,18 @@ func (h *serverHooks) preOpen(ctx context.Context, repoName string, write bool) 
 		return nil
 	}
 
-	return h.mirror.PullFromRemote(context.Background(), repoPath, repoName, nil)
+	if h.pullTTL > 0 {
+		if last, ok := h.lastPull.Load(repoPath); ok && time.Since(last.(time.Time)) < h.pullTTL {
+			return nil
+		}
+	}
+	if err := h.mirror.PullFromRemote(context.Background(), repoPath, repoName, nil); err != nil {
+		return err
+	}
+	if h.pullTTL > 0 {
+		h.lastPull.Store(repoPath, time.Now())
+	}
+	return nil
 }
 
 // preReceive logs and allows every ref update.

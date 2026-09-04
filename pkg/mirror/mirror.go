@@ -55,10 +55,8 @@ type Mirror struct {
 	syncUserInfoFunc      SyncUserInfoFunc
 	gitOutputFunc         GitOutputFunc
 	repositoriesFS        billy.Filesystem
-	ttl                   time.Duration
 	pullGroup             singleflight.Group
 	pushGroup             singleflight.Group
-	lastSync              sync.Map // map[string]time.Time, keyed by repoPath
 	background            sync.WaitGroup
 
 	xetStorage     xetstorage.Storage
@@ -173,13 +171,6 @@ func WithRepositoriesFS(fs billy.Filesystem) Option {
 	}
 }
 
-// WithTTL sets the minimum interval between pull syncs of the same repository.
-func WithTTL(d time.Duration) Option {
-	return func(m *Mirror) {
-		m.ttl = d
-	}
-}
-
 // WithGitOutputFunc sets a callback function to provide an io.Writer for capturing git command output for a given repository.
 func WithGitOutputFunc(fn GitOutputFunc) Option {
 	return func(m *Mirror) {
@@ -264,25 +255,4 @@ type PushOptions struct {
 	UserInfo *url.Userinfo
 	// Output captures git command output, overriding the GitOutputFunc.
 	Output io.Writer
-}
-
-func (m *Mirror) shouldSync(repoPath string) bool {
-	if m.ttl <= 0 {
-		return true
-	}
-
-	last, ok := m.lastSync.Load(repoPath)
-	if !ok {
-		return true
-	}
-
-	return time.Since(last.(time.Time)) >= m.ttl
-}
-
-func (m *Mirror) markSynced(repoPath string) {
-	if m.ttl <= 0 {
-		return
-	}
-
-	m.lastSync.Store(repoPath, time.Now())
 }
