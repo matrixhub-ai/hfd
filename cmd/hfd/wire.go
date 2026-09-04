@@ -190,7 +190,6 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetst
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithGitOutputFunc(hooks.gitOutput),
 		mirror.WithSyncUserInfoFunc(hooks.syncUserInfo),
-		mirror.WithTTL(cfg.ProxyCacheTTL),
 		mirror.WithMirrorRefFilterFunc(hooks.mirrorRefFilter),
 	}
 

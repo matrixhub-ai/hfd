@@ -39,13 +39,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		return m.initMirrorAndSync(ctx, logctx, repoPath, repoName, opt)
 	}
 
-	if !m.shouldSync(repoPath) {
-		return nil
-	}
-
 	_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
-		defer m.markSynced(repoPath)
-
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
@@ -103,8 +97,6 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
 			return nil, repository.ErrRepositoryNotExists
 		}
-
-		defer m.markSynced(repoPath)
 
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err

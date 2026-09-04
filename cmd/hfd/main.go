@@ -47,6 +47,7 @@ func run(ctx context.Context, cfg *config) error {
 		storage:    st,
 		proxyToken: cfg.ProxyToken,
 		permission: permission.Logged(permission.AllowAll()),
+		pullTTL:    cfg.ProxyCacheTTL,
 	}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
