@@ -1,4 +1,4 @@
-// Package internalapi serves the internal management endpoints hfd adds in front of xet's.
+// Package internalapi serves hfd's internal management endpoints over the xet store.
 package internalapi
 
 import (
@@ -15,11 +15,11 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 )
 
-// Handler serves POST /internal/gc?dry_run=&grace= (repository-aware collect) and
-// POST /internal/gc/sweep?dry_run=&grace=&max=&budget=&anchor= (xet's sweep contract) over one
-// gc.Collector, so both share a single lock and the store has exactly one sweeper; the sweep
-// route shadows xet's own when this handler is mounted in front of it. The endpoints are
-// unauthenticated and meant to be mounted behind the operator-only --internal gate.
+// Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
+// GET /internal/objects and DELETE /internal/objects/{oid} list and unlink stored objects,
+// POST /internal/gc?dry_run=&grace= runs a repository-aware collect, and
+// POST /internal/gc/sweep?dry_run=&grace=&max=&budget= runs one bounded sha256-anchored sweep step;
+// all over one gc.Collector, so the store has a single sweeper.
 type Handler struct {
 	collector *gc.Collector
 	gcGrace   time.Duration
@@ -62,6 +62,8 @@ func NewHandler(opts ...Option) *Handler {
 	if h.next == nil {
 		h.next = http.NotFoundHandler()
 	}
+	h.root.HandleFunc("/internal/objects", h.handleList).Methods(http.MethodGet)
+	h.root.HandleFunc("/internal/objects/{oid}", h.handleUnlink).Methods(http.MethodDelete)
 	h.root.HandleFunc("/internal/gc", h.handleGC).Methods(http.MethodPost)
 	h.root.HandleFunc("/internal/gc/sweep", h.handleSweep).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
@@ -106,6 +108,32 @@ func parseGrace(q url.Values, def time.Duration) (time.Duration, error) {
 	return grace, nil
 }
 
+func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
+	objects, err := h.collector.List(r.Context())
+	if err != nil {
+		http.Error(w, "List failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, objects)
+}
+
+func (h *Handler) handleUnlink(w http.ResponseWriter, r *http.Request) {
+	removed, err := h.collector.Unlink(r.Context(), mux.Vars(r)["oid"])
+	if err != nil {
+		if errors.Is(err, gc.ErrInvalidOID) {
+			http.Error(w, "Invalid oid", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "Unlink failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !removed {
+		http.Error(w, "Object not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 	q, ok := query(w, r)
 	if !ok {
@@ -144,7 +172,7 @@ func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var opts xetstorage.SweepOptions
+	var opts gc.SweepOptions
 	var err error
 	if opts.DryRun, err = parseDryRun(q); err != nil {
 		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
@@ -166,20 +194,7 @@ func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if q.Has("anchor") {
-		switch q.Get("anchor") {
-		case "both":
-			opts.Anchor = xetstorage.AnchorBoth
-		case "files":
-			opts.Anchor = xetstorage.AnchorFiles
-		case "sha256":
-			opts.Anchor = xetstorage.AnchorSHA256
-		default:
-			http.Error(w, "Invalid anchor value", http.StatusBadRequest)
-			return
-		}
-	}
-	res, err := h.collector.Sweep(r.Context(), opts)
+	res, err := h.collector.SweepStep(r.Context(), opts)
 	if err != nil {
 		if errors.Is(err, xetstorage.ErrGCBusy) {
 			http.Error(w, "GC already running", http.StatusConflict)

@@ -22,10 +22,13 @@ import (
 
 var zeroSHA256 = strings.Repeat("0", 64)
 
+// ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
+var ErrInvalidOID = errors.New("invalid oid")
+
 // Collector marks live LFS OIDs across all repositories and sweeps the rest from the xet store.
 //
-// Liveness is a git pointer in any repository; xet's manual sha256 unlink takes precedence, so
-// content unlinked that way is reclaimed by the next sweep even while a pointer still names it.
+// Liveness is a git pointer in any repository; Unlink takes precedence, so content unlinked that
+// way is reclaimed by the next sweep even while a pointer still names it.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
 // with one repository and re-pushed to another is exposed until the new ref lands, so Collect
 // only while pushes are quiescent.
@@ -33,7 +36,7 @@ type Collector struct {
 	repos billy.Filesystem
 	store xetstorage.GCStore
 	gc    *xetstorage.GC
-	mu    sync.Mutex // serializes Collect and Sweep; xet's own GC lock underneath is then never contended
+	mu    sync.Mutex // serializes Collect and SweepStep; xet's own GC lock underneath is then never contended
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
@@ -41,13 +44,57 @@ func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
 }
 
-// Sweep runs one xet sweep step under the same lock as Collect, so the store has a single sweeper.
-func (c *Collector) Sweep(ctx context.Context, opts xetstorage.SweepOptions) (*xetstorage.SweepResult, error) {
+// SweepOptions configures one SweepStep.
+type SweepOptions struct {
+	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
+	DryRun     bool
+	MaxDeletes int           // max shard+xorb deletions per step, 0 = unlimited
+	Budget     time.Duration // wall-clock cap per step, 0 = unlimited
+}
+
+// SweepResult reports one sweep step.
+type SweepResult struct {
+	DryRun           bool     `json:"dry_run"`
+	SweptShards      int      `json:"swept_shards"`
+	SweptXorbs       int      `json:"swept_xorbs"`
+	ReclaimedBytes   int64    `json:"reclaimed_bytes"`
+	SkippedInGrace   int      `json:"skipped_in_grace"`
+	Dangling         []string `json:"dangling"`          // OIDs whose data is missing; reported, never deleted
+	UnreadableShards []string `json:"unreadable_shards"` // treated live; no xorb deleted that pass
+	Done             bool     `json:"done"`
+	RemainingShards  int      `json:"remaining_shards"`
+	RemainingXorbs   int      `json:"remaining_xorbs"`
+}
+
+// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Collect, so the store has a single sweeper.
+func (c *Collector) SweepStep(ctx context.Context, opts SweepOptions) (*SweepResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
 	}
 	defer c.mu.Unlock()
-	return c.gc.SweepStep(ctx, opts)
+	return c.sweep(ctx, opts)
+}
+
+// sweep is the only place hfd builds xet's sweep options, always sha256-anchored; the caller holds c.mu.
+func (c *Collector) sweep(ctx context.Context, opts SweepOptions) (*SweepResult, error) {
+	xr, err := c.gc.SweepStep(ctx, xetstorage.SweepOptions{
+		Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace, DryRun: opts.DryRun, MaxDeletes: opts.MaxDeletes, Budget: opts.Budget,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &SweepResult{
+		DryRun:           xr.DryRun,
+		SweptShards:      len(xr.SweptShards),
+		SweptXorbs:       len(xr.SweptXorbs),
+		ReclaimedBytes:   xr.ReclaimedBytes,
+		SkippedInGrace:   xr.SkippedInGrace,
+		Dangling:         xr.DanglingSHA256Entries,
+		UnreadableShards: xr.UnreadableShards,
+		Done:             xr.Done,
+		RemainingShards:  xr.RemainingShards,
+		RemainingXorbs:   xr.RemainingXorbs,
+	}, nil
 }
 
 // Options configures one Collect run.
@@ -58,13 +105,13 @@ type Options struct {
 
 // Result reports one Collect run.
 type Result struct {
-	DryRun         bool                    `json:"dry_run"`
-	Repositories   int                     `json:"repositories"`
-	LiveObjects    int                     `json:"live_objects"`
-	Unlinked       []string                `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
-	SkippedInGrace int                     `json:"skipped_in_grace"`
-	Sweep          *xetstorage.SweepResult `json:"sweep,omitempty"` // nil on dry run
-	Error          string                  `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
+	DryRun         bool         `json:"dry_run"`
+	Repositories   int          `json:"repositories"`
+	LiveObjects    int          `json:"live_objects"`
+	Unlinked       []string     `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
+	SkippedInGrace int          `json:"skipped_in_grace"`
+	Sweep          *SweepResult `json:"sweep,omitempty"` // nil on dry run
+	Error          string       `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
 }
 
 // Collect unlinks unreferenced OIDs past the grace window, then runs one sha256-anchored sweep; busy runs fail with xetstorage.ErrGCBusy.
@@ -123,14 +170,11 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 		res.Unlinked = candidates
 	} else {
 		for _, h := range candidates {
-			raw, err := hex.DecodeString(h)
+			digest, err := parseOID(h)
 			if err != nil {
 				return nil, fmt.Errorf("invalid sha256 index entry %q: %w", h, err)
 			}
-			if len(raw) != 32 {
-				return nil, fmt.Errorf("invalid sha256 index entry %q: %d bytes", h, len(raw))
-			}
-			removed, err := c.gc.UnlinkSHA256(ctx, [32]byte(raw))
+			removed, err := c.gc.UnlinkSHA256(ctx, digest)
 			if err != nil {
 				return res, c.failed(ctx, res, fmt.Errorf("unlink sha256 %s: %w", h, err))
 			}
@@ -138,7 +182,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 				res.Unlinked = append(res.Unlinked, h)
 			}
 		}
-		res.Sweep, err = c.gc.SweepStep(ctx, xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace})
+		res.Sweep, err = c.sweep(ctx, SweepOptions{Grace: opts.Grace})
 		if err != nil {
 			return res, c.failed(ctx, res, fmt.Errorf("sweep: %w", err))
 		}
@@ -147,7 +191,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 	var sweptShards, sweptXorbs int
 	var reclaimed int64
 	if res.Sweep != nil {
-		sweptShards, sweptXorbs, reclaimed = len(res.Sweep.SweptShards), len(res.Sweep.SweptXorbs), res.Sweep.ReclaimedBytes
+		sweptShards, sweptXorbs, reclaimed = res.Sweep.SweptShards, res.Sweep.SweptXorbs, res.Sweep.ReclaimedBytes
 	}
 	slog.InfoContext(ctx, "gc collect", "repositories", res.Repositories, "live", res.LiveObjects,
 		"unlinked", len(res.Unlinked), "skipped_in_grace", res.SkippedInGrace, "swept_shards", sweptShards,
@@ -159,6 +203,62 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 func (c *Collector) failed(ctx context.Context, res *Result, err error) error {
 	slog.ErrorContext(ctx, "gc collect failed after unlinking", "unlinked", len(res.Unlinked), "err", err)
 	return err
+}
+
+// parseOID decodes a 64-hex sha256 digest, rejecting the all-zero one (the shared empty-file marker).
+func parseOID(oid string) ([32]byte, error) {
+	raw, err := hex.DecodeString(oid)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("%w: %v", ErrInvalidOID, err)
+	}
+	if len(raw) != 32 {
+		return [32]byte{}, fmt.Errorf("%w: %d bytes", ErrInvalidOID, len(raw))
+	}
+	digest := [32]byte(raw)
+	if digest == [32]byte{} {
+		return digest, fmt.Errorf("%w: all-zero digest", ErrInvalidOID)
+	}
+	return digest, nil
+}
+
+// Unlink removes the OID's sha256 index entry, reporting whether it existed; data is reclaimed by the next sweep.
+func (c *Collector) Unlink(ctx context.Context, oid string) (bool, error) {
+	digest, err := parseOID(oid)
+	if err != nil {
+		return false, err
+	}
+	return c.gc.UnlinkSHA256(ctx, digest)
+}
+
+// Object is one stored LFS object resolvable by OID.
+type Object struct {
+	OID        string `json:"oid"`
+	Size       uint64 `json:"size"`
+	UniqueSize uint64 `json:"unique_size"`
+	SharedSize uint64 `json:"shared_size"`
+}
+
+// List lists the stored objects hfd can resolve by OID, largest first.
+func (c *Collector) List(ctx context.Context) ([]Object, error) {
+	indexed := map[string]struct{}{}
+	err := c.store.WalkSHA256Index(ctx, func(sha256Hex, _ string) error {
+		indexed[sha256Hex] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk sha256 index: %w", err)
+	}
+	entries, err := xetstorage.ListFiles(ctx, c.store)
+	if err != nil {
+		return nil, err
+	}
+	objects := []Object{}
+	for _, e := range entries {
+		if _, ok := indexed[e.SHA256]; ok {
+			objects = append(objects, Object{OID: e.SHA256, Size: e.OriginalSize, UniqueSize: e.UniqueSize, SharedSize: e.SharedSize})
+		}
+	}
+	return objects, nil
 }
 
 // mark walks dir for repositories at any depth, adding their LFS OIDs to live and returning the

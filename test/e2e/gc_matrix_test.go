@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -24,18 +23,17 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
-// gcFileEntry carries the storage.FileListEntry fields the test asserts on.
-type gcFileEntry struct {
-	SHA256       string   `json:"sha256"`
-	FileHashes   []string `json:"file_hashes"`
-	OriginalSize uint64   `json:"original_size"`
+// gcObject carries the gc.Object fields the test asserts on.
+type gcObject struct {
+	OID  string `json:"oid"`
+	Size uint64 `json:"size"`
 }
 
-// gcSweepResult carries the storage.SweepResult fields the test asserts on.
+// gcSweepResult carries the gc.SweepResult fields the test asserts on.
 type gcSweepResult struct {
-	SweptShards []json.RawMessage `json:"swept_shards"`
-	SweptXorbs  []json.RawMessage `json:"swept_xorbs"`
-	Done        bool              `json:"done"`
+	SweptShards int  `json:"swept_shards"`
+	SweptXorbs  int  `json:"swept_xorbs"`
+	Done        bool `json:"done"`
 }
 
 // gcCollectResult carries the gc.Result fields the test asserts on.
@@ -68,10 +66,10 @@ func mustGet(t *testing.T, url string) []byte {
 
 // TestGCLifecycle drives the /internal/ management API end to end over the
 // assembled hfd chain: a pull-through mirror ingests an LFS object from an
-// upstream hfd server, /internal/files lists it, an anchored sweep leaves it
-// alone, unlinking both anchors lets the next sweep reclaim the bytes, and
-// the next resolve self-heals by re-ingesting from upstream. The internal
-// API wraps the chain outermost with the same options as cmd/hfd's
+// upstream hfd server, /internal/objects lists it, a sweep leaves the
+// anchored object alone, unlinking the OID lets the next sweep reclaim the
+// bytes, and the next resolve self-heals by re-ingesting from upstream. The
+// internal API wraps the chain outermost with the same options as cmd/hfd's
 // internalAPI. Library-level GC semantics stay covered upstream in xet;
 // this test pins the hfd wiring. TestMain runs it under local and S3
 // storage; both xet storages implement GCStore, so the GC endpoints never
@@ -118,7 +116,7 @@ func TestGCLifecycle(t *testing.T) {
 		backendhttp.WithPreOpenHookFunc(preOpen),
 	)
 	// The wiring under test: the internal management API wraps the whole
-	// chain outermost, nested the way cmd/hfd's internalAPI does.
+	// chain outermost, the way cmd/hfd's internalAPI does.
 	gcs, ok := xet.xs.(xetstorage.GCStore)
 	if !ok {
 		t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
@@ -126,10 +124,7 @@ func TestGCLifecycle(t *testing.T) {
 	handler = backendinternalapi.NewHandler(
 		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
 		backendinternalapi.WithGCGrace(time.Hour),
-		backendinternalapi.WithNext(xetinternalapi.NewHandler(
-			xetinternalapi.WithStorage(xet.xs),
-			xetinternalapi.WithNext(handler),
-		)),
+		backendinternalapi.WithNext(handler),
 	)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
@@ -145,19 +140,19 @@ func TestGCLifecycle(t *testing.T) {
 		}
 	}
 
-	listFiles := func(t *testing.T) []gcFileEntry {
+	listObjects := func(t *testing.T) []gcObject {
 		t.Helper()
-		var entries []gcFileEntry
-		if err := json.Unmarshal(mustGet(t, proxy.URL+"/internal/files"), &entries); err != nil {
-			t.Fatalf("decode /internal/files: %v", err)
+		var objects []gcObject
+		if err := json.Unmarshal(mustGet(t, proxy.URL+"/internal/objects"), &objects); err != nil {
+			t.Fatalf("decode /internal/objects: %v", err)
 		}
-		return entries
+		return objects
 	}
 
-	findEntry := func(entries []gcFileEntry) *gcFileEntry {
-		for i := range entries {
-			if entries[i].SHA256 == oid {
-				return &entries[i]
+	findObject := func(objects []gcObject) *gcObject {
+		for i := range objects {
+			if objects[i].OID == oid {
+				return &objects[i]
 			}
 		}
 		return nil
@@ -225,8 +220,6 @@ func TestGCLifecycle(t *testing.T) {
 		return shards, xorbs
 	}
 
-	var fileHashes []string
-
 	step("MirrorIngest", func(t *testing.T) {
 		// The first resolve mirrors the repo via the pre-open hook and pulls
 		// the bytes through the proxy — streaming, or via the bridge redirect
@@ -239,51 +232,39 @@ func TestGCLifecycle(t *testing.T) {
 		waitIngested(t)
 	})
 
-	step("ListFiles", func(t *testing.T) {
-		entry := findEntry(listFiles(t))
-		if entry == nil {
-			t.Fatalf("GET /internal/files misses sha256 %s", oid)
+	step("ListObjects", func(t *testing.T) {
+		obj := findObject(listObjects(t))
+		if obj == nil {
+			t.Fatalf("GET /internal/objects misses oid %s", oid)
 		}
-		if entry.OriginalSize != uint64(len(data)) {
-			t.Fatalf("original_size = %d, want %d", entry.OriginalSize, len(data))
+		if obj.Size != uint64(len(data)) {
+			t.Fatalf("size = %d, want %d", obj.Size, len(data))
 		}
-		if len(entry.FileHashes) == 0 {
-			t.Fatal("entry lists no xet file hashes")
-		}
-		fileHashes = entry.FileHashes
 	})
 
 	step("SweepAnchoredKeepsObject", func(t *testing.T) {
 		res := sweep(t)
-		if len(res.SweptShards) != 0 || len(res.SweptXorbs) != 0 {
-			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", len(res.SweptShards), len(res.SweptXorbs))
+		if res.SweptShards != 0 || res.SweptXorbs != 0 {
+			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", res.SweptShards, res.SweptXorbs)
 		}
 		if got := mustGet(t, proxy.URL+"/objects/"+oid); !bytes.Equal(got, data) {
 			t.Fatalf("object download after anchored sweep mismatch: got %d bytes, want %d", len(got), len(data))
 		}
 	})
 
-	step("UnlinkAnchors", func(t *testing.T) {
-		for _, fh := range fileHashes {
-			if code := del(t, "/internal/files/xet/"+fh); code != http.StatusOK {
-				t.Fatalf("DELETE /internal/files/xet/%s status = %d, want 200", fh, code)
-			}
+	step("UnlinkObject", func(t *testing.T) {
+		if code := del(t, "/internal/objects/"+oid); code != http.StatusNoContent {
+			t.Fatalf("DELETE /internal/objects/%s status = %d, want 204", oid, code)
 		}
-		if code := del(t, "/internal/files/sha256/"+oid); code != http.StatusOK {
-			t.Fatalf("DELETE /internal/files/sha256/%s status = %d, want 200", oid, code)
-		}
-		if code := del(t, "/internal/files/xet/"+fileHashes[0]); code != http.StatusNotFound {
-			t.Fatalf("second DELETE xet status = %d, want 404", code)
-		}
-		if code := del(t, "/internal/files/sha256/"+oid); code != http.StatusNotFound {
-			t.Fatalf("second DELETE sha256 status = %d, want 404", code)
+		if code := del(t, "/internal/objects/"+oid); code != http.StatusNotFound {
+			t.Fatalf("second DELETE status = %d, want 404", code)
 		}
 	})
 
 	step("SweepReclaims", func(t *testing.T) {
 		res := sweep(t)
-		if len(res.SweptShards) == 0 || len(res.SweptXorbs) == 0 {
-			t.Fatalf("unanchored sweep reclaimed shards=%d xorbs=%d, want both non-empty", len(res.SweptShards), len(res.SweptXorbs))
+		if res.SweptShards == 0 || res.SweptXorbs == 0 {
+			t.Fatalf("unanchored sweep reclaimed shards=%d xorbs=%d, want both non-zero", res.SweptShards, res.SweptXorbs)
 		}
 		if !res.Done {
 			t.Fatal("unbounded sweep step did not finish the cycle")
@@ -306,8 +287,8 @@ func TestGCLifecycle(t *testing.T) {
 			t.Fatalf("resolve after GC bytes mismatch: got %d bytes, want %d", len(got), len(data))
 		}
 		waitIngested(t)
-		if findEntry(listFiles(t)) == nil {
-			t.Fatalf("GET /internal/files misses sha256 %s after re-ingest", oid)
+		if findObject(listObjects(t)) == nil {
+			t.Fatalf("GET /internal/objects misses oid %s after re-ingest", oid)
 		}
 	})
 }
@@ -353,13 +334,13 @@ func TestGCCollect(t *testing.T) {
 
 	listed := func(t *testing.T) map[string]bool {
 		t.Helper()
-		var entries []gcFileEntry
-		if err := json.Unmarshal(mustGet(t, s.httpURL+"/internal/files"), &entries); err != nil {
-			t.Fatalf("decode /internal/files: %v", err)
+		var objects []gcObject
+		if err := json.Unmarshal(mustGet(t, s.httpURL+"/internal/objects"), &objects); err != nil {
+			t.Fatalf("decode /internal/objects: %v", err)
 		}
 		set := map[string]bool{}
-		for _, e := range entries {
-			set[e.SHA256] = true
+		for _, o := range objects {
+			set[o.OID] = true
 		}
 		return set
 	}
@@ -381,7 +362,7 @@ func TestGCCollect(t *testing.T) {
 			t.Fatalf("collect in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", res)
 		}
 		if !listed(t)[dropOID] {
-			t.Fatalf("/internal/files lost %s inside the grace window", dropOID)
+			t.Fatalf("/internal/objects lost %s inside the grace window", dropOID)
 		}
 	})
 
@@ -391,12 +372,12 @@ func TestGCCollect(t *testing.T) {
 		if !slices.Equal(res.Unlinked, []string{dropOID}) {
 			t.Fatalf("unlinked = %v, want [%s]", res.Unlinked, dropOID)
 		}
-		if res.Sweep == nil || !res.Sweep.Done || len(res.Sweep.SweptShards) == 0 || len(res.Sweep.SweptXorbs) == 0 {
+		if res.Sweep == nil || !res.Sweep.Done || res.Sweep.SweptShards == 0 || res.Sweep.SweptXorbs == 0 {
 			t.Fatalf("sweep = %+v, want a finished sweep reclaiming shards and xorbs", res.Sweep)
 		}
 		files := listed(t)
 		if files[dropOID] || !files[keepOID] {
-			t.Fatalf("/internal/files lists drop=%v keep=%v, want false/true", files[dropOID], files[keepOID])
+			t.Fatalf("/internal/objects lists drop=%v keep=%v, want false/true", files[dropOID], files[keepOID])
 		}
 		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
 			t.Fatalf("keep resolve after collect: got %d bytes, want %d", len(got), len(keepData))
@@ -405,7 +386,7 @@ func TestGCCollect(t *testing.T) {
 
 	step("Idempotent", func(t *testing.T) {
 		res := collect(t, "?grace=0")
-		if len(res.Unlinked) != 0 || res.Sweep == nil || len(res.Sweep.SweptShards) != 0 || len(res.Sweep.SweptXorbs) != 0 {
+		if len(res.Unlinked) != 0 || res.Sweep == nil || res.Sweep.SweptShards != 0 || res.Sweep.SweptXorbs != 0 {
 			t.Fatalf("second collect = %+v, want nothing unlinked or swept", res)
 		}
 	})

@@ -57,7 +57,10 @@ func TestHandler(t *testing.T) {
 		{http.MethodPost, "/internal/gc/sweep?grace=-1s", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/sweep?anchor=all", http.StatusBadRequest},
+		{http.MethodDelete, "/internal/objects/zz", http.StatusBadRequest},
+		{http.MethodDelete, "/internal/objects/" + strings.Repeat("0", 64), http.StatusBadRequest},
+		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusNotFound},
+		{http.MethodGet, "/internal/objects", http.StatusOK},
 		{http.MethodGet, "/other", http.StatusTeapot},
 	} {
 		if rec := do(h, tc.method, tc.target); rec.Code != tc.want {
@@ -65,7 +68,12 @@ func TestHandler(t *testing.T) {
 		}
 	}
 
-	rec := do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
+	rec := do(h, http.MethodGet, "/internal/objects")
+	if rec.Header().Get("Content-Type") != "application/json" || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("empty list: content-type %q, body %q", rec.Header().Get("Content-Type"), rec.Body)
+	}
+
+	rec = do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("dry run: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
@@ -80,11 +88,11 @@ func TestHandler(t *testing.T) {
 		t.Fatalf("collect: got %d, body %s", rec.Code, rec.Body)
 	}
 
-	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&anchor=sha256&max=1&budget=1s&dry_run=false")
+	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&max=1&budget=1s&dry_run=false")
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("sweep: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
-	var sweep xetstorage.SweepResult
+	var sweep gc.SweepResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &sweep); err != nil || !sweep.Done || sweep.DryRun {
 		t.Fatalf("sweep body %s: err=%v result=%+v", rec.Body, err, sweep)
 	}

@@ -121,7 +121,7 @@ func TestCollect(t *testing.T) {
 		if res.Repositories != 1 || res.LiveObjects != 1 || !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 {
 			t.Fatalf("unexpected result: %+v", res)
 		}
-		if res.Sweep == nil || !res.Sweep.Done || len(res.Sweep.SweptShards) == 0 {
+		if res.Sweep == nil || !res.Sweep.Done || res.Sweep.SweptShards == 0 {
 			t.Fatalf("unexpected sweep: %+v", res.Sweep)
 		}
 		if !f.stored(t, live) || f.stored(t, dead) {
@@ -149,7 +149,7 @@ func TestCollect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("collect: %v", err)
 		}
-		if !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 || res.Sweep == nil || len(res.Sweep.SweptShards) == 0 {
+		if !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 || res.Sweep == nil || res.Sweep.SweptShards == 0 {
 			t.Fatalf("unexpected result: %+v sweep=%+v", res, res.Sweep)
 		}
 		if !f.stored(t, live) || f.stored(t, dead) {
@@ -235,17 +235,76 @@ func TestCollect(t *testing.T) {
 	})
 }
 
-// TestSweepSharesLock pins that Sweep and Collect exclude each other, so the store has one sweeper.
+// TestSweepSharesLock pins that SweepStep and Collect exclude each other, so the store has one sweeper.
 func TestSweepSharesLock(t *testing.T) {
 	f := newFixture(t)
 	c := f.collector()
 	c.mu.Lock()
-	if _, err := c.Sweep(context.Background(), xetstorage.SweepOptions{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
+	if _, err := c.SweepStep(context.Background(), SweepOptions{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
 		t.Fatalf("sweep during collect: got %v, want ErrGCBusy", err)
 	}
 	c.mu.Unlock()
-	res, err := c.Sweep(context.Background(), xetstorage.SweepOptions{Grace: -1})
+	res, err := c.SweepStep(context.Background(), SweepOptions{Grace: -1})
 	if err != nil || !res.Done {
 		t.Fatalf("sweep: err=%v result=%+v", err, res)
+	}
+}
+
+// TestSweepStepAnchorsSHA256 pins that hfd sweeps sha256-anchored: once Unlink drops the OID, the files entry alone keeps nothing alive.
+func TestSweepStepAnchorsSHA256(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	c := f.collector()
+	oid := f.put(t, "anchor ")
+	if removed, err := c.Unlink(ctx, oid); err != nil || !removed {
+		t.Fatalf("unlink: removed=%v err=%v", removed, err)
+	}
+	res, err := c.SweepStep(ctx, SweepOptions{Grace: -1})
+	if err != nil {
+		t.Fatalf("sweep step: %v", err)
+	}
+	if !res.Done || res.SweptShards == 0 || res.SweptXorbs == 0 || res.ReclaimedBytes <= 0 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if f.stored(t, oid) {
+		t.Fatal("unlinked object still stored after sweep")
+	}
+}
+
+func TestListAndUnlink(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	c := f.collector()
+	a, b := f.put(t, "list-a "), f.put(t, "list-b ")
+	objects, err := c.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	oids := make([]string, 0, len(objects))
+	for _, o := range objects {
+		if o.Size != objectSize {
+			t.Fatalf("object %s: size %d, want %d", o.OID, o.Size, objectSize)
+		}
+		oids = append(oids, o.OID)
+	}
+	slices.Sort(oids)
+	want := []string{a, b}
+	slices.Sort(want)
+	if !slices.Equal(oids, want) {
+		t.Fatalf("list: got %v, want %v", oids, want)
+	}
+	if removed, err := c.Unlink(ctx, a); err != nil || !removed {
+		t.Fatalf("unlink %s: removed=%v err=%v", a, removed, err)
+	}
+	if objects, err = c.List(ctx); err != nil || len(objects) != 1 || objects[0].OID != b {
+		t.Fatalf("list after unlink: err=%v objects=%+v", err, objects)
+	}
+	if removed, err := c.Unlink(ctx, a); err != nil || removed {
+		t.Fatalf("unlink again: removed=%v err=%v", removed, err)
+	}
+	for _, bad := range []string{"zz", strings.Repeat("0", 64)} {
+		if _, err := c.Unlink(ctx, bad); !errors.Is(err, ErrInvalidOID) {
+			t.Fatalf("unlink %q: got %v, want ErrInvalidOID", bad, err)
+		}
 	}
 }
