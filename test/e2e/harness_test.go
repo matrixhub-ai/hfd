@@ -21,7 +21,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -249,10 +248,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		handler = backendinternalapi.NewHandler(
 			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
 			backendinternalapi.WithGCGrace(time.Hour),
-			backendinternalapi.WithNext(xetinternalapi.NewHandler(
-				xetinternalapi.WithStorage(xet.xs),
-				xetinternalapi.WithNext(handler),
-			)),
+			backendinternalapi.WithNext(handler),
 		)
 	}
 	for _, w := range cfg.wraps {

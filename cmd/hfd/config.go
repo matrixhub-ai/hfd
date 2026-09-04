@@ -93,7 +93,7 @@ func parseConfig() (*config, error) {
 	flag.IntVar(&cfg.ProxyConcurrencyPerFile, "proxy-concurrency-per-file", cfg.ProxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
 	flag.Int64Var(&cfg.ProxyCacheSize, "proxy-cache-size", cfg.ProxyCacheSize, "Maximum size in bytes of the content chunk cache used for proxy transfers")
 
-	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (file listing, unlink, GC sweep, repository-aware GC via POST /internal/gc; run GC only while pushes are quiescent); expose only on trusted networks")
+	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing and unlink under /internal/objects, GC via POST /internal/gc and /internal/gc/sweep; run GC only while pushes are quiescent); expose only on trusted networks")
 	flag.Parse()
 
 	if cfg.HostURL == "" {

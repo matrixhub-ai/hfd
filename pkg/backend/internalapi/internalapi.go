@@ -1,4 +1,4 @@
-// Package internalapi serves the internal management endpoints hfd adds in front of xet's.
+// Package internalapi serves hfd's internal management endpoints over the xet store.
 package internalapi
 
 import (
@@ -15,11 +15,10 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 )
 
-// Handler serves POST /internal/gc?dry_run=&grace= (repository-aware collect) and
-// POST /internal/gc/sweep?dry_run=&grace=&max=&budget=&anchor= (xet's sweep contract) over one
-// gc.Collector, so both share a single lock and the store has exactly one sweeper; the sweep
-// route shadows xet's own when this handler is mounted in front of it. The endpoints are
-// unauthenticated and meant to be mounted behind the operator-only --internal gate.
+// Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
+// GET /internal/objects and DELETE /internal/objects/{oid} list and unlink stored objects,
+// POST /internal/gc runs a repository-aware collect and POST /internal/gc/sweep one sha256-anchored sweep step,
+// both taking ?dry_run=&grace=&max=&budget=; all over one gc.Collector, so the store has a single sweeper.
 type Handler struct {
 	collector *gc.Collector
 	gcGrace   time.Duration
@@ -62,6 +61,8 @@ func NewHandler(opts ...Option) *Handler {
 	if h.next == nil {
 		h.next = http.NotFoundHandler()
 	}
+	h.root.HandleFunc("/internal/objects", h.handleList).Methods(http.MethodGet)
+	h.root.HandleFunc("/internal/objects/{oid}", h.handleUnlink).Methods(http.MethodDelete)
 	h.root.HandleFunc("/internal/gc", h.handleGC).Methods(http.MethodPost)
 	h.root.HandleFunc("/internal/gc/sweep", h.handleSweep).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
@@ -73,14 +74,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.ServeHTTP(w, r)
 }
 
-// query parses the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
-func query(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+// parseOptions reads ?dry_run=&grace=&max=&budget= for both GC endpoints, answering 400 itself on a bad value.
+func (h *Handler) parseOptions(w http.ResponseWriter, r *http.Request) (gc.Options, bool) {
+	var opts gc.Options
+	// Parse the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		http.Error(w, "Invalid query string", http.StatusBadRequest)
-		return nil, false
+		return opts, false
 	}
-	return q, true
+	if opts.DryRun, err = parseDryRun(q); err != nil {
+		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
+		return opts, false
+	}
+	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
+		http.Error(w, "Invalid grace value", http.StatusBadRequest)
+		return opts, false
+	}
+	if q.Has("max") {
+		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
+			http.Error(w, "Invalid max value", http.StatusBadRequest)
+			return opts, false
+		}
+	}
+	if q.Has("budget") {
+		if opts.Budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.Budget < 0 {
+			http.Error(w, "Invalid budget value", http.StatusBadRequest)
+			return opts, false
+		}
+	}
+	return opts, true
 }
 
 // parseDryRun reads ?dry_run; a present but unparsable value is an error.
@@ -106,19 +129,35 @@ func parseGrace(q url.Values, def time.Duration) (time.Duration, error) {
 	return grace, nil
 }
 
+func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
+	objects, err := h.collector.List(r.Context())
+	if err != nil {
+		http.Error(w, "List failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, objects)
+}
+
+func (h *Handler) handleUnlink(w http.ResponseWriter, r *http.Request) {
+	removed, err := h.collector.Unlink(r.Context(), mux.Vars(r)["oid"])
+	if err != nil {
+		if errors.Is(err, gc.ErrInvalidOID) {
+			http.Error(w, "Invalid oid", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "Unlink failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !removed {
+		http.Error(w, "Object not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
-	q, ok := query(w, r)
+	opts, ok := h.parseOptions(w, r)
 	if !ok {
-		return
-	}
-	var opts gc.Options
-	var err error
-	if opts.DryRun, err = parseDryRun(q); err != nil {
-		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return
-	}
-	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
-		http.Error(w, "Invalid grace value", http.StatusBadRequest)
 		return
 	}
 	res, err := h.collector.Collect(r.Context(), opts)
@@ -140,46 +179,11 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
-	q, ok := query(w, r)
+	opts, ok := h.parseOptions(w, r)
 	if !ok {
 		return
 	}
-	var opts xetstorage.SweepOptions
-	var err error
-	if opts.DryRun, err = parseDryRun(q); err != nil {
-		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return
-	}
-	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
-		http.Error(w, "Invalid grace value", http.StatusBadRequest)
-		return
-	}
-	if q.Has("max") {
-		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
-			http.Error(w, "Invalid max value", http.StatusBadRequest)
-			return
-		}
-	}
-	if q.Has("budget") {
-		if opts.Budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.Budget < 0 {
-			http.Error(w, "Invalid budget value", http.StatusBadRequest)
-			return
-		}
-	}
-	if q.Has("anchor") {
-		switch q.Get("anchor") {
-		case "both":
-			opts.Anchor = xetstorage.AnchorBoth
-		case "files":
-			opts.Anchor = xetstorage.AnchorFiles
-		case "sha256":
-			opts.Anchor = xetstorage.AnchorSHA256
-		default:
-			http.Error(w, "Invalid anchor value", http.StatusBadRequest)
-			return
-		}
-	}
-	res, err := h.collector.Sweep(r.Context(), opts)
+	res, err := h.collector.SweepStep(r.Context(), opts)
 	if err != nil {
 		if errors.Is(err, xetstorage.ErrGCBusy) {
 			http.Error(w, "GC already running", http.StatusConflict)
