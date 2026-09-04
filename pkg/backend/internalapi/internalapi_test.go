@@ -3,9 +3,11 @@ package internalapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +52,12 @@ func TestHandler(t *testing.T) {
 		{http.MethodPost, "/internal/gc?grace=", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc?dry_run=maybe", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc?dry_run=", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?dry_run=true;x=1", http.StatusBadRequest}, // r.URL.Query() would drop dry_run and collect for real
+		{http.MethodPost, "/internal/gc/sweep?dry_run=true;x=1", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/sweep?grace=-1s", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/sweep?anchor=all", http.StatusBadRequest},
 		{http.MethodGet, "/other", http.StatusTeapot},
 	} {
 		if rec := do(h, tc.method, tc.target); rec.Code != tc.want {
@@ -70,6 +78,15 @@ func TestHandler(t *testing.T) {
 	}
 	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusOK {
 		t.Fatalf("collect: got %d, body %s", rec.Code, rec.Body)
+	}
+
+	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&anchor=sha256&max=1&budget=1s&dry_run=false")
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("sweep: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	var sweep xetstorage.SweepResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &sweep); err != nil || !sweep.Done || sweep.DryRun {
+		t.Fatalf("sweep body %s: err=%v result=%+v", rec.Body, err, sweep)
 	}
 }
 
@@ -94,8 +111,45 @@ func TestHandlerBusy(t *testing.T) {
 	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusConflict {
 		t.Fatalf("busy: got %d, want 409", rec.Code)
 	}
+	if rec := do(h, http.MethodPost, "/internal/gc/sweep"); rec.Code != http.StatusConflict {
+		t.Fatalf("sweep during collect: got %d, want 409", rec.Code)
+	}
 	close(store.release)
 	if code := <-first; code != http.StatusOK {
 		t.Fatalf("first collect: got %d, want 200", code)
+	}
+}
+
+// partialStore presents one dead sha256 entry, accepts its unlink, then fails the sweep's xorb walk.
+type partialStore struct {
+	*xetstorage.FileStorage
+}
+
+const deadSHA = "1111111111111111111111111111111111111111111111111111111111111111"
+
+func (p *partialStore) WalkSHA256Index(_ context.Context, fn func(string, string) error) error {
+	return fn(deadSHA, "missing-shard")
+}
+
+func (p *partialStore) DeleteSHA256IndexEntry(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (p *partialStore) WalkXorbs(context.Context, func(string, int64, time.Time) error) error {
+	return errors.New("xorb walk failed")
+}
+
+func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
+	h := newHandler(t, &partialStore{FileStorage: newStorage(t)})
+	rec := do(h, http.MethodPost, "/internal/gc")
+	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	var res gc.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "xorb walk failed") {
+		t.Fatalf("failure body must list the applied unlinks and the error: %+v", res)
 	}
 }

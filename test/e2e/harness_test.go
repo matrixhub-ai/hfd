@@ -251,8 +251,6 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 			backendinternalapi.WithGCGrace(time.Hour),
 			backendinternalapi.WithNext(xetinternalapi.NewHandler(
 				xetinternalapi.WithStorage(xet.xs),
-				xetinternalapi.WithGCGrace(time.Hour),
-				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
 				xetinternalapi.WithNext(handler),
 			)),
 		)

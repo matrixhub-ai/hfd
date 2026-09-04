@@ -18,7 +18,9 @@ import (
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
 
@@ -116,12 +118,18 @@ func TestGCLifecycle(t *testing.T) {
 		backendhttp.WithPreOpenHookFunc(preOpen),
 	)
 	// The wiring under test: the internal management API wraps the whole
-	// chain outermost, with the options cmd/hfd's internalAPI uses.
-	handler = xetinternalapi.NewHandler(
-		xetinternalapi.WithStorage(xet.xs),
-		xetinternalapi.WithGCGrace(1*time.Hour),
-		xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
-		xetinternalapi.WithNext(handler),
+	// chain outermost, nested the way cmd/hfd's internalAPI does.
+	gcs, ok := xet.xs.(xetstorage.GCStore)
+	if !ok {
+		t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
+	}
+	handler = backendinternalapi.NewHandler(
+		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
+		backendinternalapi.WithGCGrace(time.Hour),
+		backendinternalapi.WithNext(xetinternalapi.NewHandler(
+			xetinternalapi.WithStorage(xet.xs),
+			xetinternalapi.WithNext(handler),
+		)),
 	)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)

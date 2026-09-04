@@ -20,22 +20,34 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// maxDepth bounds the repository walk: repo.git, ns/repo.git, {datasets,spaces}/ns/repo.git.
-const maxDepth = 3
-
 var zeroSHA256 = strings.Repeat("0", 64)
 
 // Collector marks live LFS OIDs across all repositories and sweeps the rest from the xet store.
+//
+// Liveness is a git pointer in any repository; xet's manual sha256 unlink takes precedence, so
+// content unlinked that way is reclaimed by the next sweep even while a pointer still names it.
+// The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
+// with one repository and re-pushed to another is exposed until the new ref lands, so Collect
+// only while pushes are quiescent.
 type Collector struct {
 	repos billy.Filesystem
 	store xetstorage.GCStore
 	gc    *xetstorage.GC
-	mu    sync.Mutex
+	mu    sync.Mutex // serializes Collect and Sweep; xet's own GC lock underneath is then never contended
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
 func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
+}
+
+// Sweep runs one xet sweep step under the same lock as Collect, so the store has a single sweeper.
+func (c *Collector) Sweep(ctx context.Context, opts xetstorage.SweepOptions) (*xetstorage.SweepResult, error) {
+	if !c.mu.TryLock() {
+		return nil, xetstorage.ErrGCBusy
+	}
+	defer c.mu.Unlock()
+	return c.gc.SweepStep(ctx, opts)
 }
 
 // Options configures one Collect run.
@@ -52,9 +64,11 @@ type Result struct {
 	Unlinked       []string                `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
 	SkippedInGrace int                     `json:"skipped_in_grace"`
 	Sweep          *xetstorage.SweepResult `json:"sweep,omitempty"` // nil on dry run
+	Error          string                  `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
 }
 
 // Collect unlinks unreferenced OIDs past the grace window, then runs one sha256-anchored sweep; busy runs fail with xetstorage.ErrGCBusy.
+// An error after unlinking began comes with the partial Result, whose Unlinked lists the entries already removed.
 func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
@@ -63,7 +77,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 
 	res := &Result{DryRun: opts.DryRun, Unlinked: []string{}}
 	live := map[string]struct{}{}
-	repos, err := c.mark(ctx, "/", 0, live)
+	repos, err := c.mark(ctx, "/", live)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +132,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 			}
 			removed, err := c.gc.UnlinkSHA256(ctx, [32]byte(raw))
 			if err != nil {
-				return nil, fmt.Errorf("unlink sha256 %s: %w", h, err)
+				return res, c.failed(ctx, res, fmt.Errorf("unlink sha256 %s: %w", h, err))
 			}
 			if removed {
 				res.Unlinked = append(res.Unlinked, h)
@@ -126,7 +140,7 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 		}
 		res.Sweep, err = c.gc.SweepStep(ctx, xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace})
 		if err != nil {
-			return nil, fmt.Errorf("sweep: %w", err)
+			return res, c.failed(ctx, res, fmt.Errorf("sweep: %w", err))
 		}
 	}
 
@@ -141,11 +155,19 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 	return res, nil
 }
 
-// mark walks dir for repositories, adding their LFS OIDs to live and returning the repository count.
-func (c *Collector) mark(ctx context.Context, dir string, depth int, live map[string]struct{}) (int, error) {
+// failed logs a run that aborted after unlinking began and returns err.
+func (c *Collector) failed(ctx context.Context, res *Result, err error) error {
+	slog.ErrorContext(ctx, "gc collect failed after unlinking", "unlinked", len(res.Unlinked), "err", err)
+	return err
+}
+
+// mark walks dir for repositories at any depth, adding their LFS OIDs to live and returning the
+// repository count. A .git-suffixed directory without a valid HEAD is a namespace, unless it
+// holds git internals: then it is a damaged repository and the run aborts rather than miss it.
+func (c *Collector) mark(ctx context.Context, dir string, live map[string]struct{}) (int, error) {
 	entries, err := c.repos.ReadDir(dir)
 	if err != nil {
-		if depth == 0 && errors.Is(err, fs.ErrNotExist) {
+		if dir == "/" && errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("read %s: %w", dir, err)
@@ -159,14 +181,17 @@ func (c *Collector) mark(ctx context.Context, dir string, depth int, live map[st
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		if !strings.HasSuffix(e.Name(), ".git") {
-			if depth+1 < maxDepth {
-				n, err := c.mark(ctx, path, depth+1, live)
-				if err != nil {
-					return 0, err
+		if !strings.HasSuffix(e.Name(), ".git") || !repository.IsRepository(c.repos, path) {
+			if strings.HasSuffix(e.Name(), ".git") {
+				if _, err := c.repos.Stat(filepath.Join(path, "objects")); err == nil {
+					return 0, fmt.Errorf("damaged repository %s: git internals without a valid HEAD", path)
 				}
-				repos += n
 			}
+			n, err := c.mark(ctx, path, live)
+			if err != nil {
+				return 0, err
+			}
+			repos += n
 			continue
 		}
 		repo, err := repository.Open(c.repos, path)

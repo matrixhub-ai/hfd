@@ -273,8 +273,8 @@ func requestLogging(w io.Writer) middleware {
 	}
 }
 
-// internalAPI mounts the unauthenticated /internal/ management endpoints when enabled:
-// hfd's repository-aware POST /internal/gc in front of xet's file listing, unlink and GC sweep.
+// internalAPI mounts the unauthenticated /internal/ management endpoints when enabled: hfd's
+// POST /internal/gc and /internal/gc/sweep on one lock, in front of xet's file listing and unlink.
 func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore) middleware {
 	if !cfg.Internal {
 		return passthrough
@@ -287,8 +287,6 @@ func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetSt
 			backendinternalapi.WithGCGrace(time.Hour),
 			backendinternalapi.WithNext(xetinternalapi.NewHandler(
 				xetinternalapi.WithStorage(xs),
-				xetinternalapi.WithGCGrace(1*time.Hour),
-				xetinternalapi.WithGCAnchor(xetstorage.AnchorBoth),
 				xetinternalapi.WithNext(next),
 			)),
 		)
