@@ -25,18 +25,18 @@ var zeroSHA256 = strings.Repeat("0", 64)
 // ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
 var ErrInvalidOID = errors.New("invalid oid")
 
-// Collector marks live LFS OIDs across all repositories and sweeps the rest from the xet store.
+// Collector prunes xet sha256 index entries no repository LFS pointer names; SweepStep reclaims the data afterwards.
 //
 // Liveness is a git pointer in any repository; Unlink takes precedence, so content unlinked that
 // way is reclaimed by the next sweep even while a pointer still names it.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
-// with one repository and re-pushed to another is exposed until the new ref lands, so Collect
+// with one repository and re-pushed to another is exposed until the new ref lands, so Prune
 // only while pushes are quiescent.
 type Collector struct {
 	repos billy.Filesystem
 	store xetstorage.GCStore
 	gc    *xetstorage.GC
-	mu    sync.Mutex // serializes Collect and SweepStep; xet's own GC lock underneath is then never contended
+	mu    sync.Mutex // serializes Prune and SweepStep
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
@@ -44,7 +44,7 @@ func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
 }
 
-// Options configures one Collect run or SweepStep; MaxDeletes and Budget bound the sweep only, mark and unlink are uncharged.
+// Options configures one sweep step; MaxDeletes and Budget bound the sweep, while prune is uncharged and unbounded.
 type Options struct {
 	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
 	DryRun     bool
@@ -66,7 +66,7 @@ type SweepResult struct {
 	RemainingXorbs   int      `json:"remaining_xorbs"`
 }
 
-// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Collect, so the store has a single sweeper.
+// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Prune, so the store has a single sweeper.
 func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
@@ -97,27 +97,31 @@ func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, erro
 	}, nil
 }
 
-// Result reports one Collect run.
-type Result struct {
-	DryRun         bool         `json:"dry_run"`
-	Repositories   int          `json:"repositories"`
-	LiveObjects    int          `json:"live_objects"`
-	Unlinked       []string     `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
-	SkippedInGrace int          `json:"skipped_in_grace"`
-	Sweep          *SweepResult `json:"sweep,omitempty"` // nil on dry run
-	Error          string       `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
+// PruneOptions configures one prune run.
+type PruneOptions struct {
+	Grace  time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
+	DryRun bool
 }
 
-// Collect unlinks unreferenced OIDs past the grace window, then runs one sha256-anchored sweep step; busy runs fail with xetstorage.ErrGCBusy.
-// A sweep stopped by MaxDeletes or Budget reports Sweep.Done false; SweepStep continues it.
-// An error after unlinking began comes with the partial Result, whose Unlinked lists the entries already removed.
-func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) {
+// PruneResult reports one prune run.
+type PruneResult struct {
+	DryRun         bool     `json:"dry_run"`
+	Repositories   int      `json:"repositories"`
+	LiveObjects    int      `json:"live_objects"`
+	Unlinked       []string `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
+	SkippedInGrace int      `json:"skipped_in_grace"`
+	Error          string   `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
+}
+
+// Prune unlinks unreferenced OIDs past the grace window; the data stays until SweepStep reclaims it.
+// Busy runs fail with xetstorage.ErrGCBusy; an error after unlinking began comes with the partial result, whose Unlinked lists the entries already removed.
+func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
 	}
 	defer c.mu.Unlock()
 
-	res := &Result{DryRun: opts.DryRun, Unlinked: []string{}}
+	res := &PruneResult{DryRun: opts.DryRun, Unlinked: []string{}}
 	live := map[string]struct{}{}
 	repos, err := c.mark(ctx, "/", live)
 	if err != nil {
@@ -171,34 +175,19 @@ func (c *Collector) Collect(ctx context.Context, opts Options) (*Result, error) 
 			}
 			removed, err := c.gc.UnlinkSHA256(ctx, digest)
 			if err != nil {
-				return res, c.failed(ctx, res, fmt.Errorf("unlink sha256 %s: %w", h, err))
+				err = fmt.Errorf("unlink sha256 %s: %w", h, err)
+				slog.ErrorContext(ctx, "gc prune failed after unlinking", "unlinked", len(res.Unlinked), "err", err)
+				return res, err
 			}
 			if removed {
 				res.Unlinked = append(res.Unlinked, h)
 			}
 		}
-		res.Sweep, err = c.sweep(ctx, opts)
-		if err != nil {
-			return res, c.failed(ctx, res, fmt.Errorf("sweep: %w", err))
-		}
 	}
 
-	var sweptShards, sweptXorbs int
-	var reclaimed int64
-	var done bool
-	if res.Sweep != nil {
-		sweptShards, sweptXorbs, reclaimed, done = res.Sweep.SweptShards, res.Sweep.SweptXorbs, res.Sweep.ReclaimedBytes, res.Sweep.Done
-	}
-	slog.InfoContext(ctx, "gc collect", "repositories", res.Repositories, "live", res.LiveObjects,
-		"unlinked", len(res.Unlinked), "skipped_in_grace", res.SkippedInGrace, "swept_shards", sweptShards,
-		"swept_xorbs", sweptXorbs, "reclaimed_bytes", reclaimed, "sweep_done", done, "dry_run", res.DryRun)
+	slog.InfoContext(ctx, "gc prune", "repositories", res.Repositories, "live", res.LiveObjects,
+		"unlinked", len(res.Unlinked), "skipped_in_grace", res.SkippedInGrace, "dry_run", res.DryRun)
 	return res, nil
-}
-
-// failed logs a run that aborted after unlinking began and returns err.
-func (c *Collector) failed(ctx context.Context, res *Result, err error) error {
-	slog.ErrorContext(ctx, "gc collect failed after unlinking", "unlinked", len(res.Unlinked), "err", err)
-	return err
 }
 
 // parseOID decodes a 64-hex sha256 digest, rejecting the all-zero one (the shared empty-file marker).

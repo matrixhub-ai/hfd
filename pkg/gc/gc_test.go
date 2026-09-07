@@ -108,21 +108,65 @@ func (f *fixture) stored(t *testing.T, oid string) bool {
 	return err == nil
 }
 
-func TestCollect(t *testing.T) {
+func (f *fixture) counts(t *testing.T) (shards, xorbs int) {
+	t.Helper()
+	if err := f.xs.WalkShards(context.Background(), func(string, int64, time.Time) error {
+		shards++
+		return nil
+	}); err != nil {
+		t.Fatalf("walk shards: %v", err)
+	}
+	if err := f.xs.WalkXorbs(context.Background(), func(string, int64, time.Time) error {
+		xorbs++
+		return nil
+	}); err != nil {
+		t.Fatalf("walk xorbs: %v", err)
+	}
+	return shards, xorbs
+}
+
+func TestPrune(t *testing.T) {
 	ctx := context.Background()
+	t.Run("LeavesDataForSweep", func(t *testing.T) {
+		f := newFixture(t)
+		c := f.collector()
+		live, dead := f.put(t, "live-j "), f.put(t, "dead-j ")
+		f.commitPointer(t, "org/repo", live)
+		shards, xorbs := f.counts(t)
+		if shards <= 0 || xorbs <= 0 {
+			t.Fatalf("empty storage: shards=%d xorbs=%d", shards, xorbs)
+		}
+		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
+		if err != nil {
+			t.Fatalf("prune: %v", err)
+		}
+		if !slices.Equal(res.Unlinked, []string{dead}) || f.stored(t, dead) || !f.stored(t, live) {
+			t.Fatalf("unexpected result: %+v live stored=%v dead stored=%v", res, f.stored(t, live), f.stored(t, dead))
+		}
+		if gotShards, gotXorbs := f.counts(t); gotShards != shards || gotXorbs != xorbs {
+			t.Fatalf("data changed during unlink: shards=%d xorbs=%d, want shards=%d xorbs=%d", gotShards, gotXorbs, shards, xorbs)
+		}
+		sweep, err := c.SweepStep(ctx, Options{Grace: -1})
+		if err != nil {
+			t.Fatalf("sweep step: %v", err)
+		}
+		if !sweep.Done || sweep.SweptShards == 0 || sweep.SweptXorbs == 0 || !f.stored(t, live) {
+			t.Fatalf("unexpected sweep: %+v live stored=%v", sweep, f.stored(t, live))
+		}
+		if gotShards, gotXorbs := f.counts(t); gotShards >= shards || gotXorbs >= xorbs {
+			t.Fatalf("data not reclaimed: shards=%d xorbs=%d, want fewer than shards=%d xorbs=%d", gotShards, gotXorbs, shards, xorbs)
+		}
+	})
 	t.Run("UnlinksUnreferenced", func(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-a "), f.put(t, "dead-a ")
 		f.commitPointer(t, "org/repo", live)
-		res, err := f.collector().Collect(ctx, Options{Grace: -1})
+		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
 		if res.Repositories != 1 || res.LiveObjects != 1 || !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 {
 			t.Fatalf("unexpected result: %+v", res)
-		}
-		if res.Sweep == nil || !res.Sweep.Done || res.Sweep.SweptShards == 0 {
-			t.Fatalf("unexpected sweep: %+v", res.Sweep)
 		}
 		if !f.stored(t, live) || f.stored(t, dead) {
 			t.Fatalf("live stored=%v dead stored=%v", f.stored(t, live), f.stored(t, dead))
@@ -132,9 +176,9 @@ func TestCollect(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-b "), f.put(t, "dead-b ")
 		f.commitPointer(t, "org/repo", live)
-		res, err := f.collector().Collect(ctx, Options{})
+		res, err := f.collector().Prune(ctx, PruneOptions{})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
 		if len(res.Unlinked) != 0 || res.SkippedInGrace != 1 || !f.stored(t, dead) {
 			t.Fatalf("unexpected result: %+v stored=%v", res, f.stored(t, dead))
@@ -145,12 +189,12 @@ func TestCollect(t *testing.T) {
 		live, dead := f.put(t, "live-f "), f.put(t, "dead-f ")
 		f.commitPointer(t, "org/repo", live)
 		f.age(t, 2*time.Hour)
-		res, err := f.collector().Collect(ctx, Options{Grace: time.Hour})
+		res, err := f.collector().Prune(ctx, PruneOptions{Grace: time.Hour})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
-		if !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 || res.Sweep == nil || res.Sweep.SweptShards == 0 {
-			t.Fatalf("unexpected result: %+v sweep=%+v", res, res.Sweep)
+		if !slices.Equal(res.Unlinked, []string{dead}) || res.SkippedInGrace != 0 {
+			t.Fatalf("unexpected result: %+v", res)
 		}
 		if !f.stored(t, live) || f.stored(t, dead) {
 			t.Fatalf("live stored=%v dead stored=%v", f.stored(t, live), f.stored(t, dead))
@@ -160,12 +204,16 @@ func TestCollect(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-c "), f.put(t, "dead-c ")
 		f.commitPointer(t, "org/repo", live)
-		res, err := f.collector().Collect(ctx, Options{Grace: -1, DryRun: true})
+		shards, xorbs := f.counts(t)
+		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
-		if !res.DryRun || !slices.Equal(res.Unlinked, []string{dead}) || res.Sweep != nil || !f.stored(t, dead) {
+		if !res.DryRun || !slices.Equal(res.Unlinked, []string{dead}) || !f.stored(t, dead) {
 			t.Fatalf("unexpected result: %+v stored=%v", res, f.stored(t, dead))
+		}
+		if gotShards, gotXorbs := f.counts(t); gotShards != shards || gotXorbs != xorbs {
+			t.Fatalf("data changed during dry run: shards=%d xorbs=%d, want shards=%d xorbs=%d", gotShards, gotXorbs, shards, xorbs)
 		}
 	})
 	t.Run("BoundedSweepContinues", func(t *testing.T) {
@@ -173,15 +221,22 @@ func TestCollect(t *testing.T) {
 		c := f.collector()
 		dead := []string{f.put(t, "dead-h "), f.put(t, "dead-i ")}
 		slices.Sort(dead)
-		res, err := c.Collect(ctx, Options{Grace: -1, MaxDeletes: 1})
+		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
-		// Unlink is unbounded; the cap stops the sweep after one shard, leaving the rest to SweepStep.
-		if !slices.Equal(res.Unlinked, dead) || res.Sweep == nil || res.Sweep.Done || res.Sweep.SweptShards != 1 || res.Sweep.RemainingShards == 0 {
-			t.Fatalf("unexpected result: %+v sweep=%+v", res, res.Sweep)
+		if !slices.Equal(res.Unlinked, dead) {
+			t.Fatalf("unexpected result: %+v", res)
 		}
-		sweep, err := c.SweepStep(ctx, Options{Grace: -1})
+		// Prune is unbounded; the cap stops the sweep after one shard.
+		sweep, err := c.SweepStep(ctx, Options{Grace: -1, MaxDeletes: 1})
+		if err != nil {
+			t.Fatalf("sweep step: %v", err)
+		}
+		if sweep.Done || sweep.SweptShards != 1 || sweep.RemainingShards == 0 {
+			t.Fatalf("unexpected sweep: %+v", sweep)
+		}
+		sweep, err = c.SweepStep(ctx, Options{Grace: -1})
 		if err != nil {
 			t.Fatalf("sweep step: %v", err)
 		}
@@ -199,9 +254,9 @@ func TestCollect(t *testing.T) {
 			oids[i] = f.put(t, fmt.Sprintf("live-%d ", i))
 			f.commitPointer(t, name, oids[i])
 		}
-		res, err := f.collector().Collect(ctx, Options{Grace: -1})
+		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
 		if res.Repositories != len(names) || res.LiveObjects != len(names) || len(res.Unlinked) != 0 {
 			t.Fatalf("unexpected result: %+v", res)
@@ -220,11 +275,11 @@ func TestCollect(t *testing.T) {
 		if err := f.st.RepositoriesFS().MkdirAll("/org/damaged.git/objects", 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if _, err := f.collector().Collect(ctx, Options{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/damaged.git") {
-			t.Fatalf("collect: expected error naming the damaged repository, got %v", err)
+		if _, err := f.collector().Prune(ctx, PruneOptions{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/damaged.git") {
+			t.Fatalf("prune: expected error naming the damaged repository, got %v", err)
 		}
 		if !f.stored(t, dead) {
-			t.Fatal("dead object unlinked despite aborted collect")
+			t.Fatal("dead object unlinked despite aborted prune")
 		}
 	})
 	t.Run("BrokenRepoAborts", func(t *testing.T) {
@@ -237,18 +292,18 @@ func TestCollect(t *testing.T) {
 				t.Fatalf("write %s: %v", file, err)
 			}
 		}
-		if _, err := f.collector().Collect(ctx, Options{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/broken.git") {
-			t.Fatalf("collect: expected error naming the broken repository, got %v", err)
+		if _, err := f.collector().Prune(ctx, PruneOptions{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/broken.git") {
+			t.Fatalf("prune: expected error naming the broken repository, got %v", err)
 		}
 		if !f.stored(t, dead) {
-			t.Fatal("dead object unlinked despite aborted collect")
+			t.Fatal("dead object unlinked despite aborted prune")
 		}
 	})
 	t.Run("MissingRoot", func(t *testing.T) {
 		f := newFixture(t)
-		res, err := f.collector().Collect(ctx, Options{Grace: -1})
+		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
-			t.Fatalf("collect: %v", err)
+			t.Fatalf("prune: %v", err)
 		}
 		if res.Repositories != 0 || res.LiveObjects != 0 || len(res.Unlinked) != 0 {
 			t.Fatalf("unexpected result: %+v", res)
@@ -256,13 +311,16 @@ func TestCollect(t *testing.T) {
 	})
 }
 
-// TestSweepSharesLock pins that SweepStep and Collect exclude each other, so the store has one sweeper.
+// TestSweepSharesLock pins that SweepStep and Prune exclude each other, so the store has one sweeper.
 func TestSweepSharesLock(t *testing.T) {
 	f := newFixture(t)
 	c := f.collector()
 	c.mu.Lock()
 	if _, err := c.SweepStep(context.Background(), Options{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
-		t.Fatalf("sweep during collect: got %v, want ErrGCBusy", err)
+		t.Fatalf("sweep during prune: got %v, want ErrGCBusy", err)
+	}
+	if _, err := c.Prune(context.Background(), PruneOptions{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
+		t.Fatalf("prune during sweep: got %v, want ErrGCBusy", err)
 	}
 	c.mu.Unlock()
 	res, err := c.SweepStep(context.Background(), Options{Grace: -1})

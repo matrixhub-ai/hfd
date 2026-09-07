@@ -36,14 +36,13 @@ type gcSweepResult struct {
 	Done        bool `json:"done"`
 }
 
-// gcCollectResult carries the gc.Result fields the test asserts on.
-type gcCollectResult struct {
-	DryRun         bool           `json:"dry_run"`
-	Repositories   int            `json:"repositories"`
-	LiveObjects    int            `json:"live_objects"`
-	Unlinked       []string       `json:"unlinked"`
-	SkippedInGrace int            `json:"skipped_in_grace"`
-	Sweep          *gcSweepResult `json:"sweep"`
+// gcPruneResult carries the gc.PruneResult fields the test asserts on.
+type gcPruneResult struct {
+	DryRun         bool     `json:"dry_run"`
+	Repositories   int      `json:"repositories"`
+	LiveObjects    int      `json:"live_objects"`
+	Unlinked       []string `json:"unlinked"`
+	SkippedInGrace int      `json:"skipped_in_grace"`
 }
 
 // mustGet follows redirects and returns the 200 body, failing the test otherwise.
@@ -62,6 +61,28 @@ func mustGet(t *testing.T, url string) []byte {
 		t.Fatalf("GET %s status = %d, want 200 (body %q)", url, resp.StatusCode, body)
 	}
 	return body
+}
+
+// postSweep runs one unshielded sweep step against baseURL and returns the decoded 200 body, failing the test otherwise.
+func postSweep(t *testing.T, baseURL string) gcSweepResult {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/internal/gc/sweep?grace=0", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST sweep: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read sweep body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("sweep status = %d, want 200 (body %q)", resp.StatusCode, body)
+	}
+	var res gcSweepResult
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatalf("decode sweep result: %v", err)
+	}
+	return res
 }
 
 // TestGCLifecycle drives the /internal/ management API end to end over the
@@ -158,27 +179,6 @@ func TestGCLifecycle(t *testing.T) {
 		return nil
 	}
 
-	sweep := func(t *testing.T) gcSweepResult {
-		t.Helper()
-		resp, err := http.Post(proxy.URL+"/internal/gc/sweep?grace=0", "application/json", nil)
-		if err != nil {
-			t.Fatalf("POST sweep: %v", err)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read sweep body: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("sweep status = %d, want 200 (body %q)", resp.StatusCode, body)
-		}
-		var res gcSweepResult
-		if err := json.Unmarshal(body, &res); err != nil {
-			t.Fatalf("decode sweep result: %v", err)
-		}
-		return res
-	}
-
 	del := func(t *testing.T, path string) int {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, proxy.URL+path, nil)
@@ -243,7 +243,7 @@ func TestGCLifecycle(t *testing.T) {
 	})
 
 	step("SweepAnchoredKeepsObject", func(t *testing.T) {
-		res := sweep(t)
+		res := postSweep(t, proxy.URL)
 		if res.SweptShards != 0 || res.SweptXorbs != 0 {
 			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", res.SweptShards, res.SweptXorbs)
 		}
@@ -262,7 +262,7 @@ func TestGCLifecycle(t *testing.T) {
 	})
 
 	step("SweepReclaims", func(t *testing.T) {
-		res := sweep(t)
+		res := postSweep(t, proxy.URL)
 		if res.SweptShards == 0 || res.SweptXorbs == 0 {
 			t.Fatalf("unanchored sweep reclaimed shards=%d xorbs=%d, want both non-zero", res.SweptShards, res.SweptXorbs)
 		}
@@ -293,8 +293,8 @@ func TestGCLifecycle(t *testing.T) {
 	})
 }
 
-// TestGCCollect drives POST /internal/gc over the assembled chain: a deleted repository's LFS object becomes collectable once outside the grace window.
-func TestGCCollect(t *testing.T) {
+// TestGCPrune drives POST /internal/gc/prune then /internal/gc/sweep over the assembled chain: a deleted repository's LFS object is unlinked once outside the grace window, and only the separate sweep reclaims its data.
+func TestGCPrune(t *testing.T) {
 	s := newE2EServer(t, withInternalAPI())
 	s.createRepo(t, "gc-org", "keep")
 	s.createRepo(t, "gc-org", "drop")
@@ -311,23 +311,23 @@ func TestGCCollect(t *testing.T) {
 		}
 	}
 
-	collect := func(t *testing.T, query string) gcCollectResult {
+	prune := func(t *testing.T, query string) gcPruneResult {
 		t.Helper()
-		resp, err := http.Post(s.httpURL+"/internal/gc"+query, "application/json", nil)
+		resp, err := http.Post(s.httpURL+"/internal/gc/prune"+query, "application/json", nil)
 		if err != nil {
-			t.Fatalf("POST /internal/gc%s: %v", query, err)
+			t.Fatalf("POST /internal/gc/prune%s: %v", query, err)
 		}
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			t.Fatalf("read collect body: %v", err)
+			t.Fatalf("read prune body: %v", err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("collect status = %d, want 200 (body %q)", resp.StatusCode, body)
+			t.Fatalf("prune status = %d, want 200 (body %q)", resp.StatusCode, body)
 		}
-		var res gcCollectResult
+		var res gcPruneResult
 		if err := json.Unmarshal(body, &res); err != nil {
-			t.Fatalf("decode collect result: %v", err)
+			t.Fatalf("decode prune result: %v", err)
 		}
 		return res
 	}
@@ -346,9 +346,9 @@ func TestGCCollect(t *testing.T) {
 	}
 
 	step("DryRunKeepsAll", func(t *testing.T) {
-		res := collect(t, "?dry_run=true")
-		if !res.DryRun || res.Repositories != 2 || res.LiveObjects != 2 || len(res.Unlinked) != 0 || res.Sweep != nil {
-			t.Fatalf("dry run = %+v, want 2 repositories, 2 live objects, nothing unlinked, no sweep", res)
+		res := prune(t, "?dry_run=true")
+		if !res.DryRun || res.Repositories != 2 || res.LiveObjects != 2 || len(res.Unlinked) != 0 {
+			t.Fatalf("dry run = %+v, want 2 repositories, 2 live objects, nothing unlinked", res)
 		}
 	})
 
@@ -357,37 +357,62 @@ func TestGCCollect(t *testing.T) {
 	})
 
 	step("GraceShields", func(t *testing.T) {
-		res := collect(t, "")
+		res := prune(t, "")
 		if len(res.Unlinked) != 0 || res.SkippedInGrace != 1 || res.Repositories != 1 {
-			t.Fatalf("collect in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", res)
+			t.Fatalf("prune in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", res)
 		}
 		if !listed(t)[dropOID] {
 			t.Fatalf("/internal/objects lost %s inside the grace window", dropOID)
 		}
 	})
 
-	step("Collect", func(t *testing.T) {
+	step("Prune", func(t *testing.T) {
 		// The fresh upload sits inside the default 1h grace window; grace=0 disables it.
-		res := collect(t, "?grace=0")
+		res := prune(t, "?grace=0")
 		if !slices.Equal(res.Unlinked, []string{dropOID}) {
 			t.Fatalf("unlinked = %v, want [%s]", res.Unlinked, dropOID)
-		}
-		if res.Sweep == nil || !res.Sweep.Done || res.Sweep.SweptShards == 0 || res.Sweep.SweptXorbs == 0 {
-			t.Fatalf("sweep = %+v, want a finished sweep reclaiming shards and xorbs", res.Sweep)
 		}
 		files := listed(t)
 		if files[dropOID] || !files[keepOID] {
 			t.Fatalf("/internal/objects lists drop=%v keep=%v, want false/true", files[dropOID], files[keepOID])
 		}
 		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
-			t.Fatalf("keep resolve after collect: got %d bytes, want %d", len(got), len(keepData))
+			t.Fatalf("keep resolve after prune: got %d bytes, want %d", len(got), len(keepData))
+		}
+	})
+
+	step("Sweep", func(t *testing.T) {
+		res := postSweep(t, s.httpURL)
+		if !res.Done || res.SweptShards == 0 || res.SweptXorbs == 0 {
+			t.Fatalf("sweep = %+v, want a finished sweep reclaiming shards and xorbs", res)
+		}
+		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
+			t.Fatalf("keep resolve after sweep: got %d bytes, want %d", len(got), len(keepData))
 		}
 	})
 
 	step("Idempotent", func(t *testing.T) {
-		res := collect(t, "?grace=0")
-		if len(res.Unlinked) != 0 || res.Sweep == nil || res.Sweep.SweptShards != 0 || res.Sweep.SweptXorbs != 0 {
-			t.Fatalf("second collect = %+v, want nothing unlinked or swept", res)
+		res := prune(t, "?grace=0")
+		if len(res.Unlinked) != 0 {
+			t.Fatalf("second prune = %+v, want nothing unlinked", res)
+		}
+		if sweep := postSweep(t, s.httpURL); sweep.SweptShards != 0 || sweep.SweptXorbs != 0 {
+			t.Fatalf("second sweep = %+v, want nothing swept", sweep)
+		}
+	})
+
+	step("LegacyRouteGone", func(t *testing.T) {
+		resp, err := http.Post(s.httpURL+"/internal/gc", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST legacy GC: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read legacy GC body: %v", err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("legacy GC status = %d, want 404 (body %q)", resp.StatusCode, body)
 		}
 	})
 }

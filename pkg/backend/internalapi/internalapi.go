@@ -17,8 +17,9 @@ import (
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
 // GET /internal/objects and DELETE /internal/objects/{oid} list and unlink stored objects,
-// POST /internal/gc runs a repository-aware collect and POST /internal/gc/sweep one sha256-anchored sweep step,
-// both taking ?dry_run=&grace=&max=&budget=; all over one gc.Collector, so the store has a single sweeper.
+// POST /internal/gc/prune (?dry_run=&grace=) unlinks sha256 index entries no repository LFS pointer names; data stays,
+// POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data.
+// Neither step runs the other; both use one gc.Collector, so the store has a single sweeper.
 type Handler struct {
 	collector *gc.Collector
 	gcGrace   time.Duration
@@ -63,7 +64,7 @@ func NewHandler(opts ...Option) *Handler {
 	}
 	h.root.HandleFunc("/internal/objects", h.handleList).Methods(http.MethodGet)
 	h.root.HandleFunc("/internal/objects/{oid}", h.handleUnlink).Methods(http.MethodDelete)
-	h.root.HandleFunc("/internal/gc", h.handleGC).Methods(http.MethodPost)
+	h.root.HandleFunc("/internal/gc/prune", h.handlePrune).Methods(http.MethodPost)
 	h.root.HandleFunc("/internal/gc/sweep", h.handleSweep).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
 	return h
@@ -74,23 +75,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.ServeHTTP(w, r)
 }
 
-// parseOptions reads ?dry_run=&grace=&max=&budget= for both GC endpoints, answering 400 itself on a bad value.
-func (h *Handler) parseOptions(w http.ResponseWriter, r *http.Request) (gc.Options, bool) {
-	var opts gc.Options
+// parsePruneOptions reads ?dry_run=&grace= and returns the parsed query for further keys, answering 400 itself on a bad value.
+func (h *Handler) parsePruneOptions(w http.ResponseWriter, r *http.Request) (url.Values, gc.PruneOptions, bool) {
+	var opts gc.PruneOptions
 	// Parse the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		http.Error(w, "Invalid query string", http.StatusBadRequest)
-		return opts, false
+		return q, opts, false
 	}
 	if opts.DryRun, err = parseDryRun(q); err != nil {
 		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return opts, false
+		return q, opts, false
 	}
 	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
 		http.Error(w, "Invalid grace value", http.StatusBadRequest)
-		return opts, false
+		return q, opts, false
 	}
+	return q, opts, true
+}
+
+// parseSweepOptions adds ?max=&budget= on top of parsePruneOptions.
+func (h *Handler) parseSweepOptions(w http.ResponseWriter, r *http.Request) (gc.Options, bool) {
+	q, prune, ok := h.parsePruneOptions(w, r)
+	if !ok {
+		return gc.Options{}, false
+	}
+	opts := gc.Options{DryRun: prune.DryRun, Grace: prune.Grace}
+	var err error
 	if q.Has("max") {
 		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
 			http.Error(w, "Invalid max value", http.StatusBadRequest)
@@ -155,19 +167,19 @@ func (h *Handler) handleUnlink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
-	opts, ok := h.parseOptions(w, r)
+func (h *Handler) handlePrune(w http.ResponseWriter, r *http.Request) {
+	_, opts, ok := h.parsePruneOptions(w, r)
 	if !ok {
 		return
 	}
-	res, err := h.collector.Collect(r.Context(), opts)
+	res, err := h.collector.Prune(r.Context(), opts)
 	if err != nil {
 		if errors.Is(err, xetstorage.ErrGCBusy) {
 			http.Error(w, "GC already running", http.StatusConflict)
 			return
 		}
 		if res == nil {
-			http.Error(w, "GC failed: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "Prune failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		// Unlinks already happened: report them alongside the failure.
@@ -179,7 +191,7 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
-	opts, ok := h.parseOptions(w, r)
+	opts, ok := h.parseSweepOptions(w, r)
 	if !ok {
 		return
 	}
