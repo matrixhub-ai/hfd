@@ -19,7 +19,6 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
-	xetinternalapi "github.com/wzshiming/xet/server/internalapi"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
@@ -272,8 +271,8 @@ func requestLogging(w io.Writer) middleware {
 	}
 }
 
-// internalAPI mounts the unauthenticated /internal/ management endpoints when enabled: hfd's
-// POST /internal/gc and /internal/gc/sweep on one lock, in front of xet's file listing and unlink.
+// internalAPI mounts hfd's unauthenticated /internal/ management endpoints when enabled:
+// object listing/unlink, repository-aware GC and sweep, all on one lock.
 func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore) middleware {
 	if !cfg.Internal {
 		return passthrough
@@ -284,10 +283,7 @@ func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetSt
 		return backendinternalapi.NewHandler(
 			backendinternalapi.WithCollector(collector),
 			backendinternalapi.WithGCGrace(time.Hour),
-			backendinternalapi.WithNext(xetinternalapi.NewHandler(
-				xetinternalapi.WithStorage(xs),
-				xetinternalapi.WithNext(next),
-			)),
+			backendinternalapi.WithNext(next),
 		)
 	}
 }
