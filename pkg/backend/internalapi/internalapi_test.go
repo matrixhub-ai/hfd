@@ -58,9 +58,7 @@ func TestHandler(t *testing.T) {
 		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc", http.StatusTeapot},
-		{http.MethodDelete, "/internal/objects/zz", http.StatusBadRequest},
-		{http.MethodDelete, "/internal/objects/" + strings.Repeat("0", 64), http.StatusBadRequest},
-		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusNotFound},
+		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusTeapot},
 		{http.MethodGet, "/internal/objects", http.StatusOK},
 		{http.MethodGet, "/other", http.StatusTeapot},
 	} {

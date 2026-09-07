@@ -27,8 +27,7 @@ var ErrInvalidOID = errors.New("invalid oid")
 
 // Collector prunes xet sha256 index entries no repository LFS pointer names; SweepStep reclaims the data afterwards.
 //
-// Liveness is a git pointer in any repository; Unlink takes precedence, so content unlinked that
-// way is reclaimed by the next sweep even while a pointer still names it.
+// Liveness is a git pointer in any repository.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
 // with one repository and re-pushed to another is exposed until the new ref lands, so Prune
 // only while pushes are quiescent.
@@ -204,15 +203,6 @@ func parseOID(oid string) ([32]byte, error) {
 		return digest, fmt.Errorf("%w: all-zero digest", ErrInvalidOID)
 	}
 	return digest, nil
-}
-
-// Unlink removes the OID's sha256 index entry, reporting whether it existed; data is reclaimed by the next sweep.
-func (c *Collector) Unlink(ctx context.Context, oid string) (bool, error) {
-	digest, err := parseOID(oid)
-	if err != nil {
-		return false, err
-	}
-	return c.gc.UnlinkSHA256(ctx, digest)
 }
 
 // Object is one stored LFS object resolvable by OID.

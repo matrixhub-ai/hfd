@@ -85,16 +85,38 @@ func postSweep(t *testing.T, baseURL string) gcSweepResult {
 	return res
 }
 
+// postPrune runs one prune with query against baseURL and returns the decoded 200 body, failing the test otherwise.
+func postPrune(t *testing.T, baseURL, query string) gcPruneResult {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/internal/gc/prune"+query, "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /internal/gc/prune%s: %v", query, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read prune body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prune status = %d, want 200 (body %q)", resp.StatusCode, body)
+	}
+	var res gcPruneResult
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatalf("decode prune result: %v", err)
+	}
+	return res
+}
+
 // TestGCLifecycle drives the /internal/ management API end to end over the
 // assembled hfd chain: a pull-through mirror ingests an LFS object from an
-// upstream hfd server, /internal/objects lists it, a sweep leaves the
-// anchored object alone, unlinking the OID lets the next sweep reclaim the
-// bytes, and the next resolve self-heals by re-ingesting from upstream. The
-// internal API wraps the chain outermost with the same options as cmd/hfd's
-// internalAPI. Library-level GC semantics stay covered upstream in xet;
-// this test pins the hfd wiring. TestMain runs it under local and S3
-// storage; both xet storages implement GCStore, so the GC endpoints never
-// answer 501.
+// upstream hfd server, /internal/objects lists it, and prune keeps the
+// referenced object. Deleting the mirrored repo lets prune unlink the OID
+// and sweep reclaim the bytes; the next resolve self-heals by mirroring
+// the repo and re-ingesting from upstream. The internal API wraps the chain
+// outermost with the same options as cmd/hfd's internalAPI. Library-level
+// GC semantics stay covered upstream in xet; this test pins the hfd wiring.
+// TestMain runs it under local and S3 storage; both xet storages implement
+// GCStore, so the GC endpoints never answer 501.
 func TestGCLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		t.Skip("git-lfs not available, skipping GC lifecycle test")
@@ -179,21 +201,6 @@ func TestGCLifecycle(t *testing.T) {
 		return nil
 	}
 
-	del := func(t *testing.T, path string) int {
-		t.Helper()
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, proxy.URL+path, nil)
-		if err != nil {
-			t.Fatalf("build DELETE %s: %v", path, err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("DELETE %s: %v", path, err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-
 	waitIngested := func(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)
@@ -242,7 +249,11 @@ func TestGCLifecycle(t *testing.T) {
 		}
 	})
 
-	step("SweepAnchoredKeepsObject", func(t *testing.T) {
+	step("PruneKeepsReferenced", func(t *testing.T) {
+		prune := postPrune(t, proxy.URL, "?grace=0")
+		if len(prune.Unlinked) != 0 || prune.LiveObjects < 1 {
+			t.Fatalf("prune = %+v, want a live object and nothing unlinked", prune)
+		}
 		res := postSweep(t, proxy.URL)
 		if res.SweptShards != 0 || res.SweptXorbs != 0 {
 			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", res.SweptShards, res.SweptXorbs)
@@ -252,12 +263,14 @@ func TestGCLifecycle(t *testing.T) {
 		}
 	})
 
-	step("UnlinkObject", func(t *testing.T) {
-		if code := del(t, "/internal/objects/"+oid); code != http.StatusNoContent {
-			t.Fatalf("DELETE /internal/objects/%s status = %d, want 204", oid, code)
-		}
-		if code := del(t, "/internal/objects/"+oid); code != http.StatusNotFound {
-			t.Fatalf("second DELETE status = %d, want 404", code)
+	step("DeleteMirrorRepo", func(t *testing.T) {
+		deleteRepoAt(t, proxy.URL, "gc-org", "gc-repo")
+	})
+
+	step("PruneUnlinks", func(t *testing.T) {
+		res := postPrune(t, proxy.URL, "?grace=0")
+		if !slices.Equal(res.Unlinked, []string{oid}) || res.Repositories != 0 {
+			t.Fatalf("prune = %+v, want [%s] unlinked and no repositories", res, oid)
 		}
 	})
 
@@ -280,9 +293,7 @@ func TestGCLifecycle(t *testing.T) {
 	})
 
 	step("ResolveSelfHeals", func(t *testing.T) {
-		// The pull-scan OID index still knows the object, so resolve delegates
-		// to the hub front end, which drops the stale ready entry and
-		// re-ingests from upstream.
+		// The pre-open hook re-mirrors the deleted repo, and resolve re-ingests the missing object from upstream.
 		if got := mustGet(t, resolveURL); !bytes.Equal(got, data) {
 			t.Fatalf("resolve after GC bytes mismatch: got %d bytes, want %d", len(got), len(data))
 		}
@@ -313,23 +324,7 @@ func TestGCPrune(t *testing.T) {
 
 	prune := func(t *testing.T, query string) gcPruneResult {
 		t.Helper()
-		resp, err := http.Post(s.httpURL+"/internal/gc/prune"+query, "application/json", nil)
-		if err != nil {
-			t.Fatalf("POST /internal/gc/prune%s: %v", query, err)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read prune body: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("prune status = %d, want 200 (body %q)", resp.StatusCode, body)
-		}
-		var res gcPruneResult
-		if err := json.Unmarshal(body, &res); err != nil {
-			t.Fatalf("decode prune result: %v", err)
-		}
-		return res
+		return postPrune(t, s.httpURL, query)
 	}
 
 	listed := func(t *testing.T) map[string]bool {

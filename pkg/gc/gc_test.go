@@ -329,14 +329,14 @@ func TestSweepSharesLock(t *testing.T) {
 	}
 }
 
-// TestSweepStepAnchorsSHA256 pins that hfd sweeps sha256-anchored: once Unlink drops the OID, the files entry alone keeps nothing alive.
+// TestSweepStepAnchorsSHA256 pins that hfd sweeps sha256-anchored: once Prune drops the OID, the files entry alone keeps nothing alive.
 func TestSweepStepAnchorsSHA256(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	c := f.collector()
 	oid := f.put(t, "anchor ")
-	if removed, err := c.Unlink(ctx, oid); err != nil || !removed {
-		t.Fatalf("unlink: removed=%v err=%v", removed, err)
+	if res, err := c.Prune(ctx, PruneOptions{Grace: -1}); err != nil || !slices.Equal(res.Unlinked, []string{oid}) {
+		t.Fatalf("prune: result=%+v err=%v", res, err)
 	}
 	res, err := c.SweepStep(ctx, Options{Grace: -1})
 	if err != nil {
@@ -350,7 +350,7 @@ func TestSweepStepAnchorsSHA256(t *testing.T) {
 	}
 }
 
-func TestListAndUnlink(t *testing.T) {
+func TestList(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	c := f.collector()
@@ -372,18 +372,15 @@ func TestListAndUnlink(t *testing.T) {
 	if !slices.Equal(oids, want) {
 		t.Fatalf("list: got %v, want %v", oids, want)
 	}
-	if removed, err := c.Unlink(ctx, a); err != nil || !removed {
-		t.Fatalf("unlink %s: removed=%v err=%v", a, removed, err)
-	}
-	if objects, err = c.List(ctx); err != nil || len(objects) != 1 || objects[0].OID != b {
-		t.Fatalf("list after unlink: err=%v objects=%+v", err, objects)
-	}
-	if removed, err := c.Unlink(ctx, a); err != nil || removed {
-		t.Fatalf("unlink again: removed=%v err=%v", removed, err)
-	}
+}
+
+func TestParseOIDRejectsInvalid(t *testing.T) {
 	for _, bad := range []string{"zz", strings.Repeat("0", 64)} {
-		if _, err := c.Unlink(ctx, bad); !errors.Is(err, ErrInvalidOID) {
-			t.Fatalf("unlink %q: got %v, want ErrInvalidOID", bad, err)
+		if _, err := parseOID(bad); !errors.Is(err, ErrInvalidOID) {
+			t.Fatalf("parseOID %q: got %v, want ErrInvalidOID", bad, err)
 		}
+	}
+	if _, err := parseOID(strings.Repeat("1", 64)); err != nil {
+		t.Fatalf("parseOID valid digest: %v", err)
 	}
 }

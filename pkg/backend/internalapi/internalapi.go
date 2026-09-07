@@ -16,7 +16,7 @@ import (
 )
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
-// GET /internal/objects and DELETE /internal/objects/{oid} list and unlink stored objects,
+// GET /internal/objects lists stored objects,
 // POST /internal/gc/prune (?dry_run=&grace=) unlinks sha256 index entries no repository LFS pointer names; data stays,
 // POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data.
 // Neither step runs the other; both use one gc.Collector, so the store has a single sweeper.
@@ -63,7 +63,6 @@ func NewHandler(opts ...Option) *Handler {
 		h.next = http.NotFoundHandler()
 	}
 	h.root.HandleFunc("/internal/objects", h.handleList).Methods(http.MethodGet)
-	h.root.HandleFunc("/internal/objects/{oid}", h.handleUnlink).Methods(http.MethodDelete)
 	h.root.HandleFunc("/internal/gc/prune", h.handlePrune).Methods(http.MethodPost)
 	h.root.HandleFunc("/internal/gc/sweep", h.handleSweep).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
@@ -148,23 +147,6 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, objects)
-}
-
-func (h *Handler) handleUnlink(w http.ResponseWriter, r *http.Request) {
-	removed, err := h.collector.Unlink(r.Context(), mux.Vars(r)["oid"])
-	if err != nil {
-		if errors.Is(err, gc.ErrInvalidOID) {
-			http.Error(w, "Invalid oid", http.StatusBadRequest)
-			return
-		}
-		http.Error(w, "Unlink failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !removed {
-		http.Error(w, "Object not found", http.StatusNotFound)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handlePrune(w http.ResponseWriter, r *http.Request) {
