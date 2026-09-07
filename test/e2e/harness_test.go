@@ -330,8 +330,13 @@ func (s *e2eServer) createRepo(t *testing.T, org, name string) {
 
 func (s *e2eServer) deleteRepo(t *testing.T, org, name string) {
 	t.Helper()
+	deleteRepoAt(t, s.httpURL, org, name)
+}
+
+func deleteRepoAt(t *testing.T, baseURL, org, name string) {
+	t.Helper()
 	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, s.httpURL+"/api/repos/delete", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, baseURL+"/api/repos/delete", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("build delete repo request: %v", err)
 	}

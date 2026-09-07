@@ -47,21 +47,18 @@ func TestHandler(t *testing.T) {
 		method, target string
 		want           int
 	}{
-		{http.MethodPost, "/internal/gc?grace=bogus", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?grace=-5s", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?grace=", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?dry_run=maybe", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?dry_run=", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?dry_run=true;x=1", http.StatusBadRequest}, // r.URL.Query() would drop dry_run and collect for real
+		{http.MethodPost, "/internal/gc/prune?grace=bogus", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/prune?grace=-5s", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/prune?grace=", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/prune?dry_run=maybe", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/prune?dry_run=", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc/prune?dry_run=true;x=1", http.StatusBadRequest}, // r.URL.Query() would drop dry_run and prune for real
 		{http.MethodPost, "/internal/gc/sweep?dry_run=true;x=1", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?grace=-1s", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
 		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?max=-1", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc?budget=nope", http.StatusBadRequest},
-		{http.MethodDelete, "/internal/objects/zz", http.StatusBadRequest},
-		{http.MethodDelete, "/internal/objects/" + strings.Repeat("0", 64), http.StatusBadRequest},
-		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusNotFound},
+		{http.MethodPost, "/internal/gc", http.StatusTeapot},
+		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusTeapot},
 		{http.MethodGet, "/internal/objects", http.StatusOK},
 		{http.MethodGet, "/other", http.StatusTeapot},
 	} {
@@ -75,24 +72,27 @@ func TestHandler(t *testing.T) {
 		t.Fatalf("empty list: content-type %q, body %q", rec.Header().Get("Content-Type"), rec.Body)
 	}
 
-	rec = do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
+	rec = do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0")
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("dry run: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), `"unlinked":[]`) {
 		t.Fatalf("empty unlinked must encode as []: %s", rec.Body)
 	}
-	var res gc.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun || res.Sweep != nil {
+	if strings.Contains(rec.Body.String(), `"sweep"`) {
+		t.Fatalf("prune body must not contain sweep: %s", rec.Body)
+	}
+	var res gc.PruneResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun {
 		t.Fatalf("dry run body %s: err=%v result=%+v", rec.Body, err, res)
 	}
-	rec = do(h, http.MethodPost, "/internal/gc?max=1&budget=1s")
+	rec = do(h, http.MethodPost, "/internal/gc/prune?grace=0")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("collect: got %d, body %s", rec.Code, rec.Body)
+		t.Fatalf("prune: got %d, body %s", rec.Code, rec.Body)
 	}
-	var collect gc.Result
-	if err := json.Unmarshal(rec.Body.Bytes(), &collect); err != nil || collect.Sweep == nil || !collect.Sweep.Done {
-		t.Fatalf("collect body %s: err=%v result=%+v", rec.Body, err, collect)
+	var prune gc.PruneResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &prune); err != nil || prune.DryRun {
+		t.Fatalf("prune body %s: err=%v result=%+v", rec.Body, err, prune)
 	}
 
 	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&max=1&budget=1s&dry_run=false")
@@ -105,7 +105,7 @@ func TestHandler(t *testing.T) {
 	}
 }
 
-// blockingStore parks the first shard walk until released so a concurrent request observes the busy collector; the sweep's later walks pass through.
+// blockingStore parks the first shard walk until released; later walks pass through.
 type blockingStore struct {
 	*xetstorage.FileStorage
 	once           sync.Once
@@ -118,53 +118,62 @@ func (b *blockingStore) WalkShards(ctx context.Context, fn func(string, int64, t
 }
 
 func TestHandlerBusy(t *testing.T) {
-	store := &blockingStore{FileStorage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
-	h := newHandler(t, store)
-	first := make(chan int, 1)
-	go func() { first <- do(h, http.MethodPost, "/internal/gc").Code }()
-	<-store.enter
-	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusConflict {
-		t.Fatalf("busy: got %d, want 409", rec.Code)
-	}
-	if rec := do(h, http.MethodPost, "/internal/gc/sweep"); rec.Code != http.StatusConflict {
-		t.Fatalf("sweep during collect: got %d, want 409", rec.Code)
-	}
-	close(store.release)
-	if code := <-first; code != http.StatusOK {
-		t.Fatalf("first collect: got %d, want 200", code)
+	for _, endpoint := range []string{"prune", "sweep"} {
+		t.Run(endpoint, func(t *testing.T) {
+			store := &blockingStore{FileStorage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
+			h := newHandler(t, store)
+			first := make(chan int, 1)
+			go func() { first <- do(h, http.MethodPost, "/internal/gc/"+endpoint).Code }()
+			<-store.enter
+			if rec := do(h, http.MethodPost, "/internal/gc/prune"); rec.Code != http.StatusConflict {
+				t.Errorf("prune during %s: got %d, want 409", endpoint, rec.Code)
+			}
+			if endpoint == "prune" {
+				if rec := do(h, http.MethodPost, "/internal/gc/sweep"); rec.Code != http.StatusConflict {
+					t.Errorf("sweep during prune: got %d, want 409", rec.Code)
+				}
+			}
+			close(store.release)
+			if code := <-first; code != http.StatusOK {
+				t.Fatalf("first %s: got %d, want 200", endpoint, code)
+			}
+		})
 	}
 }
 
-// partialStore presents one dead sha256 entry, accepts its unlink, then fails the sweep's xorb walk.
+// partialStore accepts the first dead entry's unlink and fails the second.
 type partialStore struct {
 	*xetstorage.FileStorage
 }
 
 const deadSHA = "1111111111111111111111111111111111111111111111111111111111111111"
+const deadSHA2 = "2222222222222222222222222222222222222222222222222222222222222222"
 
 func (p *partialStore) WalkSHA256Index(_ context.Context, fn func(string, string) error) error {
-	return fn(deadSHA, "missing-shard")
+	if err := fn(deadSHA, "missing-shard"); err != nil {
+		return err
+	}
+	return fn(deadSHA2, "missing-shard")
 }
 
-func (p *partialStore) DeleteSHA256IndexEntry(context.Context, string) (bool, error) {
-	return true, nil
-}
-
-func (p *partialStore) WalkXorbs(context.Context, func(string, int64, time.Time) error) error {
-	return errors.New("xorb walk failed")
+func (p *partialStore) DeleteSHA256IndexEntry(_ context.Context, oid string) (bool, error) {
+	if oid == deadSHA {
+		return true, nil
+	}
+	return false, errors.New("index delete failed")
 }
 
 func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
 	h := newHandler(t, &partialStore{FileStorage: newStorage(t)})
-	rec := do(h, http.MethodPost, "/internal/gc")
+	rec := do(h, http.MethodPost, "/internal/gc/prune")
 	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
-	var res gc.Result
+	var res gc.PruneResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 		t.Fatalf("decode %s: %v", rec.Body, err)
 	}
-	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "xorb walk failed") {
+	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "index delete failed") {
 		t.Fatalf("failure body must list the applied unlinks and the error: %+v", res)
 	}
 }
