@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,9 +32,12 @@ type gcObject struct {
 
 // gcSweepResult carries the gc.SweepResult fields the test asserts on.
 type gcSweepResult struct {
-	SweptShards int  `json:"swept_shards"`
-	SweptXorbs  int  `json:"swept_xorbs"`
-	Done        bool `json:"done"`
+	SweptShards     int   `json:"swept_shards"`
+	SweptXorbs      int   `json:"swept_xorbs"`
+	ReclaimedBytes  int64 `json:"reclaimed_bytes"`
+	Done            bool  `json:"done"`
+	RemainingShards int   `json:"remaining_shards"`
+	RemainingXorbs  int   `json:"remaining_xorbs"`
 }
 
 // gcPruneResult carries the gc.PruneResult fields the test asserts on.
@@ -64,9 +68,9 @@ func mustGet(t *testing.T, url string) []byte {
 }
 
 // postSweep runs one unshielded sweep step against baseURL and returns the decoded 200 body, failing the test otherwise.
-func postSweep(t *testing.T, baseURL string) gcSweepResult {
+func postSweep(t *testing.T, baseURL string, query ...string) gcSweepResult {
 	t.Helper()
-	resp, err := http.Post(baseURL+"/internal/gc/sweep?grace=0", "application/json", nil)
+	resp, err := http.Post(baseURL+"/internal/gc/sweep?grace=0&"+strings.Join(query, "&"), "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST sweep: %v", err)
 	}
@@ -304,6 +308,238 @@ func TestGCLifecycle(t *testing.T) {
 	})
 }
 
+func assertGCObjects(t *testing.T, baseURL string, want ...gcObject) {
+	t.Helper()
+	var objects []gcObject
+	if err := json.Unmarshal(mustGet(t, baseURL+"/internal/objects"), &objects); err != nil {
+		t.Fatalf("decode /internal/objects: %v", err)
+	}
+	compare := func(left, right gcObject) int { return strings.Compare(left.OID, right.OID) }
+	slices.SortFunc(objects, compare)
+	slices.SortFunc(want, compare)
+	if !slices.Equal(objects, want) {
+		t.Fatalf("/internal/objects = %+v, want %+v", objects, want)
+	}
+}
+
+func assertGCNotFound(t *testing.T, url string) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read GET %s: %v", url, err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d, want 404 (body %q)", url, resp.StatusCode, body)
+	}
+}
+
+func commitGCOperation(t *testing.T, url, key string, value map[string]any) {
+	t.Helper()
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	for _, operation := range []map[string]any{
+		{"key": "header", "value": map[string]any{"summary": "update GC references"}},
+		{"key": key, "value": value},
+	} {
+		if err := encoder.Encode(operation); err != nil {
+			t.Fatalf("encode commit: %v", err)
+		}
+	}
+	resp, err := http.Post(url, "application/x-ndjson", &body)
+	if err != nil {
+		t.Fatalf("POST commit: %v", err)
+	}
+	defer resp.Body.Close()
+	result, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read commit: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("commit status = %d, want 200 (body %q)", resp.StatusCode, result)
+	}
+}
+
+// TestGCSharedReferences keeps a shared OID until its last repository is deleted.
+func TestGCSharedReferences(t *testing.T) {
+	s := newE2EServer(t, withInternalAPI())
+	data := makeBinaryData(64*1024, 31)
+	sum := sha256.Sum256(data)
+	oid := hex.EncodeToString(sum[:])
+	object := gcObject{OID: oid, Size: uint64(len(data))}
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+
+	step("PushBoth", func(t *testing.T) {
+		s.createRepo(t, "gc-org", "shared-a")
+		s.createRepo(t, "gc-org", "shared-b")
+		pushViaXetBatch(t, s, "gc-org/shared-a", data)
+		commitGCOperation(t, s.httpURL+"/api/models/gc-org/shared-b/commit/main", "lfsFile", map[string]any{
+			"path": transferMatrixFile, "oid": oid, "size": len(data),
+		})
+		for _, repo := range []string{"shared-a", "shared-b"} {
+			if got := mustGet(t, s.httpURL+"/gc-org/"+repo+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, data) {
+				t.Fatalf("%s resolve: got %d bytes, want original %d bytes", repo, len(got), len(data))
+			}
+		}
+	})
+	step("ListOnce", func(t *testing.T) {
+		assertGCObjects(t, s.httpURL, object)
+	})
+	step("DeleteFirst", func(t *testing.T) {
+		s.deleteRepo(t, "gc-org", "shared-a")
+	})
+	step("KeepShared", func(t *testing.T) {
+		prune := postPrune(t, s.httpURL, "?grace=0")
+		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 1 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
+			t.Fatalf("prune = %+v, want 1 repository, 1 live object, nothing unlinked or skipped", prune)
+		}
+		sweep := postSweep(t, s.httpURL)
+		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
+			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		}
+		assertGCObjects(t, s.httpURL, object)
+		if got := mustGet(t, s.httpURL+"/gc-org/shared-b/resolve/main/"+transferMatrixFile); !bytes.Equal(got, data) {
+			t.Fatalf("prune = %+v, sweep = %+v, shared-b resolve: got %d bytes, want original %d bytes", prune, sweep, len(got), len(data))
+		}
+	})
+	step("DeleteLast", func(t *testing.T) {
+		s.deleteRepo(t, "gc-org", "shared-b")
+	})
+	step("PruneLast", func(t *testing.T) {
+		res := postPrune(t, s.httpURL, "?grace=0")
+		if res.DryRun || res.Repositories != 0 || res.LiveObjects != 0 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, []string{oid}) {
+			t.Fatalf("prune = %+v, want no repositories or live objects, [%s] unlinked, none skipped", res, oid)
+		}
+		assertGCObjects(t, s.httpURL)
+	})
+	step("SweepLast", func(t *testing.T) {
+		res := postSweep(t, s.httpURL)
+		if !res.Done || res.SweptShards <= 0 || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
+			t.Fatalf("sweep = %+v, want done with shards, xorbs and bytes reclaimed, nothing remaining", res)
+		}
+		assertGCObjects(t, s.httpURL)
+		assertGCNotFound(t, s.httpURL+"/objects/"+oid)
+	})
+}
+
+// TestGCHistoryReferences keeps pointers in main's history and on a non-default branch.
+func TestGCHistoryReferences(t *testing.T) {
+	s := newE2EServer(t, withInternalAPI())
+	historyData, branchData := makeBinaryData(64*1024, 41), makeBinaryData(64*1024, 42)
+	historySum, branchSum := sha256.Sum256(historyData), sha256.Sum256(branchData)
+	historyOID, branchOID := hex.EncodeToString(historySum[:]), hex.EncodeToString(branchSum[:])
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+
+	step("RemoveFromMain", func(t *testing.T) {
+		s.createRepo(t, "gc-org", "history")
+		pushViaXetBatch(t, s, "gc-org/history", historyData)
+		if got := mustGet(t, s.httpURL+"/gc-org/history/resolve/main/"+transferMatrixFile); !bytes.Equal(got, historyData) {
+			t.Fatalf("main resolve: got %d bytes, want original %d bytes", len(got), len(historyData))
+		}
+		commitGCOperation(t, s.httpURL+"/api/models/gc-org/history/commit/main", "deletedFile", map[string]any{"path": transferMatrixFile})
+		assertGCNotFound(t, s.httpURL+"/gc-org/history/resolve/main/"+transferMatrixFile)
+	})
+	step("BranchOnlyPointer", func(t *testing.T) {
+		resp, err := http.Post(s.httpURL+"/api/models/gc-org/history/branch/side", "application/json", strings.NewReader(`{"startingPoint":"main"}`))
+		if err != nil {
+			t.Fatalf("create branch: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read create branch: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("create branch status = %d, want 200 (body %q)", resp.StatusCode, body)
+		}
+		s.createRepo(t, "gc-org", "staging")
+		pushViaXetBatch(t, s, "gc-org/staging", branchData)
+		commitGCOperation(t, s.httpURL+"/api/models/gc-org/history/commit/side", "lfsFile", map[string]any{
+			"path": transferMatrixFile, "oid": branchOID, "size": len(branchData),
+		})
+		s.deleteRepo(t, "gc-org", "staging")
+		assertGCNotFound(t, s.httpURL+"/gc-org/history/resolve/main/"+transferMatrixFile)
+		if got := mustGet(t, s.httpURL+"/gc-org/history/resolve/side/"+transferMatrixFile); !bytes.Equal(got, branchData) {
+			t.Fatalf("side resolve: got %d bytes, want original %d bytes", len(got), len(branchData))
+		}
+	})
+	step("KeepHistoryAndBranch", func(t *testing.T) {
+		prune := postPrune(t, s.httpURL, "?grace=0")
+		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 2 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
+			t.Fatalf("prune = %+v, want 1 repository, 2 live objects, nothing unlinked or skipped", prune)
+		}
+		sweep := postSweep(t, s.httpURL)
+		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
+			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		}
+		assertGCObjects(t, s.httpURL, gcObject{OID: historyOID, Size: uint64(len(historyData))}, gcObject{OID: branchOID, Size: uint64(len(branchData))})
+		for oid, data := range map[string][]byte{historyOID: historyData, branchOID: branchData} {
+			if got := mustGet(t, s.httpURL+"/objects/"+oid); !bytes.Equal(got, data) {
+				t.Fatalf("prune = %+v, sweep = %+v, object %s: got %d bytes, want original %d bytes", prune, sweep, oid, len(got), len(data))
+			}
+		}
+	})
+}
+
+// TestGCBoundedSweep resumes a deletion-limited sweep after unlinking two dead objects.
+func TestGCBoundedSweep(t *testing.T) {
+	s := newE2EServer(t, withInternalAPI())
+	firstData, secondData := makeBinaryData(64*1024, 51), makeBinaryData(64*1024, 52)
+	firstSum, secondSum := sha256.Sum256(firstData), sha256.Sum256(secondData)
+	oids := []string{hex.EncodeToString(firstSum[:]), hex.EncodeToString(secondSum[:])}
+	slices.Sort(oids)
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+	step("UnlinkTwo", func(t *testing.T) {
+		s.createRepo(t, "gc-org", "bounded")
+		pushViaXetBatch(t, s, "gc-org/bounded", firstData)
+		pushViaXetBatch(t, s, "gc-org/bounded", secondData)
+		assertGCObjects(t, s.httpURL, gcObject{OID: oids[0], Size: uint64(len(firstData))}, gcObject{OID: oids[1], Size: uint64(len(secondData))})
+		s.deleteRepo(t, "gc-org", "bounded")
+		res := postPrune(t, s.httpURL, "?grace=0")
+		if res.DryRun || res.Repositories != 0 || res.LiveObjects != 0 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, oids) {
+			t.Fatalf("prune = %+v, want no repositories or live objects, %v unlinked, none skipped", res, oids)
+		}
+		assertGCObjects(t, s.httpURL)
+	})
+	var bounded gcSweepResult
+	step("OneDeletion", func(t *testing.T) {
+		bounded = postSweep(t, s.httpURL, "max=1")
+		if bounded.Done || bounded.SweptShards != 1 || bounded.SweptXorbs != 0 || bounded.RemainingShards <= 0 || bounded.RemainingXorbs != 0 || bounded.ReclaimedBytes <= 0 {
+			t.Fatalf("bounded sweep = %+v, want unfinished, 1 shard and 0 xorbs swept, positive remaining shards, xorbs not yet judged", bounded)
+		}
+		assertGCObjects(t, s.httpURL)
+	})
+	step("FinishCycle", func(t *testing.T) {
+		res := postSweep(t, s.httpURL)
+		if !res.Done || res.SweptShards != bounded.RemainingShards || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
+			t.Fatalf("sweep = %+v after bounded = %+v, want all remaining shards and xorbs reclaimed, done", res, bounded)
+		}
+		assertGCObjects(t, s.httpURL)
+		for _, oid := range oids {
+			assertGCNotFound(t, s.httpURL+"/objects/"+oid)
+		}
+	})
+}
+
 // TestGCPrune drives POST /internal/gc/prune then /internal/gc/sweep over the assembled chain: a deleted repository's LFS object is unlinked once outside the grace window, and only the separate sweep reclaims its data.
 func TestGCPrune(t *testing.T) {
 	s := newE2EServer(t, withInternalAPI())
@@ -358,6 +594,20 @@ func TestGCPrune(t *testing.T) {
 		}
 		if !listed(t)[dropOID] {
 			t.Fatalf("/internal/objects lost %s inside the grace window", dropOID)
+		}
+	})
+
+	step("DryRunListsDead", func(t *testing.T) {
+		res := prune(t, "?dry_run=true&grace=0")
+		if !res.DryRun || res.Repositories != 1 || res.LiveObjects != 1 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, []string{dropOID}) {
+			t.Fatalf("dry run = %+v, want 1 repository, 1 live object, [%s] unlinked, none skipped", res, dropOID)
+		}
+		files := listed(t)
+		if len(files) != 2 || !files[dropOID] || !files[keepOID] {
+			t.Fatalf("dry run = %+v, /internal/objects = %v, want both %s and %s", res, files, dropOID, keepOID)
+		}
+		if got := mustGet(t, s.httpURL+"/objects/"+dropOID); !bytes.Equal(got, dropData) {
+			t.Fatalf("dry run = %+v, drop download: got %d bytes, want original %d bytes", res, len(got), len(dropData))
 		}
 	})
 
