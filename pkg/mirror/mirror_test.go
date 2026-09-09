@@ -196,6 +196,45 @@ func TestPullFromRemoteSyncsNewCommitsAndFiresHooks(t *testing.T) {
 	}
 }
 
+// TestPullFromRemotePrunesDeletedRefs pins that a sync whose only change is an
+// upstream deletion still prunes the local ref and reports it to the hooks.
+func TestPullFromRemotePrunesDeletedRefs(t *testing.T) {
+	root := t.TempDir()
+	src, srcPath := initSourceRepo(t, root, "src")
+	addCommit(t, src, "feature", "feature.txt", "feature\n")
+
+	var postUpdates []receive.RefUpdate
+	m := newMirror(t, "",
+		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
+		mirror.WithPostReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+			postUpdates = append(postUpdates, updates...)
+			return nil
+		}),
+	)
+
+	destPath := filepath.Join(root, "dest.git")
+	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+	featureHash := refsAt(t, destPath)["refs/heads/feature"]
+	postUpdates = nil
+
+	if err := src.DeleteBranch("feature"); err != nil {
+		t.Fatalf("delete upstream branch: %v", err)
+	}
+	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+		t.Fatalf("second pull: %v", err)
+	}
+
+	if refs := refsAt(t, destPath); refs["refs/heads/feature"] != "" {
+		t.Fatalf("refs/heads/feature still present after upstream deletion: %v", refs)
+	}
+	if len(postUpdates) != 1 || postUpdates[0].RefName() != "refs/heads/feature" ||
+		postUpdates[0].OldRev() != featureHash || postUpdates[0].NewRev() != receive.ZeroHash {
+		t.Fatalf("post-receive updates = %v, want one deletion of refs/heads/feature from %s", postUpdates, featureHash)
+	}
+}
+
 func TestPullFromRemotePreReceiveReject(t *testing.T) {
 	root := t.TempDir()
 	_, srcPath := initSourceRepo(t, root, "src")

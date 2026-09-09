@@ -23,11 +23,12 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 		return nil
 	}
 
+	// The local snapshot stays unfiltered: PullMirrorRefs prunes every local
+	// ref outside refsFilter, so those deletions must reach the diff and hooks.
 	before, err := repo.Refs()
 	if err != nil {
 		return fmt.Errorf("failed to get local refs: %w", err)
 	}
-	before = filterKeyFromMap(before, refsFilter)
 
 	remoteMap := filterKeyFromMap(remoteRefsMap, refsFilter)
 	preReceiveUpdates := repo.DiffRefs(before, remoteMap)
