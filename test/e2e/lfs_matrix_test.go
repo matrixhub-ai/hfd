@@ -197,7 +197,9 @@ func TestLFSOperationsMatrix(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						req.Header.Set("Range", request.byteRange)
+						if request.byteRange != "" {
+							req.Header.Set("Range", request.byteRange)
+						}
 						resp, err := client.Do(req)
 						if err != nil {
 							t.Fatalf("%s Range=%q: %v", request.method, request.byteRange, err)

@@ -227,7 +227,8 @@ func setupChaosReverseProxy(t *testing.T, upstreamURL string, wrappers []Wrapper
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	for _, wrapper := range wrappers {
 		if _, ok := wrapper.(*Limit); ok {
-			// Keep object downloads on the proxy instead of presigned S3 CAS URLs.
+			// Cut profiles strip the xet capability headers so the mirror ingests over plain HTTP
+			// through the limited connections; the xet CAS path (presigned on S3) is not cut here.
 			proxy.ModifyResponse = func(resp *http.Response) error {
 				resp.Header.Del("X-Xet-Hash")
 				resp.Header.Del("Link")
