@@ -154,10 +154,9 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 }
 
 // newE2EServer wires the handler chain in cmd/hfd's order (http → lfs → hf →
-// xet CAS data plane), with one known deviation from the production wiring:
-// the mirror reaches the git transports only under withMirrorSource, because
-// injecting it unconditionally — as wire.go does — would make
-// checkMirrorAccess refuse every non-mirror repository. The xet engine
+// xet CAS data plane). Like wire.go's gitTransportMirror, the mirror reaches
+// the git transports only under withMirrorSource, since checkMirrorAccess
+// refuses every non-mirror repository once it is set. The xet engine
 // ingests from the mirror source when one is set — like cmd/hfd does with
 // --pull-mirror-url — so mirrored LFS resolves stream through the engine
 // instead of racing the batch-API fallback; plain servers only serve local

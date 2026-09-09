@@ -307,6 +307,16 @@ func authentication(auth *authenticate.Authenticators) middleware {
 	}
 }
 
+// gitTransportMirror returns the mirror the git transports enforce access
+// rules with. Only a pull-through mirror refuses non-mirror repositories, so
+// plain and push-only servers get none and serve every repository.
+func gitTransportMirror(cfg *config, m *mirror.Mirror) *mirror.Mirror {
+	if cfg.PullMirrorURL == "" {
+		return nil
+	}
+	return m
+}
+
 // gitHTTPBackend serves the git smart HTTP protocol.
 func gitHTTPBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror) middleware {
 	return func(next http.Handler) http.Handler {
@@ -381,7 +391,7 @@ func buildHTTPHandler(ctx context.Context, cfg *config, st *storage.Storage, xs 
 		internalAPI(ctx, cfg, st, xs), // operator endpoints bypass user auth
 		casTokenRecognizer(authFn),    // hfd-signed CAS credentials would 401 in the per-URL validators
 		authentication(auth),
-		gitHTTPBackend(st, hooks, m),
+		gitHTTPBackend(st, hooks, gitTransportMirror(cfg, m)),
 		lfsBackend(st, hooks, m, auth),
 		hfBackend(st, hooks, m),
 		casBackend(hooks, m),
@@ -430,7 +440,7 @@ func buildSSHServer(ctx context.Context, cfg *config, st *storage.Storage, hooks
 		backendssh.WithPreOpenHookFunc(hooks.preOpen),
 		backendssh.WithPreReceiveHookFunc(hooks.preReceive),
 		backendssh.WithPostReceiveHookFunc(hooks.postReceive),
-		backendssh.WithMirror(sharedMirror),
+		backendssh.WithMirror(gitTransportMirror(cfg, sharedMirror)),
 		backendssh.WithLFSURL(cfg.HostURL),
 		backendssh.WithBasicAuthValidator(auth.BasicAuth),
 		backendssh.WithPublicKeyValidator(auth.PublicKey),
