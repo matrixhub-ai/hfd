@@ -2,15 +2,109 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 )
+
+// TestAPIHookMatrix checks API hooks through the authenticated HTTP chain.
+func TestAPIHookMatrix(t *testing.T) {
+	preRecorder, postRecorder := &matrixHookRecorder{}, &matrixHookRecorder{}
+	type permissionCall struct {
+		op       permission.Operation
+		repoName string
+		ctx      permission.Context
+		user     string
+	}
+	var mu sync.Mutex
+	var calls []permissionCall
+	hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+		user, _ := authenticate.GetUserInfo(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, permissionCall{op: op, repoName: repoName, ctx: opCtx, user: user.User})
+		return true, nil
+	}
+	pre := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
+		return true, preRecorder.hook(ctx, repoName, updates)
+	}
+	s := newE2EServer(t, withAuth(authMatrixUser, authMatrixPass), withPermissionHook(hook), withHooks(pre, postRecorder.hook), withAPIHooks())
+
+	t.Run("HFCommit/PreReceiveAllow", func(t *testing.T) {
+		const repoID = "api-hook-org/commit-pre-allow"
+		s.createRepo(t, "api-hook-org", "commit-pre-allow")
+		initial := postRecorder.getCalls()
+		if len(initial) != 1 || initial[0].repoName != repoID || len(initial[0].updates) != 1 {
+			t.Fatalf("create repo post-receive calls = %+v", initial)
+		}
+		previousHead := initial[0].updates[0].NewRev()
+		if initial[0].updates[0].OldRev() != receive.ZeroHash || len(previousHead) != 40 || previousHead == receive.ZeroHash {
+			t.Fatalf("create repo update: old=%q new=%q", initial[0].updates[0].OldRev(), previousHead)
+		}
+		preRecorder.reset()
+		postRecorder.reset()
+		mu.Lock()
+		calls = nil
+		mu.Unlock()
+
+		body := "{\"key\":\"header\",\"value\":{\"summary\":\"API hook commit\"}}\n" +
+			"{\"key\":\"file\",\"value\":{\"path\":\"README.md\",\"content\":\"API hooks\\n\",\"encoding\":\"utf-8\"}}\n"
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.httpURL+"/api/models/"+repoID+"/commit/main", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-ndjson")
+		req.SetBasicAuth(authMatrixUser, authMatrixPass)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			CommitOid string `json:"commitOid"`
+		}
+		if err := json.Unmarshal(responseBody, &result); err != nil || resp.StatusCode != http.StatusOK || len(result.CommitOid) != 40 || result.CommitOid == previousHead || result.CommitOid == receive.ZeroHash {
+			t.Fatalf("commit status=%d body=%s decode=%v previousHead=%q", resp.StatusCode, responseBody, err, previousHead)
+		}
+		mu.Lock()
+		permissionCalls := append([]permissionCall(nil), calls...)
+		mu.Unlock()
+		if len(permissionCalls) != 1 || permissionCalls[0].op != permission.OperationUpdateRepo || permissionCalls[0].repoName != repoID || permissionCalls[0].ctx.Ref != "main" || permissionCalls[0].user != authMatrixUser {
+			t.Fatalf("commit permission calls = %+v", permissionCalls)
+		}
+		for _, phase := range []struct {
+			name     string
+			recorder *matrixHookRecorder
+			newRev   string
+		}{
+			{name: "pre-receive", recorder: preRecorder, newRev: receive.ZeroHash},
+			{name: "post-receive", recorder: postRecorder, newRev: result.CommitOid},
+		} {
+			received := phase.recorder.getCalls()
+			if len(received) != 1 || received[0].repoName != repoID || len(received[0].updates) != 1 {
+				t.Fatalf("%s calls=%+v; commit status=%d body=%s", phase.name, received, resp.StatusCode, responseBody)
+			}
+			update := received[0].updates[0]
+			if update.RefName() != "refs/heads/main" || update.OldRev() != previousHead || update.NewRev() != phase.newRev {
+				t.Fatalf("%s update: ref=%q old=%q new=%q; want ref=%q old=%q new=%q; commit status=%d body=%s", phase.name, update.RefName(), update.OldRev(), update.NewRev(), "refs/heads/main", previousHead, phase.newRev, resp.StatusCode, responseBody)
+			}
+		}
+	})
+}
 
 // setupHookServer starts a harness server with the given option, creates the
 // hook test repo, and returns the remote for the requested protocol.
