@@ -688,24 +688,32 @@ for suffix, want_status, want_body in [
 	runPyScript(t, s.httpURL, script)
 }
 
-// runHubCompare (py only, model): two upload SHAs must support the
-// triple-dot compare endpoint before its change payload can be checked.
+// runHubCompare (py only, model): compare/{base}..{head} between two upload
+// SHAs is a unified diff of the changed file; same-rev compares are empty and
+// the GitHub-style triple dot is rejected.
 func runHubCompare(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/compare-" + rt.arg
-	script := hubPyAPI + hubPyHTTPHelpers + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`import json
-repo_id = %q
+	script := hubPyAPI + hubPyHTTPHelpers + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`repo_id = %q
 first = api.upload_file(path_or_fileobj=b"first\n", path_in_repo="change.txt", repo_id=repo_id).oid
 second = api.upload_file(path_or_fileobj=b"second\n", path_in_repo="change.txt", repo_id=repo_id).oid
-url = os.environ["HF_ENDPOINT"] + "/api/models/" + repo_id + "/compare/" + first + "..." + second
-try:
-	response = urllib.request.urlopen(url)
-except urllib.error.HTTPError as error:
-	response = error
-with response:
-	status, body = response.status, response.read().decode()
-if status != 200:
-	body = json.loads(body)
+base = os.environ["HF_ENDPOINT"] + "/api/models/" + repo_id + "/compare/"
+def compare(spec):
+    try:
+        response = urllib.request.urlopen(base + spec)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.status, response.headers.get("Content-Type", ""), response.read().decode()
+status, content_type, body = compare(first + ".." + second)
 assert status == 200, f"compare status={status}, want 200; body={body!r}"
+assert content_type.startswith("text/plain"), f"compare content-type={content_type!r}, want text/plain"
+for needle in ("diff --git a/change.txt b/change.txt", "-first", "+second"):
+    assert needle in body, f"compare diff lacks {needle!r}: {body!r}"
+assert "diff --git" not in body.replace("diff --git a/change.txt b/change.txt", "", 1), f"compare diff touches more than change.txt: {body!r}"
+status, _, body = compare(second + ".." + second)
+assert status == 200 and body == "", f"same-rev compare status={status} body={body!r}, want 200 and empty"
+status, _, body = compare(first + "..." + second)
+assert status == 400, f"triple-dot compare status={status}, want 400; body={body!r}"
 `, repoID)
 	runPyScript(t, s.httpURL, script)
 }
