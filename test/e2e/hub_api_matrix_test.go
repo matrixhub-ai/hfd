@@ -135,6 +135,8 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "UploadAndDownload", supported: anyClientAnyType, run: runHubUploadAndDownload},
 		{name: "SnapshotDownload", supported: pyOnly, run: runHubSnapshotDownload},
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
+		{name: "ListRepos", supported: pyOnly, run: runHubListRepos},
+		{name: "TreeSize", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubTreeSize},
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
 		{name: "Tag", supported: anyClientAnyType, run: runHubTag},
 		{name: "Move", supported: cliModelOnly, run: runHubMove},
@@ -142,6 +144,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "DeleteFile", supported: cliModelOnly, run: runHubDeleteFile},
 		{name: "RepoInfo", supported: pyOnly, run: runHubRepoInfo},
 		{name: "Commits", supported: pyOnly, run: runHubCommits},
+		{name: "Compare", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubCompare},
 		{name: "Refs", supported: pyOnly, run: runHubRefs},
 		{name: "Squash", supported: pyOnly, run: runHubSquash},
 		{name: "TypeIsolation", supported: modelCellOnly, run: runHubTypeIsolation},
@@ -622,6 +625,88 @@ titles = [c.title for c in commits]
 assert "Add first file" in titles, f"'Add first file' not in {titles}"
 assert "Add second file" in titles, f"'Add second file' not in {titles}"
 `, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg)
+	runPyScript(t, s.httpURL, script)
+}
+
+// runHubListRepos (py only): author/search filters and pagination preserve
+// exact repo IDs without leaking repositories from other types.
+func runHubListRepos(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	namespace := "list-" + rt.arg + "-org"
+	script := hubPyAPI + hubPyCreateLine(namespace+"/alpha", rt, false) +
+		hubPyCreateLine(namespace+"/beta", rt, false) + hubPyCreateLine(namespace+"-other/alpha", rt, false)
+	for _, other := range hubRepoTypes {
+		if other.arg != rt.arg {
+			script += hubPyCreateLine(namespace+"/foreign-"+other.arg, other, false)
+		}
+	}
+	script += fmt.Sprintf(`from huggingface_hub.utils import paginate
+namespace = %q
+list_repos = api.list_%s
+want = [namespace + "/alpha", namespace + "/beta"]
+repos = list(list_repos(author=namespace))
+assert sorted(repo.id for repo in repos) == want, f"author listing: {repos!r}, want {want!r}"
+repos = list(list_repos(author=namespace, search="alpha"))
+assert [repo.id for repo in repos] == want[:1], f"search listing: {repos!r}, want {want[:1]!r}"
+# huggingface_hub 1.7.1 caps the full iterator with islice even when Link has another page.
+repos = list(list_repos(author=namespace, limit=1))
+assert [repo.id for repo in repos] == want[:1], f"limited listing: {repos!r}, want {want[:1]!r}"
+repos = list(paginate(os.environ["HF_ENDPOINT"] + "/api/%s", params={"author": namespace, "limit": 1}, headers={}))
+assert [repo["id"] for repo in repos] == want, f"Link pagination: {repos!r}, want {want!r}"
+`, namespace, rt.apiPrefix, rt.apiPrefix)
+	runPyScript(t, s.httpURL, script)
+}
+
+// runHubTreeSize (py only, model): exact directory/root byte totals,
+// including default attributes, and a missing-directory 404.
+func runHubTreeSize(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/treesize-" + rt.arg
+	script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(repoID, rt, []hubFile{
+		{"folder/one.txt", "one\n"},
+		{"folder/two.txt", "second\n"},
+		{"root.txt", "root\n"},
+	}) + fmt.Sprintf(`import json
+repo_id = %q
+attributes = [entry for entry in api.list_repo_tree(repo_id=repo_id, expand=True) if entry.path == ".gitattributes"]
+assert len(attributes) == 1 and attributes[0].path == ".gitattributes", f"attributes: {attributes!r}"
+root_size = 4 + 7 + 5 + attributes[0].size
+for suffix, want_status, want_body in [
+    ("main/folder", 200, {"path": "/folder", "size": 11}),
+    ("main", 200, {"path": "/", "size": root_size}),
+    ("main/missing", 404, None),
+]:
+    url = os.environ["HF_ENDPOINT"] + "/api/models/" + repo_id + "/treesize/" + suffix
+    try:
+        response = urllib.request.urlopen(url)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        status, body = response.status, json.load(response)
+    assert status == want_status, f"treesize/{suffix} status={status}, want {want_status}; body={body!r}"
+    if want_body is not None:
+        assert body == want_body, f"treesize/{suffix} body={body!r}, want {want_body!r}"
+`, repoID)
+	runPyScript(t, s.httpURL, script)
+}
+
+// runHubCompare (py only, model): two upload SHAs must support the
+// triple-dot compare endpoint before its change payload can be checked.
+func runHubCompare(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/compare-" + rt.arg
+	script := hubPyAPI + hubPyHTTPHelpers + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`import json
+repo_id = %q
+first = api.upload_file(path_or_fileobj=b"first\n", path_in_repo="change.txt", repo_id=repo_id).oid
+second = api.upload_file(path_or_fileobj=b"second\n", path_in_repo="change.txt", repo_id=repo_id).oid
+url = os.environ["HF_ENDPOINT"] + "/api/models/" + repo_id + "/compare/" + first + "..." + second
+try:
+	response = urllib.request.urlopen(url)
+except urllib.error.HTTPError as error:
+	response = error
+with response:
+	status, body = response.status, response.read().decode()
+if status != 200:
+	body = json.loads(body)
+assert status == 200, f"compare status={status}, want 200; body={body!r}"
+`, repoID)
 	runPyScript(t, s.httpURL, script)
 }
 
