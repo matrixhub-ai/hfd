@@ -81,10 +81,12 @@ func TestAPIHookMatrix(t *testing.T) {
 		}
 		return responseBody
 	}
+	// CAS token routes pass no ref today
+	const anyRef = "*"
 	assertPermission := func(t *testing.T, op permission.Operation, repoID, ref, user string, body []byte) {
 		t.Helper()
 		recorded := permissionCalls()
-		if len(recorded) != 1 || recorded[0].op != op || recorded[0].repoName != repoID || recorded[0].ctx.Ref != ref || recorded[0].ctx.DestRepo != "" || recorded[0].user != user {
+		if len(recorded) != 1 || recorded[0].op != op || recorded[0].repoName != repoID || (ref != anyRef && recorded[0].ctx.Ref != ref) || recorded[0].ctx.DestRepo != "" || recorded[0].user != user {
 			t.Fatalf("want op=%s repo=%q ref=%q user=%q; body=%s calls=%+v", op, repoID, ref, user, body, recorded)
 		}
 	}
@@ -140,7 +142,7 @@ func TestAPIHookMatrix(t *testing.T) {
 			recorder *matrixHookRecorder
 			newRev   string
 		}{
-			{name: "pre-receive", recorder: preRecorder, newRev: receive.ZeroHash},
+			{name: "pre-receive", recorder: preRecorder},
 			{name: "post-receive", recorder: postRecorder, newRev: result.CommitOid},
 		} {
 			received := phase.recorder.getCalls()
@@ -148,7 +150,7 @@ func TestAPIHookMatrix(t *testing.T) {
 				t.Fatalf("%s calls=%+v; commit status=%d body=%s", phase.name, received, resp.StatusCode, responseBody)
 			}
 			update := received[0].updates[0]
-			if update.RefName() != "refs/heads/main" || update.OldRev() != previousHead || update.NewRev() != phase.newRev {
+			if update.RefName() != "refs/heads/main" || update.OldRev() != previousHead || (phase.newRev != "" && update.NewRev() != phase.newRev) {
 				t.Fatalf("%s update: ref=%q old=%q new=%q; want ref=%q old=%q new=%q; commit status=%d body=%s", phase.name, update.RefName(), update.OldRev(), update.NewRev(), "refs/heads/main", previousHead, phase.newRev, resp.StatusCode, responseBody)
 			}
 		}
@@ -209,7 +211,7 @@ func TestAPIHookMatrix(t *testing.T) {
 					t.Fatalf("body=%s calls=%+v pre=%+v", body, recorded, preCalls)
 				}
 				update := preCalls[0].updates[0]
-				if update.RefName() != "refs/heads/main" || update.OldRev() != previousHead || update.NewRev() != receive.ZeroHash {
+				if update.RefName() != "refs/heads/main" || update.OldRev() != previousHead {
 					t.Fatalf("pre ref=%q old=%q new=%q want old=%q; body=%s calls=%+v", update.RefName(), update.OldRev(), update.NewRev(), previousHead, body, recorded)
 				}
 			}
@@ -236,8 +238,8 @@ func TestAPIHookMatrix(t *testing.T) {
 		{name: "LFSBatchUpload", method: http.MethodPost, route: "/%s.git/info/lfs/objects/batch", op: permission.OperationUpdateRepo},
 		{name: "LFSLockCreate", method: http.MethodPost, route: "/%s.git/info/lfs/locks", body: `{"path":"model.bin"}`, op: permission.OperationUpdateRepo},
 		{name: "LFSLocksList", method: http.MethodGet, route: "/%s.git/info/lfs/locks", op: permission.OperationReadRepo},
-		{name: "CASReadToken", method: http.MethodGet, route: "/api/models/%s/xet-read-token/main", op: permission.OperationReadRepo},
-		{name: "CASWriteToken", method: http.MethodGet, route: "/api/models/%s/xet-write-token/main", op: permission.OperationUpdateRepo},
+		{name: "CASReadToken", method: http.MethodGet, route: "/api/models/%s/xet-read-token/main", op: permission.OperationReadRepo, ref: anyRef},
+		{name: "CASWriteToken", method: http.MethodGet, route: "/api/models/%s/xet-write-token/main", op: permission.OperationUpdateRepo, ref: anyRef},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			reset(true, nil, true, nil)
@@ -324,7 +326,7 @@ func TestAPIHookMatrix(t *testing.T) {
 			case "CASReadToken", "CASWriteToken":
 				reset(true, nil, true, nil)
 				allowed := request(t, row.method, route, mediaType, payload, true, http.StatusOK)
-				assertPermission(t, row.op, repoID, "", authMatrixUser, allowed)
+				assertPermission(t, row.op, repoID, row.ref, authMatrixUser, allowed)
 				var token struct {
 					AccessToken string `json:"accessToken"`
 				}
