@@ -332,6 +332,7 @@ func testMirrorAuthenticatedUpstream(t *testing.T, ssh bool) {
 	upstream.createRepo(t, "auth-mirror-org", "repo")
 	remote, env := upstream.httpRemote(repoID)
 	dir := filepath.Join(t.TempDir(), "upstream")
+	// The hook answers 403, not 401, so git never sends the URL credentials on its own.
 	seedEnv := append(append([]string(nil), env...), "GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_1=http.extraHeader",
 		"GIT_CONFIG_VALUE_1=Authorization: Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+pass)))

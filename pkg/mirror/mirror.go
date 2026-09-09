@@ -236,7 +236,7 @@ func (m *Mirror) IsMirrorDestination(ctx context.Context, repoName string) (bool
 type PullOptions struct {
 	// SourceURL overrides the mirrorSourceFunc lookup.
 	SourceURL string
-	// Refs restricts the sync to the given refs, overriding the mirrorRefFilterFunc.
+	// Refs restricts the sync to the given refs, overriding the mirrorRefFilterFunc; other local refs are pruned.
 	Refs []string
 	// UserInfo sets credentials for the sync, overriding the SyncUserInfoFunc.
 	UserInfo *url.Userinfo

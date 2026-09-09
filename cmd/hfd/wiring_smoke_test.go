@@ -221,8 +221,8 @@ func wiringGit(t *testing.T, dir string, env []string, args ...string) string {
 	return output
 }
 
-// TestServerWiringPullMirror checks read-only access, TTL refresh, and offline
-// cache serving through the real HTTP builders without sleeping.
+// TestServerWiringPullMirror checks read-only access, TTL refresh, and serving
+// from cache inside the TTL through the real HTTP builders without sleeping.
 func TestServerWiringPullMirror(t *testing.T) {
 	const repoName = "wiring-org/pull-mirror"
 	upstreamConfig := defaultConfig()
@@ -279,6 +279,7 @@ func TestServerWiringPullMirror(t *testing.T) {
 	clone(oldHash)
 	hooks.lastPull.Store(repoPath, time.Now().Add(-2*time.Hour))
 	clone(newHash)
+	// The previous clone refreshed lastPull, so this one never reaches the closed upstream.
 	upstream.Close()
 	clone(newHash)
 }
