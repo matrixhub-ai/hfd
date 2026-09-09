@@ -24,6 +24,7 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -53,6 +54,7 @@ type e2eConfig struct {
 	wraps        []func(http.Handler) http.Handler
 	authUser     string
 	authPass     string
+	apiHooks     bool
 	preReceive   receive.PreReceiveHookFunc
 	postReceive  receive.PostReceiveHookFunc
 	permission   permission.PermissionHookFunc
@@ -87,25 +89,27 @@ func withWrap(mw func(http.Handler) http.Handler) e2eOption {
 	return func(c *e2eConfig) { c.wraps = append(c.wraps, mw) }
 }
 
-// withAuth wires the authenticate layer over the HTTP chain the way cmd/hfd
-// does: basic, static-token, and sign validators for the credentials. The
-// layer only establishes identity — anonymous requests pass through and
-// enforcement stays in permission hooks.
+// withAuth wires basic, static-token, signed LFS, and CAS auth the way cmd/hfd does.
+// Anonymous requests pass through; permission hooks enforce access.
 func withAuth(username, password string) e2eOption {
 	return func(c *e2eConfig) { c.authUser = username; c.authPass = password }
 }
 
-// withHooks installs pre/post receive hooks on the git transports (HTTP and
-// SSH); nil hooks stay unset. The hf API layer is left unhooked, matching
-// the pre-harness per-protocol fixtures.
+// withHooks installs receive hooks on git HTTP and SSH; withAPIHooks also applies them to HF.
+// Nil hooks stay unset.
 func withHooks(pre receive.PreReceiveHookFunc, post receive.PostReceiveHookFunc) e2eOption {
 	return func(c *e2eConfig) { c.preReceive = pre; c.postReceive = post }
 }
 
-// withPermissionHook installs the permission hook on the git transports
-// (HTTP and SSH), leaving the hf API layer open so fixtures can create repos.
+// withPermissionHook installs the permission hook on git HTTP and SSH only.
+// With withAPIHooks it also applies to HF, LFS, and CAS token routes.
 func withPermissionHook(fn permission.PermissionHookFunc) e2eOption {
 	return func(c *e2eConfig) { c.permission = fn }
+}
+
+// withAPIHooks extends configured permission hooks to HF, LFS, and CAS, and receive hooks to HF.
+func withAPIHooks() e2eOption {
+	return func(c *e2eConfig) { c.apiHooks = true }
 }
 
 // withMirrorSource turns the server into a pull-through mirror of the given
@@ -188,7 +192,11 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
 	}
-	sharedMirror, xet := newTestMirror(t, dataDir, engineUpstream, testS3Client != nil, mirrorOpts...)
+	var signValidator authenticate.TokenSignValidator
+	if cfg.authUser != "" || cfg.authPass != "" {
+		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
+	}
+	sharedMirror, xet := newTestMirrorWithScheme(t, dataDir, engineUpstream, testS3Client != nil, signValidator, mirrorOpts...)
 
 	// The git transports get the mirror (and its access rules) only in
 	// pull-through mode: with a mirror set they refuse to serve non-mirror
@@ -198,21 +206,40 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		preOpen = newMirrorPreOpenHook(sharedMirror)
 	}
 
+	tail := xet.tail
+	if cfg.apiHooks {
+		tail = backendcas.NewHandler(
+			backendcas.WithMirror(sharedMirror),
+			backendcas.WithPermissionHookFunc(cfg.permission),
+			backendcas.WithNext(xet.dataPlane),
+		)
+	}
 	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(xet.tail),
+		backendhf.WithNext(tail),
 	}
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
 	}
+	if cfg.apiHooks {
+		hfOpts = append(hfOpts,
+			backendhf.WithPermissionHookFunc(cfg.permission),
+			backendhf.WithPreReceiveHookFunc(cfg.preReceive),
+			backendhf.WithPostReceiveHookFunc(cfg.postReceive))
+	}
 	var handler http.Handler
 	handler = backendhf.NewHandler(hfOpts...)
-	handler = backendlfs.NewHandler(
+	lfsOpts := []backendlfs.Option{
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
 		backendlfs.WithMirror(sharedMirror),
-	)
+		backendlfs.WithTokenSignValidator(signValidator),
+	}
+	if cfg.apiHooks {
+		lfsOpts = append(lfsOpts, backendlfs.WithPermissionHookFunc(cfg.permission))
+	}
+	handler = backendlfs.NewHandler(lfsOpts...)
 	httpOpts := []backendhttp.Option{
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
@@ -232,13 +259,14 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(cfg.permission))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
-	if cfg.authUser != "" || cfg.authPass != "" {
+	if signValidator != nil {
 		handler = authenticate.NewHandler(
 			authenticate.WithNext(handler),
 			authenticate.WithBasicAuthValidator(authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)),
 			authenticate.WithTokenValidator(authenticate.NewSimpleTokenValidator(cfg.authUser, cfg.authPass)),
-			authenticate.WithTokenSignValidator(authenticate.NewTokenSignValidator([]byte(cfg.authPass))),
+			authenticate.WithTokenSignValidator(signValidator),
 		)
+		handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", xet.authFn), handler)
 	}
 	if cfg.internalAPI {
 		gcs, ok := xet.xs.(xetstorage.GCStore)
