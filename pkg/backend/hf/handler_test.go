@@ -818,6 +818,7 @@ func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
 	createRepoAndCommit(t, endpoint, "model", "test-user", "treesize-missing")
 	for _, path := range []string{
 		"/api/models/test-user/treesize-missing/treesize/main/missing",
+		"/api/models/test-user/treesize-missing/treesize/main/missing/deeper",
 		"/api/models/test-user/treesize-missing/treesize/no-such-rev/",
 		"/api/models/test-user/treesize-missing/tree/main/missing",
 		"/api/models/test-user/treesize-missing/tree/no-such-rev/",
