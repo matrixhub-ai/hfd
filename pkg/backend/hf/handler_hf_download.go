@@ -3,6 +3,7 @@ package hf
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,11 +11,20 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
+
+// treeErrorStatus maps a missing revision or path to 404; anything else is a server error.
+func treeErrorStatus(err error) int {
+	if errors.Is(err, repository.ErrRevisionNotFound) || errors.Is(err, object.ErrEntryNotFound) || errors.Is(err, object.ErrDirectoryNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
+}
 
 func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -48,7 +58,7 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		Recursive: recursive,
 	})
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), treeErrorStatus(err))
 		return
 	}
 
@@ -117,7 +127,7 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 
 	size, err := repo.TreeSize(rev, path)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to get tree size for repo %q at rev %q and path %q: %v", ri.RepoName, rev, path, err), treeErrorStatus(err))
 		return
 	}
 
