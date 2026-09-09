@@ -193,7 +193,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
 	}
 	var signValidator authenticate.TokenSignValidator
-	if cfg.authUser != "" || cfg.authPass != "" {
+	if cfg.authPass != "" {
 		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
 	}
 	sharedMirror, xet := newTestMirrorWithScheme(t, dataDir, engineUpstream, testS3Client != nil, signValidator, mirrorOpts...)
@@ -259,15 +259,16 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(cfg.permission))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
+	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
+	authOpts := []authenticate.Option{authenticate.WithNext(handler)}
 	if signValidator != nil {
-		handler = authenticate.NewHandler(
-			authenticate.WithNext(handler),
+		authOpts = append(authOpts,
 			authenticate.WithBasicAuthValidator(authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)),
 			authenticate.WithTokenValidator(authenticate.NewSimpleTokenValidator(cfg.authUser, cfg.authPass)),
-			authenticate.WithTokenSignValidator(signValidator),
-		)
-		handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", xet.authFn), handler)
+			authenticate.WithTokenSignValidator(signValidator))
 	}
+	handler = authenticate.NewHandler(authOpts...)
+	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", xet.authFn), handler)
 	if cfg.internalAPI {
 		gcs, ok := xet.xs.(xetstorage.GCStore)
 		if !ok {
@@ -309,6 +310,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(st),
 		backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback([]ssh.PublicKey{pubKey})),
+		backendssh.WithTokenSignValidator(signValidator),
 	}
 	if cfg.sshLFSURL {
 		sshOpts = append(sshOpts, backendssh.WithLFSURL(httpServer.URL))
