@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -148,6 +149,75 @@ func TestLFSOperationsMatrix(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("RangeRequests", func(t *testing.T) {
+		s := newE2EServer(t)
+		s.createRepo(t, "lfs-org", "lfs-range")
+		repoID := "lfs-org/lfs-range"
+		data := makeBinaryData(256*1024, 10)
+		sum := sha256.Sum256(data)
+		oid := hex.EncodeToString(sum[:])
+		pushViaXetBatch(t, s, repoID, data)
+		objectURL := s.httpURL + "/objects/" + oid
+		if got := mustGet(t, objectURL); !bytes.Equal(got, data) {
+			t.Fatalf("initial object GET bytes mismatch: got %d bytes, want %d", len(got), len(data))
+		}
+
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Get(s.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("resolve status = %d, want 302; headers=%v", resp.StatusCode, resp.Header)
+		}
+		location, err := resp.Location()
+		if err != nil || location.Path != "/xet-bridge/"+oid {
+			t.Fatalf("resolve Location = %q, err=%v; headers=%v", resp.Header.Get("Location"), err, resp.Header)
+		}
+		for _, endpoint := range []struct{ name, url string }{
+			{"Objects", objectURL},
+			{"Bridge", location.String()},
+		} {
+			t.Run(endpoint.name, func(t *testing.T) {
+				for _, request := range []struct {
+					name, method, byteRange, contentRange string
+					status                                int
+					want                                  []byte
+				}{
+					{"Prefix", http.MethodGet, "bytes=0-1023", fmt.Sprintf("bytes 0-1023/%d", len(data)), http.StatusPartialContent, data[:1024]},
+					{"Suffix", http.MethodGet, "bytes=-1024", fmt.Sprintf("bytes %d-%d/%d", len(data)-1024, len(data)-1, len(data)), http.StatusPartialContent, data[len(data)-1024:]},
+					{"Unsatisfiable", http.MethodGet, fmt.Sprintf("bytes=%d-", len(data)), fmt.Sprintf("bytes */%d", len(data)), http.StatusRequestedRangeNotSatisfiable, nil},
+					{"Full", http.MethodGet, "", "", http.StatusOK, data},
+					{"Head", http.MethodHead, "", "", http.StatusOK, nil},
+				} {
+					t.Run(request.name, func(t *testing.T) {
+						req, err := http.NewRequestWithContext(t.Context(), request.method, endpoint.url, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						req.Header.Set("Range", request.byteRange)
+						resp, err := client.Do(req)
+						if err != nil {
+							t.Fatalf("%s Range=%q: %v", request.method, request.byteRange, err)
+						}
+						defer resp.Body.Close()
+						body, err := io.ReadAll(resp.Body)
+						if err != nil || resp.StatusCode != request.status || resp.Header.Get("Content-Range") != request.contentRange {
+							t.Fatalf("Range=%q: status=%d want=%d headers=%v readErr=%v; want Content-Range=%q", request.byteRange, resp.StatusCode, request.status, resp.Header, err, request.contentRange)
+						}
+						if request.status != http.StatusRequestedRangeNotSatisfiable && !bytes.Equal(body, request.want) {
+							t.Fatalf("Range=%q: bytes mismatch: got=%d want=%d status=%d headers=%v", request.byteRange, len(body), len(request.want), resp.StatusCode, resp.Header)
+						}
+						if request.status == http.StatusOK && resp.Header.Get("Content-Length") != fmt.Sprint(len(data)) {
+							t.Fatalf("%s: Content-Length=%q want=%d status=%d headers=%v", request.method, resp.Header.Get("Content-Length"), len(data), resp.StatusCode, resp.Header)
+						}
+					})
+				}
+			})
+		}
+	})
 
 	// TreeAPILFSMetadata: the tree API must mark a pushed LFS file with an
 	// lfs object carrying the oid and size, and report the real byte size.
