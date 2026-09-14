@@ -20,6 +20,99 @@ import (
 
 const transferMatrixFile = "model.bin"
 
+// TestLFSBatchMixedObjects checks per-object download errors and skips
+// uploading an object already ingested through xet.
+func TestLFSBatchMixedObjects(t *testing.T) {
+	s := newE2EServer(t)
+	repoID := "matrix-org/batch-mixed"
+	s.createRepo(t, "matrix-org", "batch-mixed")
+	data := makeBinaryData(1024, 83)
+	pushViaXetBatch(t, s, repoID, data)
+	sum := sha256.Sum256(data)
+	oid := hex.EncodeToString(sum[:])
+	unknown := strings.Repeat("0", 64)
+
+	for _, operation := range []string{"download", "upload"} {
+		t.Run(operation, func(t *testing.T) {
+			objects := []map[string]any{{"oid": oid, "size": len(data)}}
+			if operation == "download" {
+				objects = append(objects, map[string]any{"oid": unknown, "size": 1})
+			}
+			payload, err := json.Marshal(map[string]any{"operation": operation, "objects": objects})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.httpURL+"/"+repoID+".git/info/lfs/objects/batch", bytes.NewReader(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "application/vnd.git-lfs+json")
+			req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("batch request: %v", err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			var batch struct {
+				Transfer string `json:"transfer"`
+				Objects  []struct {
+					Oid     string `json:"oid"`
+					Size    int    `json:"size"`
+					Actions map[string]struct {
+						Href   string            `json:"href"`
+						Header map[string]string `json:"header"`
+					} `json:"actions"`
+					Error *struct {
+						Code    int    `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				} `json:"objects"`
+			}
+			if err := json.Unmarshal(body, &batch); err != nil || readErr != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("batch status=%d read=%v decode=%v body=%s", resp.StatusCode, readErr, err, body)
+			}
+			if batch.Transfer != "basic" || len(batch.Objects) != len(objects) {
+				t.Fatalf("want basic transfer and %d objects: %s", len(objects), body)
+			}
+			known := batch.Objects[0]
+			if known.Oid != oid || known.Size != len(data) || known.Error != nil {
+				t.Fatalf("want known oid=%s size=%d without error: %s", oid, len(data), body)
+			}
+			if operation == "upload" {
+				if len(known.Actions) != 0 {
+					t.Fatalf("known upload must have no actions: %s", body)
+				}
+				return
+			}
+			missing := batch.Objects[1]
+			if missing.Oid != unknown || missing.Size != 1 || missing.Error == nil || missing.Error.Code != 404 || missing.Error.Message != "Not found" || len(missing.Actions) != 0 {
+				t.Fatalf("want unknown object with 404 Not found and no actions: %s", body)
+			}
+			download := known.Actions["download"]
+			if download.Href == "" || len(known.Actions) != 1 {
+				t.Fatalf("want only a download action for known object: %s", body)
+			}
+			req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, download.Href, nil)
+			if err != nil {
+				t.Fatalf("download request: %v; batch=%s", err, body)
+			}
+			for key, value := range download.Header {
+				req.Header.Set(key, value)
+			}
+			resp, err = http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("download: %v; batch=%s", err, body)
+			}
+			got, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, data) {
+				t.Fatalf("download status=%d error=%v bytes=%x want=%x; batch=%s", resp.StatusCode, err, got, data, body)
+			}
+		})
+	}
+}
+
 // TestTransferProtocolMatrix pushes one LFS-tracked file through each write
 // path (git-lfs over HTTP, git-lfs over SSH, xet transfer via the batch API)
 // and verifies each read path (git-lfs pull, plain hf resolve, xet-capable hf

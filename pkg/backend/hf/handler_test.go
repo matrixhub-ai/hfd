@@ -813,4 +813,24 @@ func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Expected 404 for nonexistent repo, got %d", resp.StatusCode)
 	}
+
+	// A missing path or revision inside an existing repo is a 404 as well, on tree and treesize alike.
+	createRepoAndCommit(t, endpoint, "model", "test-user", "treesize-missing")
+	for _, path := range []string{
+		"/api/models/test-user/treesize-missing/treesize/main/missing",
+		"/api/models/test-user/treesize-missing/treesize/main/missing/deeper",
+		"/api/models/test-user/treesize-missing/treesize/no-such-rev/",
+		"/api/models/test-user/treesize-missing/tree/main/missing",
+		"/api/models/test-user/treesize-missing/tree/no-such-rev/",
+	} {
+		resp, err := http.Get(endpoint + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404: %s", path, resp.StatusCode, body)
+		}
+	}
 }
