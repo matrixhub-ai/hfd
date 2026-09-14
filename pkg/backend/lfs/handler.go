@@ -99,14 +99,15 @@ func (h *Handler) registryLFS(r *mux.Router) {
 }
 
 func (h *Handler) registryLFSLock(r *mux.Router) {
-	r.HandleFunc("/{repo:.+}.git/locks", h.handleGetLock).Methods(http.MethodGet).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}/locks", h.handleGetLock).Methods(http.MethodGet).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}.git/locks/verify", h.handleLocksVerify).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}/locks/verify", h.handleLocksVerify).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}.git/locks", h.handleCreateLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}/locks", h.handleCreateLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}.git/locks/{id}/unlock", h.handleDeleteLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
-	r.HandleFunc("/{repo:.+}/locks/{id}/unlock", h.handleDeleteLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	// Lock routes hang off the LFS URL like the batch route, so {repo} stays the bare repository name.
+	r.HandleFunc("/{repo:.+}.git/info/lfs/locks", h.handleGetLock).Methods(http.MethodGet).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}/info/lfs/locks", h.handleGetLock).Methods(http.MethodGet).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/info/lfs/locks/verify", h.handleLocksVerify).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}/info/lfs/locks/verify", h.handleLocksVerify).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/info/lfs/locks", h.handleCreateLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}/info/lfs/locks", h.handleCreateLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}.git/info/lfs/locks/{id}/unlock", h.handleDeleteLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
+	r.HandleFunc("/{repo:.+}/info/lfs/locks/{id}/unlock", h.handleDeleteLock).Methods(http.MethodPost).MatcherFunc(metaMatcher)
 }
 
 func responseJSON(w http.ResponseWriter, data any, sc int) {

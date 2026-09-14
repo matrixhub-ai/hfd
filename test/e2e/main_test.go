@@ -116,12 +116,12 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 	return storage.NewStorage(opts...)
 }
 
-// xetStack carries the xet pieces the backends get injected with: the chain
-// tail (the token backend over the CAS-server composition) and the xet
-// storage.
+// xetStack carries the token backend, raw CAS handler, token validator, and storage.
 type xetStack struct {
-	tail http.Handler
-	xs   xetstorage.Storage
+	tail      http.Handler
+	dataPlane http.Handler
+	authFn    func(string) bool
+	xs        xetstorage.Storage
 }
 
 // newTestMirror assembles the xet data-plane pieces the way cmd/hfd does —
@@ -132,6 +132,12 @@ type xetStack struct {
 // in the fake S3 bucket like production. Background work is waited out on
 // cleanup.
 func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
+	t.Helper()
+	return newTestMirrorWithScheme(t, dataDir, upstreamURL, s3Storage, nil, gitOpts...)
+}
+
+// newTestMirrorWithScheme uses signValidator for CAS tokens, or a random-key issuer when nil.
+func newTestMirrorWithScheme(t *testing.T, dataDir, upstreamURL string, s3Storage bool, signValidator authenticate.TokenSignValidator, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
 	t.Helper()
 	xetDir := filepath.Join(dataDir, "xet")
 	chunksDir := filepath.Join(xetDir, "chunks")
@@ -157,7 +163,7 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 	if err != nil {
 		t.Fatalf("create xet storage: %v", err)
 	}
-	mint, authFn, err := authenticate.NewXETTokenScheme(nil)
+	mint, authFn, err := authenticate.NewXETTokenScheme(signValidator)
 	if err != nil {
 		t.Fatalf("create token scheme: %v", err)
 	}
@@ -196,5 +202,5 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 		backendcas.WithMirror(m),
 		backendcas.WithNext(dataPlane),
 	)
-	return m, &xetStack{tail: tail, xs: xs}
+	return m, &xetStack{tail: tail, dataPlane: dataPlane, authFn: authFn, xs: xs}
 }

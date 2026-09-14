@@ -1,15 +1,22 @@
 package e2e_test
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	xethf "github.com/wzshiming/xet/client/hf"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 )
@@ -152,6 +159,190 @@ func TestAuthMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuthenticatedTransferMatrix drives real LFS and xet clients through the
+// authenticated chain and rejects invalid basic, signed-action, and CAS tokens.
+func TestAuthenticatedTransferMatrix(t *testing.T) {
+	rec := &requestRecorder{}
+	s := newE2EServer(t, withAuth(authMatrixUser, authMatrixPass), withWrap(rec.wrap), withSSH())
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("requests:\n%s", rec.dump())
+		}
+	})
+	request := func(t *testing.T, method, target string, body io.Reader, headers http.Header, want int) []byte {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), method, target, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header = headers
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v\n%s", method, target, err, rec.dump())
+		}
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read %s %s: %v\nbody: %s\n%s", method, target, err, got, rec.dump())
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s status = %d, want %d\nbody: %s\n%s", method, target, resp.StatusCode, want, got, rec.dump())
+		}
+		return got
+	}
+	tamper := func(t *testing.T, token string) string {
+		t.Helper()
+		signature := strings.LastIndexByte(token, '.') + 1
+		if signature == 0 || signature == len(token) {
+			t.Fatalf("token has no signature: %q", token)
+		}
+		replacement := "A"
+		if token[signature] == 'A' {
+			replacement = "B"
+		}
+		return token[:signature] + replacement + token[signature+1:]
+	}
+
+	t.Run("GitLFSBasic", func(t *testing.T) {
+		if _, err := exec.LookPath("git-lfs"); err != nil {
+			t.Skip("git-lfs not available")
+		}
+		repoID := "auth-org/transfer-lfs"
+		s.createRepo(t, "auth-org", "transfer-lfs")
+		remote, env := s.httpRemote(repoID)
+		remote = credRemote(remote, authMatrixCred{gitUserinfo: authMatrixUser + ":" + authMatrixPass})
+		env = append(env, "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_1=lfs.url", "GIT_CONFIG_VALUE_1="+remote+"/info/lfs")
+		data := makeBinaryData(64*1024, 81)
+		pushViaGitLFS(t, s, remote, env, repoID, data)
+		verifyGitLFSPull(t, s, remote, env, repoID, data)
+
+		fresh := makeBinaryData(64*1024, 82)
+		batchBody := fmt.Sprintf(`{"operation":"upload","objects":[{"oid":"%x","size":%d}]}`, sha256.Sum256(fresh), len(fresh))
+		headers := http.Header{
+			"Accept":       {"application/vnd.git-lfs+json"},
+			"Content-Type": {"application/vnd.git-lfs+json"},
+		}
+		body := request(t, http.MethodPost, remote+"/info/lfs/objects/batch", strings.NewReader(batchBody), headers, http.StatusOK)
+		var batch struct {
+			Objects []struct {
+				Actions map[string]struct {
+					Href   string            `json:"href"`
+					Header map[string]string `json:"header"`
+				} `json:"actions"`
+			} `json:"objects"`
+		}
+		if err := json.Unmarshal(body, &batch); err != nil || len(batch.Objects) != 1 {
+			t.Fatalf("decode batch: %v\nbody: %s", err, body)
+		}
+		upload := batch.Objects[0].Actions["upload"]
+		authorization := upload.Header["Authorization"]
+		if upload.Href == "" || !strings.HasPrefix(authorization, "Bearer ") {
+			t.Fatalf("missing signed upload action\nbody: %s", body)
+		}
+		request(t, http.MethodPut, upload.Href, bytes.NewReader(fresh), http.Header{
+			"Authorization": {tamper(t, authorization)},
+		}, http.StatusUnauthorized)
+		plain, _ := s.httpRemote(repoID)
+		wrong := credRemote(plain, authMatrixCred{gitUserinfo: authMatrixUser + ":wrong-password"})
+		request(t, http.MethodPost, wrong+"/info/lfs/objects/batch", strings.NewReader(batchBody), headers, http.StatusUnauthorized)
+	})
+
+	t.Run("XetGoClient", func(t *testing.T) {
+		repoID := "auth-org/transfer-xet-go"
+		s.createRepo(t, "auth-org", "transfer-xet-go")
+		data := makeBinaryData(64*1024, 83)
+		pushViaXetBatch(t, s, repoID, data)
+		verifyHFResolveXet(t, s, repoID, data)
+
+		base := credRemote(s.httpURL, authMatrixCred{gitUserinfo: authMatrixUser + ":" + authMatrixPass})
+		body := request(t, http.MethodGet, base+"/api/models/"+repoID+"/xet-read-token/main", nil, nil, http.StatusOK)
+		var token struct {
+			AccessToken string `json:"accessToken"`
+			CASURL      string `json:"casUrl"`
+		}
+		if err := json.Unmarshal(body, &token); err != nil || token.AccessToken == "" || token.CASURL == "" {
+			t.Fatalf("decode CAS token: %v\nbody: %s", err, body)
+		}
+		fileHash, _, err := xethf.ResolveDownload(t.Context(), nil, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile)
+		if err != nil {
+			t.Fatalf("resolve file hash: %v\n%s", err, rec.dump())
+		}
+		route := fmt.Sprintf("%s/v1/reconstructions/%s", token.CASURL, fileHash)
+		request(t, http.MethodGet, route, nil, http.Header{
+			"Authorization": {"Bearer " + token.AccessToken},
+		}, http.StatusOK)
+		request(t, http.MethodGet, route, nil, http.Header{
+			"Authorization": {"Bearer " + tamper(t, token.AccessToken)},
+		}, http.StatusUnauthorized)
+	})
+
+	t.Run("HFCliXetCore", func(t *testing.T) {
+		requireUpDownMatrixTools(t)
+		repoID := "auth-org/transfer-hf-xet"
+		s.createRepo(t, "auth-org", "transfer-hf-xet")
+		runHF := func(token string, args ...string) (string, error) {
+			t.Helper()
+			var env []string
+			for _, entry := range testEnv() {
+				if !strings.HasPrefix(entry, "HF_HUB_DISABLE_XET=") {
+					env = append(env, entry)
+				}
+			}
+			env = append(env,
+				"HF_ENDPOINT="+s.httpURL,
+				"HF_HUB_DISABLE_TELEMETRY=1",
+				"HF_TOKEN="+token,
+				"HF_HOME="+t.TempDir(),
+				"HF_HUB_VERBOSITY=debug",
+			)
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "hf", args...)
+			cmd.Env = env
+			cmd.WaitDelay = 10 * time.Second
+			output, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("hf %v timed out: %v\n%s\n%s", args, ctx.Err(), output, rec.dump())
+			}
+			return string(output), err
+		}
+		data := makeBinaryData(64*1024, 84)
+		src := filepath.Join(t.TempDir(), transferMatrixFile)
+		if err := os.WriteFile(src, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		rec.reset()
+		output, err := runHF(authMatrixPass, "upload", repoID, src, transferMatrixFile, "--commit-message", "authenticated xet upload")
+		if err != nil {
+			t.Fatalf("hf upload: %v\n%s\n%s", err, output, rec.dump())
+		}
+		if !rec.saw("", "/xorbs/") && !rec.saw("", "/shards") {
+			t.Fatalf("hf upload never wrote to CAS\n%s\n%s", output, rec.dump())
+		}
+		rec.reset()
+		dst := t.TempDir()
+		output, err = runHF(authMatrixPass, "download", repoID, transferMatrixFile, "--local-dir", dst)
+		if err != nil {
+			t.Fatalf("hf download: %v\n%s\n%s", err, output, rec.dump())
+		}
+		got, err := os.ReadFile(filepath.Join(dst, transferMatrixFile))
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("hf download bytes mismatch: %v (got %d, want %d bytes)\n%s\n%s", err, len(got), len(data), output, rec.dump())
+		}
+		if !rec.saw(http.MethodGet, "reconstructions") {
+			t.Fatalf("hf download never queried reconstructions\n%s\n%s", output, rec.dump())
+		}
+		rec.reset()
+		output, err = runHF("wrong-token", "upload", repoID, src, "rejected.bin", "--commit-message", "invalid token upload")
+		if err == nil || !strings.Contains(output, "401") {
+			t.Fatalf("hf upload with wrong token: err = %v, want 401 failure\n%s\n%s", err, output, rec.dump())
+		}
+		request(t, http.MethodGet, s.httpURL+"/api/whoami-v2", nil, http.Header{
+			"Authorization": {"Bearer wrong-token"},
+		}, http.StatusUnauthorized)
+	})
 }
 
 // seedAuthRepo creates repoID and pushes authMatrixReadme as README.md over

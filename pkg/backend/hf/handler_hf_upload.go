@@ -312,15 +312,17 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The branch head before the commit; ZeroHash when the branch is new.
+	oldRev := header.ParentCommit
+	if oldRev == "" {
+		oldRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(rev))
+		if oldRev == "" {
+			oldRev = receive.ZeroHash
+		}
+	}
+
 	// Mock pre-receive hook with current branch head as OldRev
 	if h.preReceiveHookFunc != nil {
-		oldRev := header.ParentCommit
-		if oldRev == "" {
-			oldRev, _ = repo.RefHash(plumbing.NewBranchReferenceName(rev))
-			if oldRev == "" {
-				oldRev = receive.ZeroHash
-			}
-		}
 		if !h.checkPreReceive(w, r, ri.RepoName, []receive.RefUpdate{
 			repo.RefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev),
 		}, "pre-receive hook denied the commit") {
@@ -334,10 +336,6 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldRev := header.ParentCommit
-	if oldRev == "" {
-		oldRev = receive.ZeroHash
-	}
 	h.afterReceivePack(r.Context(), ri.RepoName, []receive.RefUpdate{
 		repo.RefUpdate(oldRev, commitHash, "refs/heads/"+rev),
 	})

@@ -61,9 +61,7 @@ func TestLFSLockMatrix(t *testing.T) {
 			}
 			// The CLI failure alone cannot distinguish 409 from auth or
 			// server errors, so re-post the lock directly and pin the status.
-			// Both protocol units hit the same HTTP lock endpoint (the SSH
-			// flow resolves to it via git-lfs-authenticate) and the e2e
-			// server mounts no auth middleware, so no Authorization needed.
+			// The e2e server has no credentials configured, so anonymous requests pass.
 			if status := postLFSLockCreate(t, s.httpURL, p.repo, "data.bin"); status != http.StatusConflict {
 				t.Fatalf("duplicate lock POST status = %d, want %d", status, http.StatusConflict)
 			}
