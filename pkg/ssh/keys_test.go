@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -25,18 +26,30 @@ func TestParseAuthorizedKeys(t *testing.T) {
 	pubKey := signer.PublicKey()
 	authorizedKey := gossh.MarshalAuthorizedKey(pubKey)
 
-	t.Run("SingleKey", func(t *testing.T) {
-		keys, err := pkgssh.ParseAuthorizedKeys(authorizedKey)
-		if err != nil {
-			t.Fatalf("Failed to parse authorized keys: %v", err)
-		}
-		if len(keys) != 1 {
-			t.Fatalf("Expected 1 key, got %d", len(keys))
-		}
-		if string(keys[0].Marshal()) != string(pubKey.Marshal()) {
-			t.Error("Parsed key does not match original")
-		}
-	})
+	for _, test := range []struct {
+		name    string
+		data    []byte
+		comment string
+	}{
+		{name: "WithoutComment", data: authorizedKey, comment: ""},
+		{name: "WithComment", data: []byte(strings.TrimSuffix(string(authorizedKey), "\n") + " deploy@ci\n"), comment: "deploy@ci"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			keys, err := pkgssh.ParseAuthorizedKeys(test.data)
+			if err != nil {
+				t.Fatalf("Failed to parse authorized keys: %v", err)
+			}
+			if len(keys) != 1 {
+				t.Fatalf("Expected 1 key, got %d", len(keys))
+			}
+			if string(keys[0].Key.Marshal()) != string(pubKey.Marshal()) {
+				t.Error("Parsed key does not match original")
+			}
+			if keys[0].Comment != test.comment {
+				t.Errorf("Comment = %q, want %q", keys[0].Comment, test.comment)
+			}
+		})
+	}
 
 	t.Run("MultipleKeys", func(t *testing.T) {
 		_, priv2, err := ed25519.GenerateKey(rand.Reader)

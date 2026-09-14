@@ -15,6 +15,7 @@ func TestOperationConstants(t *testing.T) {
 		permission.OperationDeleteRepo,
 		permission.OperationReadRepo,
 		permission.OperationUpdateRepo,
+		permission.OperationListRepos,
 	}
 	seen := map[permission.Operation]bool{}
 	for _, op := range ops {
@@ -31,6 +32,10 @@ func TestOperationConstants(t *testing.T) {
 	if permission.OperationUnknown != 0 {
 		t.Errorf("OperationUnknown should be zero, got %d", permission.OperationUnknown)
 	}
+	list := permission.OperationListRepos
+	if !list.IsRead() || list.IsWrite() || list.IsCreate() || list.IsUpdate() || list.IsDelete() {
+		t.Error("OperationListRepos must be read-only")
+	}
 }
 
 func TestOperationString(t *testing.T) {
@@ -43,6 +48,7 @@ func TestOperationString(t *testing.T) {
 		{permission.OperationDeleteRepo, "delete_repo"},
 		{permission.OperationReadRepo, "read_repo"},
 		{permission.OperationUpdateRepo, "update_repo"},
+		{permission.OperationListRepos, "list_repos"},
 		{permission.Operation(99), "unknown"},
 	}
 	for _, tt := range tests {

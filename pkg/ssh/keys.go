@@ -29,15 +29,20 @@ const (
 	KeyTypeRSA KeyType = "rsa"
 )
 
-// ParseAuthorizedKeys parses an OpenSSH authorized_keys file and returns
-// the parsed public keys. Lines that are empty or start with '#' are skipped.
-func ParseAuthorizedKeys(data []byte) ([]PublicKey, error) {
-	var keys []PublicKey
+// AuthorizedKey holds a public key and its authorized_keys comment.
+type AuthorizedKey struct {
+	Key     PublicKey
+	Comment string
+}
+
+// ParseAuthorizedKeys parses public keys and comments from an OpenSSH authorized_keys file.
+func ParseAuthorizedKeys(data []byte) ([]AuthorizedKey, error) {
+	var keys []AuthorizedKey
 	rest := data
 	for len(rest) > 0 {
-		var key PublicKey
+		var key AuthorizedKey
 		var err error
-		key, _, _, rest, err = gossh.ParseAuthorizedKey(rest)
+		key.Key, key.Comment, _, rest, err = gossh.ParseAuthorizedKey(rest)
 		if err != nil {
 			return nil, fmt.Errorf("parsing authorized key: %w", err)
 		}

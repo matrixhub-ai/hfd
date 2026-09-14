@@ -15,6 +15,7 @@ const (
 	operationAboutDelete
 
 	operationAboutRepo
+	operationAboutList
 
 	// OperationUnknown represents an unknown or unrecognized operation.
 	OperationUnknown Operation = 0
@@ -26,6 +27,8 @@ const (
 	OperationReadRepo = operationAboutRead | operationAboutRepo
 	// OperationUpdateRepo represents updating repository settings.
 	OperationUpdateRepo = operationAboutUpdate | operationAboutRepo
+	// OperationListRepos represents listing repositories of a type; repoName is the type segment.
+	OperationListRepos = operationAboutRead | operationAboutList
 )
 
 // String returns a human-readable name for the operation.
@@ -39,6 +42,8 @@ func (o Operation) String() string {
 		return "read_repo"
 	case OperationUpdateRepo:
 		return "update_repo"
+	case OperationListRepos:
+		return "list_repos"
 	default:
 		return "unknown"
 	}

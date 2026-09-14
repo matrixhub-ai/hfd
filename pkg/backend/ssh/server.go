@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,7 +10,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -32,22 +32,15 @@ type Server struct {
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	tokenSignValidator  authenticate.TokenSignValidator
 	lfsURL              string
-	mirror              *mirror.Mirror
 }
+
+type identityKey struct{}
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
 type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option configures the SSH server.
 type Option func(*Server)
-
-// WithPublicKeyCallback sets the public key authentication callback for the SSH server.
-func WithPublicKeyCallback(fn func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error)) Option {
-	return func(s *Server) {
-		s.config.NoClientAuth = false
-		s.config.PublicKeyCallback = fn
-	}
-}
 
 // WithPermissionHookFunc sets the permission hook for verifying operations.
 func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
@@ -87,30 +80,19 @@ func WithLFSURL(lfsURL string) Option {
 	}
 }
 
-// WithMirror sets the mirror to use for repository synchronization. If not provided,
-// a mirror will be created when mirrorSourceFunc is set.
-func WithMirror(m *mirror.Mirror) Option {
-	return func(s *Server) {
-		s.mirror = m
-	}
+func grant(id authenticate.Identity) *ssh.Permissions {
+	return &ssh.Permissions{ExtraData: map[any]any{identityKey{}: id}}
 }
 
-func permissionsExtensions(user string) *ssh.Permissions {
-	return &ssh.Permissions{
-		Extensions: map[string]string{
-			"x-user": user,
-		},
-	}
-}
-
-func getUserFromPermissions(perms *ssh.Permissions) string {
+func claim(perms *ssh.Permissions) authenticate.Identity {
 	if perms == nil {
 		return authenticate.Anonymous
 	}
-	if user, ok := perms.Extensions["x-user"]; ok {
-		return user
+	id, ok := perms.ExtraData[identityKey{}].(authenticate.Identity)
+	if !ok || id == nil {
+		return authenticate.Anonymous
 	}
-	return authenticate.Anonymous
+	return id
 }
 
 // WithBasicAuthValidator configures the SSH server to use the given validator
@@ -122,13 +104,15 @@ func WithBasicAuthValidator(auth authenticate.BasicAuthValidator) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PasswordCallback = func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			if user, _, ok, err := auth.Validate(context.Background(), conn.User(), string(password)); err != nil {
+			id, err := auth.Validate(context.Background(), conn.User(), string(password))
+			if err != nil && !errors.Is(err, authenticate.ErrUnauthenticated) {
 				slog.WarnContext(context.Background(), "password validation error", "error", err)
 				return nil, fmt.Errorf("password validation error")
-			} else if ok {
-				return permissionsExtensions(user), nil
 			}
-			return nil, fmt.Errorf("invalid username or password")
+			if err != nil || id == nil {
+				return nil, fmt.Errorf("invalid username or password")
+			}
+			return grant(id), nil
 		}
 	}
 }
@@ -142,13 +126,15 @@ func WithPublicKeyValidator(auth authenticate.PublicKeyValidator) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if user, _, ok, err := auth.Validate(context.Background(), conn.User(), key.Type(), key.Marshal()); err != nil {
+			id, err := auth.Validate(context.Background(), conn.User(), key.Type(), key.Marshal())
+			if err != nil && !errors.Is(err, authenticate.ErrUnauthenticated) {
 				slog.WarnContext(context.Background(), "public key validation error", "error", err)
 				return nil, fmt.Errorf("public key validation error")
-			} else if ok {
-				return permissionsExtensions(user), nil
 			}
-			return nil, fmt.Errorf("invalid public key")
+			if err != nil || id == nil {
+				return nil, fmt.Errorf("invalid public key")
+			}
+			return grant(id), nil
 		}
 	}
 }
@@ -192,21 +178,6 @@ func NewServer(opts ...Option) *Server {
 	return s
 }
 
-// AuthorizedKeysCallback returns a PublicKeyCallback that checks incoming keys
-// against the provided list of authorized public keys.
-func AuthorizedKeysCallback(authorizedKeys []ssh.PublicKey) func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-	keyMap := make(map[string]bool, len(authorizedKeys))
-	for _, k := range authorizedKeys {
-		keyMap[string(k.Marshal())] = true
-	}
-	return func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-		if keyMap[string(key.Marshal())] {
-			return &ssh.Permissions{}, nil
-		}
-		return nil, fmt.Errorf("public key not found in authorized keys")
-	}
-}
-
 // Serve accepts connections on the listener and handles them.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	for {
@@ -243,8 +214,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// Discard global requests
 	go ssh.DiscardRequests(reqs)
 
-	user := getUserFromPermissions(serverConn.Permissions)
-	ctx = authenticate.WithContext(ctx, authenticate.UserInfo{User: user})
+	ctx = authenticate.WithIdentity(ctx, claim(serverConn.Permissions))
 
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {

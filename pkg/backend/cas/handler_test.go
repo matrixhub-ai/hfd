@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wzshiming/xet"
+	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetstorage "github.com/wzshiming/xet/storage"
 
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
@@ -29,7 +30,7 @@ func (sentinelNext) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 
 // newMintingMirror assembles a mirror that can mint CAS credentials, the
 // pieces built the way cmd/hfd does.
-func newMintingMirror(t *testing.T) *mirror.Mirror {
+func newMintingMirror(t *testing.T, opts ...mirror.Option) (*mirror.Mirror, *auth.Issuer) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "xet")
 	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
@@ -42,27 +43,28 @@ func newMintingMirror(t *testing.T) *mirror.Mirror {
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
-	mint, _, err := authenticate.NewXETTokenScheme(nil)
+	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
-		t.Fatalf("new token scheme: %v", err)
+		t.Fatalf("new issuer: %v", err)
 	}
-	m, err := mirror.NewMirror(
+	m, err := mirror.NewMirror(append([]mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),
-		mirror.WithMintToken(mint),
-	)
+		mirror.WithMintToken(issuer.Sign),
+	}, opts...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
-	return m
+	return m, issuer
 }
 
 // newTokenHandler builds a handler over the minting mirror with the sentinel
 // as next, so tests observe requests that delegate past the route table.
 func newTokenHandler(t *testing.T, hook permission.PermissionHookFunc) *Handler {
 	t.Helper()
+	m, _ := newMintingMirror(t)
 	return NewHandler(
-		WithMirror(newMintingMirror(t)),
+		WithMirror(m),
 		WithPermissionHookFunc(hook),
 		WithNext(sentinelNext{}),
 	)
@@ -184,33 +186,59 @@ func assertMintedToken(t *testing.T, path string, rec *httptest.ResponseRecorder
 	}
 }
 
+func TestFileTokenRoutes(t *testing.T) {
+	h := newTokenHandler(t, nil)
+	for _, tt := range []struct {
+		path string
+		code int
+	}{
+		{"/xet-token", http.StatusTeapot},
+		{"/xet-token/not-a-hash", http.StatusTeapot},
+		{"/xet-token/" + (xet.FileHash{1, 2, 3}).String(), http.StatusTeapot},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			rec := get(h, tt.path)
+			if rec.Code != tt.code {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestTokenMints(t *testing.T) {
 	hook := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
 		return true, nil
 	}
-	h := newTokenHandler(t, hook)
-
-	for _, path := range []string{
-		"/api/models/org/repo/xet-write-token/main",
-		"/api/models/org/repo/xet-read-token/main",
-		"/xet-token",
+	m, issuer := newMintingMirror(t)
+	h := NewHandler(WithMirror(m), WithPermissionHookFunc(hook))
+	for _, tt := range []struct {
+		path  string
+		grant auth.Grant
+	}{
+		{"/api/models/org/repo/xet-write-token/main", auth.Grant{Permission: auth.Write}},
+		{"/api/models/org/repo/xet-read-token/main", auth.Grant{Permission: auth.Read}},
 	} {
-		assertMintedToken(t, path, get(h, path))
+		rec := get(h, tt.path)
+		assertMintedToken(t, tt.path, rec)
+		if grant, ok := issuer.Validate(rec.Header().Get("X-Xet-Access-Token")); !ok || grant != tt.grant {
+			t.Errorf("GET %s grant = %+v, valid = %v, want %+v", tt.path, grant, ok, tt.grant)
+		}
 	}
 }
 
-func TestXetTokenSkipsHook(t *testing.T) {
-	var hookCalls []string
-	hook := func(_ context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-		hookCalls = append(hookCalls, fmt.Sprintf("%v %s", op, repoName))
-		return false, nil
-	}
-	h := newTokenHandler(t, hook)
-
-	// A denying hook must not matter: /xet-token has no repo context to gate.
-	assertMintedToken(t, "/xet-token", get(h, "/xet-token"))
-	if len(hookCalls) != 0 {
-		t.Errorf("hook called for /xet-token: %v", hookCalls)
+func TestTokenMintError(t *testing.T) {
+	m, _ := newMintingMirror(t, mirror.WithMintToken(func(auth.Grant) (string, int64, error) {
+		return "", 0, fmt.Errorf("mint failed")
+	}))
+	h := NewHandler(WithMirror(m))
+	for _, path := range []string{
+		"/api/models/org/repo/xet-write-token/main",
+		"/api/models/org/repo/xet-read-token/main",
+	} {
+		rec := get(h, path)
+		if rec.Code != http.StatusInternalServerError || !json.Valid(rec.Body.Bytes()) {
+			t.Errorf("GET %s status = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -231,7 +259,7 @@ func TestTokenDelegatesNonGET(t *testing.T) {
 		events = append(events, fmt.Sprintf("gate %v", op))
 		return true, nil
 	}
-	m := newMintingMirror(t)
+	m, _ := newMintingMirror(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		events = append(events, "next")
 		w.WriteHeader(http.StatusTeapot)
@@ -245,7 +273,6 @@ func TestTokenDelegatesNonGET(t *testing.T) {
 	}{
 		{"/api/models/org/repo/xet-write-token/main", []string{fmt.Sprintf("gate %v", permission.OperationUpdateRepo), "next"}},
 		{"/api/models/org/repo/xet-read-token/main", []string{fmt.Sprintf("gate %v", permission.OperationReadRepo), "next"}},
-		{"/xet-token", []string{"next"}},
 	} {
 		events = nil
 		rec := httptest.NewRecorder()
@@ -265,7 +292,6 @@ func TestNilMirrorDelegates(t *testing.T) {
 	for _, path := range []string{
 		"/api/models/org/repo/xet-write-token/main",
 		"/api/models/org/repo/xet-read-token/main",
-		"/xet-token",
 	} {
 		if rec := get(h, path); rec.Code != http.StatusTeapot {
 			t.Errorf("nil-mirror GET %s status = %d, want 418 delegated to next", path, rec.Code)
@@ -298,7 +324,6 @@ func TestNoMintMirrorDelegates(t *testing.T) {
 	for _, path := range []string{
 		"/api/models/org/repo/xet-write-token/main",
 		"/api/models/org/repo/xet-read-token/main",
-		"/xet-token",
 	} {
 		if rec := get(h, path); rec.Code != http.StatusTeapot {
 			t.Errorf("no-mint GET %s status = %d, want 418 delegated to next", path, rec.Code)

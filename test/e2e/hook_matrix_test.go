@@ -33,10 +33,10 @@ func TestAPIHookMatrix(t *testing.T) {
 	permissionAllow, preAllow := true, true
 	var permissionErr, preErr error
 	hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-		user, _ := authenticate.GetUserInfo(ctx)
+		user := authenticate.IdentityFrom(ctx).Name()
 		mu.Lock()
 		defer mu.Unlock()
-		calls = append(calls, permissionCall{op: op, repoName: repoName, ctx: opCtx, user: user.User})
+		calls = append(calls, permissionCall{op: op, repoName: repoName, ctx: opCtx, user: user})
 		return permissionAllow, permissionErr
 	}
 	pre := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {

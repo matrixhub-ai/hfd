@@ -21,8 +21,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 
 	logctx := context.Background()
 	if m.gitOutputFunc != nil {
-		ui, _ := authenticate.GetUserInfo(ctx)
-		logctx = authenticate.WithContext(logctx, ui)
+		logctx = authenticate.WithIdentity(logctx, authenticate.IdentityFrom(ctx))
 
 		opt.Output = m.gitOutputFunc(logctx, repoName)
 	}

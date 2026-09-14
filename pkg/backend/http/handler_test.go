@@ -11,9 +11,54 @@ import (
 	"testing"
 
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
+
+var _ permission.MirrorRoles = (*mirror.Mirror)(nil)
+
+type pullOnlyMirrorRoles struct{}
+
+func (pullOnlyMirrorRoles) IsMirrorSource(context.Context, string) (bool, error) {
+	return true, nil
+}
+
+func (pullOnlyMirrorRoles) IsMirrorDestination(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func TestHTTPHandlerPullMirrorReadOnly(t *testing.T) {
+	dataDir := t.TempDir()
+	repoPath := filepath.Join(dataDir, "repositories", "test-repo.git")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runGitCmd(t, "", "init", "--bare", repoPath)
+	handler := backendhttp.NewHandler(
+		backendhttp.WithStorage(storage.NewStorage(storage.WithRootDir(dataDir))),
+		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(pullOnlyMirrorRoles{})),
+	)
+	for _, test := range []struct {
+		service string
+		want    int
+	}{
+		{"git-receive-pack", http.StatusForbidden},
+		{"git-upload-pack", http.StatusOK},
+	} {
+		t.Run(test.service, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/test-repo.git/info/refs?service="+test.service, nil)
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Errorf("status = %d, want %d; body = %q", response.Code, test.want, response.Body.String())
+			}
+			if test.want == http.StatusForbidden && strings.TrimSpace(response.Body.String()) != "permission denied" {
+				t.Errorf("body = %q, want permission denied", response.Body.String())
+			}
+		})
+	}
+}
 
 // runGitCmd runs a git command in the specified directory.
 func runGitCmd(t *testing.T, dir string, args ...string) string {

@@ -61,10 +61,6 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 		return
 	}
 
-	if !s.checkMirrorAccess(ctx, channel, repoName, service) {
-		return
-	}
-
 	op := permission.OperationReadRepo
 	if service == repository.GitReceivePack {
 		op = permission.OperationUpdateRepo
@@ -105,41 +101,6 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	}
 
 	sendExitStatus(channel, 0, "")
-}
-
-// checkMirrorAccess enforces mirror-only access rules, reporting the failure
-// on the SSH channel. It returns true when the request may proceed.
-func (s *Server) checkMirrorAccess(ctx context.Context, channel ssh.Channel, repoName, service string) bool {
-	if s.mirror == nil {
-		return true
-	}
-	switch service {
-	case repository.GitUploadPack:
-		isMirrorSrc, err := s.mirror.IsMirrorSource(ctx, repoName)
-		if err != nil {
-			slog.ErrorContext(ctx, "ssh protocol: failed to check mirror status", "repo", repoName, "error", err)
-			sendExitStatus(channel, 1, "")
-			return false
-		}
-		if !isMirrorSrc {
-			slog.WarnContext(ctx, "ssh protocol: pull from mirror repository denied", "repo", repoName)
-			sendExitStatus(channel, 1, "pull from mirror repository denied")
-			return false
-		}
-	case repository.GitReceivePack:
-		isMirrorDest, err := s.mirror.IsMirrorDestination(ctx, repoName)
-		if err != nil {
-			slog.ErrorContext(ctx, "ssh protocol: failed to check mirror destination status", "repo", repoName, "error", err)
-			sendExitStatus(channel, 1, "")
-			return false
-		}
-		if !isMirrorDest {
-			slog.WarnContext(ctx, "ssh protocol: push to mirror destination repository denied", "repo", repoName)
-			sendExitStatus(channel, 1, "push to mirror destination repository denied")
-			return false
-		}
-	}
-	return true
 }
 
 // errPreReceiveDenied marks a push rejected by the pre-receive hook; the

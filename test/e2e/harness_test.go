@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/wzshiming/xet/auth"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -45,6 +46,7 @@ type e2eServer struct {
 	sshURL  string
 	sshEnv  []string
 	storage *storage.Storage
+	issuer  *auth.Issuer
 }
 
 type e2eConfig struct {
@@ -157,17 +159,15 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 	}
 }
 
-// newE2EServer wires the handler chain in cmd/hfd's order (http → lfs → hf →
-// xet CAS data plane), with one known deviation from the production wiring:
-// the mirror reaches the git transports only under withMirrorSource, because
-// injecting it unconditionally — as wire.go does — would make
-// checkMirrorAccess refuse every non-mirror repository. The xet engine
-// ingests from the mirror source when one is set — like cmd/hfd does with
+// newE2EServer wires the handler chain in pkg/server's order (internal API →
+// xet CAS server → authentication → http → lfs → hf → cas); withMirrorSource
+// installs PullMirrorReadOnly on the git transports. The xet engine ingests
+// from the mirror source when one is set — like cmd/hfd does with
 // --pull-mirror-url — so mirrored LFS resolves stream through the engine
 // instead of racing the batch-API fallback; plain servers only serve local
-// content, so their engine points at an always-404 server that fully
-// ingested objects never contact. During the S3 pass the xet storage lives
-// in the fake S3 bucket, like production.
+// content, so their engine points at an always-404 server that fully ingested
+// objects never contact. During the S3 pass the xet storage lives in the fake
+// S3 bucket, like production.
 func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	t.Helper()
 	cfg := &e2eConfig{}
@@ -196,28 +196,26 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.authPass != "" {
 		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
 	}
-	sharedMirror, xet := newTestMirrorWithScheme(t, dataDir, engineUpstream, testS3Client != nil, signValidator, mirrorOpts...)
+	sharedMirror, xet := newTestMirror(t, dataDir, engineUpstream, testS3Client != nil, mirrorOpts...)
 
-	// The git transports get the mirror (and its access rules) only in
-	// pull-through mode: with a mirror set they refuse to serve non-mirror
-	// repositories.
+	perm := cfg.permission
 	var preOpen func(context.Context, string, bool) error
 	if cfg.mirrorSource != "" {
+		perm = permission.All(permission.PullMirrorReadOnly(sharedMirror), cfg.permission)
 		preOpen = newMirrorPreOpenHook(sharedMirror)
 	}
 
-	tail := xet.tail
+	casOpts := []backendcas.Option{
+		backendcas.WithMirror(sharedMirror),
+		backendcas.WithNext(http.NotFoundHandler()),
+	}
 	if cfg.apiHooks {
-		tail = backendcas.NewHandler(
-			backendcas.WithMirror(sharedMirror),
-			backendcas.WithPermissionHookFunc(cfg.permission),
-			backendcas.WithNext(xet.dataPlane),
-		)
+		casOpts = append(casOpts, backendcas.WithPermissionHookFunc(cfg.permission))
 	}
 	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(tail),
+		backendhf.WithNext(backendcas.NewHandler(casOpts...)),
 	}
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
@@ -245,9 +243,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendhttp.WithNext(handler),
 	}
 	if preOpen != nil {
-		httpOpts = append(httpOpts,
-			backendhttp.WithMirror(sharedMirror),
-			backendhttp.WithPreOpenHookFunc(preOpen))
+		httpOpts = append(httpOpts, backendhttp.WithPreOpenHookFunc(preOpen))
 	}
 	if cfg.preReceive != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(cfg.preReceive))
@@ -255,8 +251,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.postReceive != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(cfg.postReceive))
 	}
-	if cfg.permission != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(cfg.permission))
+	if perm != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(perm))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
 	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
@@ -268,7 +264,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 			authenticate.WithTokenSignValidator(signValidator))
 	}
 	handler = authenticate.NewHandler(authOpts...)
-	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", xet.authFn), handler)
+	handler = xet.casServer(handler)
 	if cfg.internalAPI {
 		gcs, ok := xet.xs.(xetstorage.GCStore)
 		if !ok {
@@ -290,6 +286,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	s := &e2eServer{
 		httpURL: httpServer.URL,
 		storage: st,
+		issuer:  xet.issuer,
 	}
 	if !cfg.ssh {
 		return s
@@ -309,16 +306,14 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	sshOpts := []backendssh.Option{
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(st),
-		backendssh.WithPublicKeyCallback(backendssh.AuthorizedKeysCallback([]ssh.PublicKey{pubKey})),
+		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{string(pubKey.Marshal()): ""})),
 		backendssh.WithTokenSignValidator(signValidator),
 	}
 	if cfg.sshLFSURL {
 		sshOpts = append(sshOpts, backendssh.WithLFSURL(httpServer.URL))
 	}
 	if preOpen != nil {
-		sshOpts = append(sshOpts,
-			backendssh.WithMirror(sharedMirror),
-			backendssh.WithPreOpenHookFunc(preOpen))
+		sshOpts = append(sshOpts, backendssh.WithPreOpenHookFunc(preOpen))
 	}
 	if cfg.preReceive != nil {
 		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(cfg.preReceive))
@@ -326,8 +321,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.postReceive != nil {
 		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(cfg.postReceive))
 	}
-	if cfg.permission != nil {
-		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(cfg.permission))
+	if perm != nil {
+		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(perm))
 	}
 	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

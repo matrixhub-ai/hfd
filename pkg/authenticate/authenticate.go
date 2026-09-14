@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,71 +17,95 @@ import (
 	"time"
 )
 
-// Anonymous is the username used for unauthenticated users.
-const Anonymous = "<anonymous>"
+// Identity is the authenticated principal; embedders may carry their own type and type-assert it in hooks.
+// Name() must be non-empty; unnamed identities are treated as anonymous (see IsAnonymous) and replaced by Anonymous in the HTTP chain.
+type Identity interface {
+	Name() string
+	Email() string
+}
+
+// AnonymousName is the Name of unauthenticated principals.
+const AnonymousName = "<anonymous>"
+
+// Anonymous is the identity of unauthenticated requests.
+var Anonymous Identity = NewIdentity(AnonymousName, "")
+
+type identity struct {
+	name, email string
+}
+
+func (id identity) Name() string  { return id.name }
+func (id identity) Email() string { return id.email }
+
+// NewIdentity returns the built-in Identity carrying just a name and an email.
+func NewIdentity(name, email string) Identity {
+	return identity{name: name, email: email}
+}
+
+// IsAnonymous reports whether id is nil, unnamed, or the anonymous principal.
+func IsAnonymous(id Identity) bool {
+	return id == nil || id.Name() == "" || id.Name() == AnonymousName
+}
 
 type contextKey struct{}
 
-// UserInfo holds identity information for an authenticated user.
-type UserInfo struct {
-	User  string
-	Email string
+// WithIdentity returns a context carrying id.
+func WithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, contextKey{}, id)
 }
 
-// WithContext returns a new context with the given user info set.
-func WithContext(ctx context.Context, user UserInfo) context.Context {
-	return context.WithValue(ctx, contextKey{}, user)
-}
-
-// GetUserInfo retrieves the user info from the context.
-func GetUserInfo(ctx context.Context) (UserInfo, bool) {
-	val, ok := ctx.Value(contextKey{}).(UserInfo)
-	if !ok {
-		return UserInfo{}, false
+// IdentityFrom returns the context's identity, or Anonymous when none was set.
+func IdentityFrom(ctx context.Context) Identity {
+	id, _ := ctx.Value(contextKey{}).(Identity)
+	if id == nil {
+		return Anonymous
 	}
-	return val, true
+	return id
 }
 
-// BasicAuthValidator validates username/password credentials.
+// ErrUnauthenticated reports credentials that were presented but rejected.
+var ErrUnauthenticated = errors.New("unauthenticated")
+
+// BasicAuthValidator returns (nil, nil) to try next, (id, nil) to authenticate, ErrUnauthenticated (including wrapped) for 401, or another error for 500.
 type BasicAuthValidator interface {
-	Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error)
+	Validate(ctx context.Context, username, password string) (Identity, error)
 }
 
 // BasicAuthValidatorFunc is a helper type to allow using functions as BasicAuthValidators.
-type BasicAuthValidatorFunc func(ctx context.Context, username, password string) (user string, next, ok bool, err error)
+type BasicAuthValidatorFunc func(ctx context.Context, username, password string) (Identity, error)
 
-func (f BasicAuthValidatorFunc) Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error) {
+func (f BasicAuthValidatorFunc) Validate(ctx context.Context, username, password string) (Identity, error) {
 	return f(ctx, username, password)
 }
 
-// TokenValidator validates a bearer token.
+// TokenValidator validates a bearer token; results follow the BasicAuthValidator contract.
 type TokenValidator interface {
-	Validate(ctx context.Context, token string) (user string, next, ok bool, err error)
+	Validate(ctx context.Context, token string) (Identity, error)
 }
 
 // TokenValidatorFunc is a helper type to allow using functions as TokenValidators.
-type TokenValidatorFunc func(ctx context.Context, token string) (user string, next, ok bool, err error)
+type TokenValidatorFunc func(ctx context.Context, token string) (Identity, error)
 
-func (f TokenValidatorFunc) Validate(ctx context.Context, token string) (user string, next, ok bool, err error) {
+func (f TokenValidatorFunc) Validate(ctx context.Context, token string) (Identity, error) {
 	return f(ctx, token)
 }
 
-// PublicKeyValidator validates an SSH public key.
+// PublicKeyValidator validates an SSH public key for the client-claimed username; results follow the BasicAuthValidator contract.
 type PublicKeyValidator interface {
-	Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
+	Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error)
 }
 
 // PublicKeyValidatorFunc is a helper type to allow using functions as PublicKeyValidators.
-type PublicKeyValidatorFunc func(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
+type PublicKeyValidatorFunc func(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error)
 
-func (f PublicKeyValidatorFunc) Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error) {
+func (f PublicKeyValidatorFunc) Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error) {
 	return f(ctx, username, keyType, marshaledKey)
 }
 
-// TokenSignValidator is an interface for signing and validating tokens.
+// TokenSignValidator signs method+path-bound tokens for an identity and validates them; Validate follows the BasicAuthValidator contract.
 type TokenSignValidator interface {
-	Sign(ctx context.Context, method, path string, username string, expiration time.Duration) (token string, err error)
-	Validate(ctx context.Context, method, path string, token string) (user string, next, ok bool, err error)
+	Sign(ctx context.Context, method, path string, id Identity, expiration time.Duration) (string, error)
+	Validate(ctx context.Context, method, path string, token string) (Identity, error)
 }
 
 // simpleBasicAuthValidator implements BasicAuthValidator with in-memory credentials.
@@ -97,36 +122,37 @@ func NewSimpleBasicAuthValidator(username, password string) BasicAuthValidator {
 	}
 }
 
-func (a *simpleBasicAuthValidator) Validate(_ context.Context, username, password string) (string, bool, bool, error) {
+func (a *simpleBasicAuthValidator) Validate(_ context.Context, username, password string) (Identity, error) {
 	if a.username != "" &&
 		username == a.username &&
 		password == a.password {
-		return username, false, true, nil
+		return NewIdentity(username, ""), nil
 	}
-	return "", false, false, nil
+	return nil, ErrUnauthenticated
 }
 
 // simplePublicKeyValidator implements PublicKeyValidator with in-memory authorized keys.
 type simplePublicKeyValidator struct {
-	authorizedKeys map[string]bool
+	authorizedKeys map[string]string
 }
 
-// NewSimplePublicKeyValidator creates a PublicKeyValidator.
-func NewSimplePublicKeyValidator(authorizedKeys [][]byte) PublicKeyValidator {
-	keys := make(map[string]bool, len(authorizedKeys))
-	for _, k := range authorizedKeys {
-		keys[string(k)] = true
-	}
+// NewSimplePublicKeyValidator maps string(marshaledKey) to the user each key authenticates as.
+// An empty value trusts the client-claimed SSH username for that key.
+func NewSimplePublicKeyValidator(authorizedKeys map[string]string) PublicKeyValidator {
 	return &simplePublicKeyValidator{
-		authorizedKeys: keys,
+		authorizedKeys: authorizedKeys,
 	}
 }
 
-func (a *simplePublicKeyValidator) Validate(_ context.Context, username string, keyType string, marshaledKey []byte) (string, bool, bool, error) {
-	if a.authorizedKeys[string(marshaledKey)] {
-		return username, false, true, nil
+func (a *simplePublicKeyValidator) Validate(_ context.Context, username string, keyType string, marshaledKey []byte) (Identity, error) {
+	bound, ok := a.authorizedKeys[string(marshaledKey)]
+	if !ok {
+		return nil, ErrUnauthenticated
 	}
-	return "", false, false, nil
+	if bound == "" {
+		bound = username
+	}
+	return NewIdentity(bound, ""), nil
 }
 
 // simpleTokenValidator implements TokenValidator with a static token.
@@ -143,31 +169,20 @@ func NewSimpleTokenValidator(username string, token string) TokenValidator {
 	}
 }
 
-func (a *simpleTokenValidator) Validate(_ context.Context, token string) (string, bool, bool, error) {
+func (a *simpleTokenValidator) Validate(_ context.Context, token string) (Identity, error) {
 	if a.token == "" {
-		return "", true, false, nil
+		return nil, nil
 	}
 
 	if strings.HasPrefix(token, signedTokenPrefix) {
-		return "", true, false, nil
+		return nil, nil
 	}
 
 	if token == a.token {
-		return a.username, false, true, nil
+		return NewIdentity(a.username, ""), nil
 	}
 
-	return "", false, false, nil
-}
-
-// NewTokenRecognizer creates a TokenValidator that maps recognized tokens to
-// the fixed user; unrecognized tokens fall through to the next validator.
-func NewTokenRecognizer(user string, recognize func(token string) bool) TokenValidator {
-	return TokenValidatorFunc(func(_ context.Context, token string) (string, bool, bool, error) {
-		if recognize != nil && recognize(token) {
-			return user, false, true, nil
-		}
-		return "", true, false, nil
-	})
+	return nil, ErrUnauthenticated
 }
 
 type tokenSignValidator struct {
@@ -183,7 +198,10 @@ func NewTokenSignValidator(key []byte) TokenSignValidator {
 
 const signedTokenPrefix = "sign:"
 
-func (a *tokenSignValidator) Sign(_ context.Context, method, path string, username string, expiration time.Duration) (string, error) {
+func (a *tokenSignValidator) Sign(_ context.Context, method, path string, id Identity, expiration time.Duration) (string, error) {
+	if id == nil {
+		return "", errors.New("cannot sign token for nil identity")
+	}
 	if len(a.key) == 0 {
 		return "", nil
 	}
@@ -196,20 +214,20 @@ func (a *tokenSignValidator) Sign(_ context.Context, method, path string, userna
 		path = u.Path
 	}
 
-	token, err := signToken(a.key, username, time.Now().Add(expiration), method, path)
+	token, err := signToken(a.key, id.Name(), time.Now().Add(expiration), method, path)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 	return signedTokenPrefix + token, nil
 }
 
-func (a *tokenSignValidator) Validate(_ context.Context, method, path string, token string) (string, bool, bool, error) {
+func (a *tokenSignValidator) Validate(_ context.Context, method, path string, token string) (Identity, error) {
 	if len(a.key) == 0 {
-		return "", true, false, nil
+		return nil, nil
 	}
 
 	if !strings.HasPrefix(token, signedTokenPrefix) {
-		return "", true, false, nil
+		return nil, nil
 	}
 
 	token = strings.TrimPrefix(token, signedTokenPrefix)
@@ -217,16 +235,16 @@ func (a *tokenSignValidator) Validate(_ context.Context, method, path string, to
 	if !strings.HasPrefix(path, "/") {
 		u, err := url.Parse(path)
 		if err != nil {
-			return "", false, false, nil
+			return nil, ErrUnauthenticated
 		}
 		path = u.Path
 	}
 
 	username, ok := verifyToken(a.key, token, method, path)
 	if !ok {
-		return "", false, false, nil
+		return nil, ErrUnauthenticated
 	}
-	return username, false, true, nil
+	return NewIdentity(username, ""), nil
 }
 
 // Authenticators bundles the optional validators for each authentication scheme.
@@ -311,28 +329,25 @@ func BasicAuthHandler(auth BasicAuthValidator, h http.Handler) http.Handler {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, ok := GetUserInfo(r.Context())
-		if ok && userInfo.User != Anonymous {
+		if !IsAnonymous(IdentityFrom(r.Context())) {
 			h.ServeHTTP(w, r)
 			return
 		}
 		username, password, ok := r.BasicAuth()
 		if ok {
-			user, next, valid, err := auth.Validate(r.Context(), username, password)
+			id, err := auth.Validate(r.Context(), username, password)
+			if errors.Is(err, ErrUnauthenticated) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 			if err != nil {
 				slog.WarnContext(r.Context(), "basic auth validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if valid {
-				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
-				h.ServeHTTP(w, r)
-				return
-			}
-			if !next {
-				w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+			if id != nil {
+				r = r.WithContext(WithIdentity(r.Context(), id))
 			}
 		}
 		h.ServeHTTP(w, r)
@@ -347,26 +362,23 @@ func TokenSignValidatorHandler(auth TokenSignValidator, h http.Handler) http.Han
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, ok := GetUserInfo(r.Context())
-		if ok && userInfo.User != Anonymous {
+		if !IsAnonymous(IdentityFrom(r.Context())) {
 			h.ServeHTTP(w, r)
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
-			user, next, valid, err := auth.Validate(r.Context(), r.Method, r.URL.RequestURI(), token)
+			id, err := auth.Validate(r.Context(), r.Method, r.URL.RequestURI(), token)
+			if errors.Is(err, ErrUnauthenticated) {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 			if err != nil {
 				slog.WarnContext(r.Context(), "token sign validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if valid {
-				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
-				h.ServeHTTP(w, r)
-				return
-			}
-			if !next {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+			if id != nil {
+				r = r.WithContext(WithIdentity(r.Context(), id))
 			}
 		}
 		h.ServeHTTP(w, r)
@@ -381,40 +393,35 @@ func TokenValidatorHandler(auth TokenValidator, h http.Handler) http.Handler {
 		return h
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userInfo, ok := GetUserInfo(r.Context())
-		if ok && userInfo.User != Anonymous {
+		if !IsAnonymous(IdentityFrom(r.Context())) {
 			h.ServeHTTP(w, r)
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
-			user, next, valid, err := auth.Validate(r.Context(), token)
+			id, err := auth.Validate(r.Context(), token)
+			if errors.Is(err, ErrUnauthenticated) {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 			if err != nil {
 				slog.WarnContext(r.Context(), "token validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if valid {
-				r = r.WithContext(WithContext(r.Context(), UserInfo{User: user}))
-				h.ServeHTTP(w, r)
-				return
-			}
-			if !next {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
+			if id != nil {
+				r = r.WithContext(WithIdentity(r.Context(), id))
 			}
 		}
 		h.ServeHTTP(w, r)
 	})
 }
 
-// AnonymousAuthenticateHandler is a middleware that allows users to be anonymous by default
-// if they do not have authentication credentials. If the user is already set in
-// context (by an outer auth handler), it passes through unchanged.
+// AnonymousAuthenticateHandler stores Anonymous when no outer auth handler
+// established a named identity, so downstream always finds one.
 func AnonymousAuthenticateHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, ok := GetUserInfo(r.Context())
-		if !ok {
-			r = r.WithContext(WithContext(r.Context(), UserInfo{User: Anonymous}))
+		if IsAnonymous(IdentityFrom(r.Context())) {
+			r = r.WithContext(WithIdentity(r.Context(), Anonymous))
 		}
 		h.ServeHTTP(w, r)
 	})

@@ -7,7 +7,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -22,7 +21,6 @@ type Handler struct {
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
-	mirror              *mirror.Mirror
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
@@ -72,14 +70,6 @@ func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(h *Handler) {
 		h.postReceiveHookFunc = fn
-	}
-}
-
-// WithMirror sets the mirror to use for repository synchronization. If not provided,
-// a mirror will be created when mirrorSourceFunc is set.
-func WithMirror(m *mirror.Mirror) Option {
-	return func(h *Handler) {
-		h.mirror = m
 	}
 }
 

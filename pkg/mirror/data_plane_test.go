@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,8 +15,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wzshiming/xet"
+	"github.com/wzshiming/xet/auth"
+
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
+
+func TestMintXETToken(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	grant := auth.Grant{Permission: auth.Read, File: xet.FileHash{1, 2, 3}}
+	m := newMirror(t, "")
+	if m.CanMintToken() {
+		t.Fatal("unexpected mint configured")
+	}
+	if _, _, _, err := m.MintXETToken(request, grant); err == nil || err.Error() != "no CAS token mint configured" {
+		t.Fatalf("nil mint error = %v", err)
+	}
+	mintErr := errors.New("mint failed")
+	for _, wantErr := range []error{nil, mintErr} {
+		m := newMirror(t, "", mirror.WithExternalURL("https://cas.example/"), mirror.WithMintToken(func(got auth.Grant) (string, int64, error) {
+			if got != grant {
+				t.Fatalf("grant = %+v, want %+v", got, grant)
+			}
+			return "token", 123, wantErr
+		}))
+		casURL, token, expiresAt, err := m.MintXETToken(request, grant)
+		if !m.CanMintToken() || !errors.Is(err, wantErr) {
+			t.Fatalf("CanMintToken = %v, error = %v, want %v", m.CanMintToken(), err, wantErr)
+		}
+		if wantErr == nil && (casURL != "https://cas.example" || token != "token" || expiresAt.Unix() != 123) {
+			t.Fatalf("mint result = %q, %q, %v", casURL, token, expiresAt)
+		}
+	}
+}
 
 // fakeHub answers hub-style resolve requests for a single LFS object with the
 // metadata headers the xet mirror probes for.

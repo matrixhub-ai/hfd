@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wzshiming/xet"
+	"github.com/wzshiming/xet/auth"
 	xethf "github.com/wzshiming/xet/client/hf"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -115,7 +116,7 @@ func TestAuthMatrix(t *testing.T) {
 			// A token signed for the exact (method, path) of the request.
 			name: "BearerValid",
 			apply: func(t *testing.T, req *http.Request) {
-				token, err := signer.Sign(req.Context(), req.Method, req.URL.Path, authMatrixUser, time.Hour)
+				token, err := signer.Sign(req.Context(), req.Method, req.URL.Path, authenticate.NewIdentity(authMatrixUser, ""), time.Hour)
 				if err != nil {
 					t.Fatalf("Failed to sign token: %v", err)
 				}
@@ -495,45 +496,44 @@ func runAuthResolve(t *testing.T, s *e2eServer, c authMatrixCred) {
 	}
 }
 
-// TestCASTokenTraversesAuth pins the wire.go chain-head order: the CAS scope
-// check runs before the per-URL sign validator that would otherwise 401 it.
-func TestCASTokenTraversesAuth(t *testing.T) {
-	validator := authenticate.NewTokenSignValidator([]byte("secret"))
-	mint, authFn, err := authenticate.NewXETTokenScheme(validator)
+func TestCASAuthBoundary(t *testing.T) {
+	s := newE2EServer(t, withAuth("admin", "secret"))
+	fileHash := xet.FileHash{1, 2, 3}
+	token, _, err := s.issuer.Sign(auth.Grant{Permission: auth.Read, File: fileHash})
 	if err != nil {
-		t.Fatalf("new token scheme: %v", err)
+		t.Fatal(err)
 	}
-
-	var gotUser string
-	sentinel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, _ := authenticate.GetUserInfo(r.Context())
-		gotUser = u.User
-		w.WriteHeader(http.StatusNoContent)
-	})
-	var handler http.Handler = sentinel
-	handler = authenticate.NewHandler(
-		authenticate.WithNext(handler),
-		authenticate.WithTokenSignValidator(validator),
-	)
-	handler = authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), handler)
-
-	get := func(bearer string) int {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/v1/xorbs/default/abc", nil)
-		req.Header.Set("Authorization", "Bearer "+bearer)
-		handler.ServeHTTP(rec, req)
-		return rec.Code
-	}
-
-	tok, _ := mint(time.Now())
-	if code := get(tok); code != http.StatusNoContent {
-		t.Fatalf("CAS token status = %d, want 204", code)
-	}
-	if gotUser != "xet-cas" {
-		t.Fatalf("CAS token user = %q, want xet-cas", gotUser)
-	}
-	// A forged signed token still dies at the sign validator.
-	if code := get("sign:forged.forged.forged"); code != http.StatusUnauthorized {
-		t.Fatalf("forged token status = %d, want 401", code)
+	reconstruction := "/v1/reconstructions/" + fileHash.String()
+	other := xet.FileHash{4, 5, 6}.String()
+	for _, tc := range []struct {
+		name       string
+		path       string
+		token      string
+		wantStatus int
+	}{
+		{"CASGrant", reconstruction, token, http.StatusNotFound},
+		{"MissingGrant", reconstruction, "", http.StatusUnauthorized},
+		{"CASGrantIsNotUser", "/api/whoami-v2", token, http.StatusUnauthorized},
+		{"UserTokenIsNotGrant", reconstruction, "secret", http.StatusUnauthorized},
+		{"CASGrantOtherFile", "/v1/reconstructions/" + other, token, http.StatusForbidden},
+		{"CASGrantMixedBatch", "/reconstructions?file_id=" + fileHash.String() + "&file_id=" + other, token, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.httpURL+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+		})
 	}
 }

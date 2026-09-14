@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wzshiming/xet/auth"
 )
 
 // hubClient is the client axis of the hub API matrix: the hf CLI or the
@@ -858,16 +860,19 @@ func TestCreateRepoDefaultGitAttributes(t *testing.T) {
 	}
 }
 
-// TestXETTokenRoutes pins that a plain server (no pull upstream) answers the
-// xet token routes with the dual header+body contract; tokens are global.
+// TestXETTokenRoutes pins the dual header+body contract on a plain server's token routes.
 func TestXETTokenRoutes(t *testing.T) {
 	t.Parallel()
 	s := newE2EServer(t)
 
-	for _, url := range []string{
-		s.httpURL + "/xet-token",
-		s.httpURL + "/api/models/org/repo/xet-read-token/main",
+	for _, tc := range []struct {
+		url  string
+		want auth.Grant
+	}{
+		{s.httpURL + "/api/models/org/repo/xet-read-token/main", auth.Grant{Permission: auth.Read}},
+		{s.httpURL + "/api/models/org/repo/xet-write-token/main", auth.Grant{Permission: auth.Write}},
 	} {
+		url := tc.url
 		resp, err := http.Get(url)
 		if err != nil {
 			t.Fatalf("GET %s: %v", url, err)
@@ -887,6 +892,13 @@ func TestXETTokenRoutes(t *testing.T) {
 		}
 		if tok.AccessToken == "" {
 			t.Errorf("GET %s missing accessToken", url)
+		}
+		grant, ok := s.issuer.Validate(tok.AccessToken)
+		if !ok {
+			t.Fatalf("GET %s returned an invalid accessToken", url)
+		}
+		if grant != tc.want {
+			t.Errorf("GET %s grant = %+v, want %+v", url, grant, tc.want)
 		}
 		if tok.CasURL != s.httpURL {
 			t.Errorf("GET %s casUrl = %q, want %q", url, tok.CasURL, s.httpURL)
@@ -909,6 +921,22 @@ func TestXETTokenRoutes(t *testing.T) {
 		// The cas backend marks minted credentials uncacheable.
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 			t.Errorf("GET %s Cache-Control = %q, want no-store", url, got)
+		}
+	}
+	for _, tc := range []struct {
+		path       string
+		wantStatus int
+	}{
+		{"/xet-token", http.StatusNotFound},
+		{"/xet-token/not-a-hash", http.StatusNotFound},
+	} {
+		resp, err := http.Get(s.httpURL + tc.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", tc.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.wantStatus {
+			t.Errorf("GET %s status = %d, want %d", tc.path, resp.StatusCode, tc.wantStatus)
 		}
 	}
 }

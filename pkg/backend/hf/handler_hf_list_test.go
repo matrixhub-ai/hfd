@@ -1,12 +1,50 @@
 package hf
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
+
+func TestHandleListPermission(t *testing.T) {
+	for _, repoType := range []string{"models", "datasets"} {
+		t.Run(repoType, func(t *testing.T) {
+			var gotOp permission.Operation
+			var gotRepo string
+			calls := 0
+			hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+				calls++
+				gotOp, gotRepo = op, repoName
+				if opCtx != (permission.Context{}) {
+					t.Errorf("unexpected permission context: %+v", opCtx)
+				}
+				return false, nil
+			}
+			handler := NewHandler(
+				WithStorage(storage.NewStorage(storage.WithRootDir(t.TempDir()))),
+				WithPermissionHookFunc(hook),
+			)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/"+repoType, nil))
+			if response.Code != http.StatusForbidden {
+				t.Errorf("status=%d, want 403; body=%s", response.Code, response.Body.String())
+			}
+			if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
+				t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
+			}
+			if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != repoType {
+				t.Errorf("hook calls=%d, op=%s, repo=%q; want 1, list_repos, %q", calls, gotOp, gotRepo, repoType)
+			}
+		})
+	}
+}
 
 func TestHandleListModelsEmpty(t *testing.T) {
 	server, _ := setupTestServer(t)

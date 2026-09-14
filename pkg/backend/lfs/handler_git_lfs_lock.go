@@ -202,6 +202,5 @@ func randomLockId() string {
 }
 
 func getUserFromRequest(r *http.Request) string {
-	userInfo, _ := authenticate.GetUserInfo(r.Context())
-	return userInfo.User
+	return authenticate.IdentityFrom(r.Context()).Name()
 }

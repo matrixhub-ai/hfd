@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,23 +13,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/gorilla/handlers"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
+	xetauth "github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
-	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
-	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
-	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
-	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/server"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -175,7 +167,7 @@ func buildXETMirror(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client) 
 // mirror carries the data plane (token mint, external URL) and serves OID
 // resolves straight off the ingest engine. Pull and push mirroring activate
 // when their URLs are configured.
-func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *serverHooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(time.Time) (string, int64)) (*mirror.Mirror, error) {
+func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *server.Hooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(xetC),
@@ -184,12 +176,12 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetst
 		mirror.WithExternalURL(cfg.HostURL),
 		mirror.WithDataDir(filepath.Join(cfg.DataDir, "xet")),
 		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
-		mirror.WithPreReceiveHookFunc(hooks.preReceive),
-		mirror.WithPostReceiveHookFunc(hooks.postReceive),
+		mirror.WithPreReceiveHookFunc(hooks.PreReceive),
+		mirror.WithPostReceiveHookFunc(hooks.PostReceive),
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-		mirror.WithGitOutputFunc(hooks.gitOutput),
-		mirror.WithSyncUserInfoFunc(hooks.syncUserInfo),
-		mirror.WithMirrorRefFilterFunc(hooks.mirrorRefFilter),
+		mirror.WithGitOutputFunc(hooks.GitOutput),
+		mirror.WithSyncUserInfoFunc(hooks.SyncUserInfo),
+		mirror.WithMirrorRefFilterFunc(hooks.MirrorRefFilter),
 	}
 
 	if cfg.PullMirrorURL != "" {
@@ -235,9 +227,9 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 		if err != nil {
 			return nil, fmt.Errorf("parse SSH authorized keys %q: %w", cfg.SSHAuthorizedKey, err)
 		}
-		var authorizedKeys [][]byte
+		authorizedKeys := make(map[string]string, len(parsedKeys))
 		for _, k := range parsedKeys {
-			authorizedKeys = append(authorizedKeys, k.Marshal())
+			authorizedKeys[string(k.Key.Marshal())] = k.Comment
 		}
 		slog.InfoContext(ctx, "Loaded SSH authorized keys", "count", len(parsedKeys))
 		auth.PublicKey = authenticate.NewSimplePublicKeyValidator(authorizedKeys)
@@ -245,148 +237,10 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 	return auth, nil
 }
 
-type middleware func(next http.Handler) http.Handler
-
 // xetStore is the xet storage together with the GC surface both xet backends implement.
 type xetStore interface {
 	xetstorage.Storage
 	xetstorage.GCStore
-}
-
-// chain composes middlewares so the first one is the outermost, i.e. the
-// argument order is the request order.
-func chain(tail http.Handler, mws ...middleware) http.Handler {
-	for i := len(mws) - 1; i >= 0; i-- {
-		tail = mws[i](tail)
-	}
-	return tail
-}
-
-// passthrough is the middleware for a layer that is not enabled.
-func passthrough(next http.Handler) http.Handler { return next }
-
-func requestLogging(w io.Writer) middleware {
-	return func(next http.Handler) http.Handler {
-		return handlers.CombinedLoggingHandler(w, next)
-	}
-}
-
-// internalAPI mounts hfd's unauthenticated /internal/ management endpoints when enabled:
-// object listing/unlink, repository-aware GC and sweep, all on one lock.
-func internalAPI(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore) middleware {
-	if !cfg.Internal {
-		return passthrough
-	}
-	slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
-	collector := gc.NewCollector(st.RepositoriesFS(), xs)
-	return func(next http.Handler) http.Handler {
-		return backendinternalapi.NewHandler(
-			backendinternalapi.WithCollector(collector),
-			backendinternalapi.WithGCGrace(time.Hour),
-			backendinternalapi.WithNext(next),
-		)
-	}
-}
-
-// casTokenRecognizer maps hfd-signed CAS credentials, which carry a fixed
-// scope rather than a URL, to the xet-cas user.
-func casTokenRecognizer(authFn func(string) bool) middleware {
-	return func(next http.Handler) http.Handler {
-		return authenticate.TokenValidatorHandler(authenticate.NewTokenRecognizer("xet-cas", authFn), next)
-	}
-}
-
-func authentication(auth *authenticate.Authenticators) middleware {
-	return func(next http.Handler) http.Handler {
-		return authenticate.NewHandler(
-			authenticate.WithNext(next),
-			authenticate.WithBasicAuthValidator(auth.BasicAuth),
-			authenticate.WithTokenValidator(auth.Token),
-			authenticate.WithTokenSignValidator(auth.TokenSign),
-		)
-	}
-}
-
-// gitHTTPBackend serves the git smart HTTP protocol.
-func gitHTTPBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror) middleware {
-	return func(next http.Handler) http.Handler {
-		return backendhttp.NewHandler(
-			backendhttp.WithStorage(st),
-			backendhttp.WithNext(next),
-			backendhttp.WithMirror(m),
-			backendhttp.WithPreOpenHookFunc(hooks.preOpen),
-			backendhttp.WithPermissionHookFunc(hooks.permission),
-			backendhttp.WithPreReceiveHookFunc(hooks.preReceive),
-			backendhttp.WithPostReceiveHookFunc(hooks.postReceive),
-		)
-	}
-}
-
-// lfsBackend serves the git LFS API from the mirror's data plane.
-func lfsBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators) middleware {
-	return func(next http.Handler) http.Handler {
-		return backendlfs.NewHandler(
-			backendlfs.WithStorage(st),
-			backendlfs.WithNext(next),
-			backendlfs.WithMirror(m),
-			backendlfs.WithPermissionHookFunc(hooks.permission),
-			backendlfs.WithTokenSignValidator(auth.TokenSign),
-		)
-	}
-}
-
-// hfBackend serves the HF hub API (resolve/tree) from the mirror's data plane.
-func hfBackend(st *storage.Storage, hooks *serverHooks, m *mirror.Mirror) middleware {
-	return func(next http.Handler) http.Handler {
-		return backendhf.NewHandler(
-			backendhf.WithStorage(st),
-			backendhf.WithNext(next),
-			backendhf.WithMirror(m),
-			backendhf.WithPreOpenHookFunc(hooks.preOpen),
-			backendhf.WithPermissionHookFunc(hooks.permission),
-			backendhf.WithPreReceiveHookFunc(hooks.preReceive),
-			backendhf.WithPostReceiveHookFunc(hooks.postReceive),
-		)
-	}
-}
-
-// casBackend serves the CAS token routes from the mirror's data plane.
-func casBackend(hooks *serverHooks, m *mirror.Mirror) middleware {
-	return func(next http.Handler) http.Handler {
-		return backendcas.NewHandler(
-			backendcas.WithMirror(m),
-			backendcas.WithPermissionHookFunc(hooks.permission),
-			backendcas.WithNext(next),
-		)
-	}
-}
-
-// xetCASServer serves the xet CAS transfer routes over the xet storage. Unlike
-// xetd there is no hub front end behind it — hfd's own backends serve the hub
-// control plane (resolve/tree in hfBackend, the token routes in casBackend).
-func xetCASServer(xs xetstorage.Storage, authFn func(string) bool) middleware {
-	return func(next http.Handler) http.Handler {
-		return xetserver.NewHandler(
-			xetserver.WithStorage(xs),
-			xetserver.WithAuthFunc(authFn),
-			xetserver.WithNext(next),
-		)
-	}
-}
-
-// buildHTTPHandler lists the HTTP layers in request order, outermost first.
-func buildHTTPHandler(ctx context.Context, cfg *config, st *storage.Storage, xs xetStore, hooks *serverHooks, m *mirror.Mirror, auth *authenticate.Authenticators, authFn func(string) bool) http.Handler {
-	return chain(http.NotFoundHandler(),
-		requestLogging(os.Stderr),
-		internalAPI(ctx, cfg, st, xs), // operator endpoints bypass user auth
-		casTokenRecognizer(authFn),    // hfd-signed CAS credentials would 401 in the per-URL validators
-		authentication(auth),
-		gitHTTPBackend(st, hooks, m),
-		lfsBackend(st, hooks, m, auth),
-		hfBackend(st, hooks, m),
-		casBackend(hooks, m),
-		xetCASServer(xs, authFn),
-	)
 }
 
 // loadOrGenerateHostKey loads the SSH host key from the configured path, or
@@ -414,26 +268,4 @@ func loadOrGenerateHostKey(ctx context.Context, cfg *config, st *storage.Storage
 	}
 	slog.InfoContext(ctx, "Generated SSH host key", "path", hostKeyPath)
 	return hostKeySigner, nil
-}
-
-// buildSSHServer assembles the SSH protocol server.
-func buildSSHServer(ctx context.Context, cfg *config, st *storage.Storage, hooks *serverHooks, sharedMirror *mirror.Mirror, auth *authenticate.Authenticators) (*backendssh.Server, error) {
-	hostKeySigner, err := loadOrGenerateHostKey(ctx, cfg, st)
-	if err != nil {
-		return nil, err
-	}
-
-	return backendssh.NewServer(
-		backendssh.WithStorage(st),
-		backendssh.WithHostKey(hostKeySigner),
-		backendssh.WithPermissionHookFunc(hooks.permission),
-		backendssh.WithPreOpenHookFunc(hooks.preOpen),
-		backendssh.WithPreReceiveHookFunc(hooks.preReceive),
-		backendssh.WithPostReceiveHookFunc(hooks.postReceive),
-		backendssh.WithMirror(sharedMirror),
-		backendssh.WithLFSURL(cfg.HostURL),
-		backendssh.WithBasicAuthValidator(auth.BasicAuth),
-		backendssh.WithPublicKeyValidator(auth.PublicKey),
-		backendssh.WithTokenSignValidator(auth.TokenSign),
-	), nil
 }

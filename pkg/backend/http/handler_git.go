@@ -54,9 +54,6 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.checkMirrorAccess(w, r, repoName, service) {
-		return
-	}
 	if !h.checkPermission(w, r, repoName, service) {
 		return
 	}
@@ -102,9 +99,6 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 		return
 	}
 
-	if !h.checkMirrorAccess(w, r, repoName, service) {
-		return
-	}
 	if !h.checkPermission(w, r, repoName, service) {
 		return
 	}
@@ -184,37 +178,6 @@ func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service stri
 		return nil, err
 	}
 	return repository.Open(h.storage.RepositoriesFS(), repoPath)
-}
-
-// checkMirrorAccess enforces mirror-only access rules, writing the failure
-// response. It returns true when the request may proceed.
-func (h *Handler) checkMirrorAccess(w http.ResponseWriter, r *http.Request, repoName, service string) bool {
-	if h.mirror == nil {
-		return true
-	}
-	switch service {
-	case repository.GitUploadPack:
-		isMirrorSrc, err := h.mirror.IsMirrorSource(r.Context(), repoName)
-		if err != nil {
-			responseText(w, fmt.Sprintf("Failed to check mirror status: %v", err), http.StatusInternalServerError)
-			return false
-		}
-		if !isMirrorSrc {
-			responseText(w, "pull from mirror repository is not allowed", http.StatusForbidden)
-			return false
-		}
-	case repository.GitReceivePack:
-		isMirrorDest, err := h.mirror.IsMirrorDestination(r.Context(), repoName)
-		if err != nil {
-			responseText(w, fmt.Sprintf("Failed to check mirror destination status: %v", err), http.StatusInternalServerError)
-			return false
-		}
-		if !isMirrorDest {
-			responseText(w, "push to mirror destination repository is not allowed", http.StatusForbidden)
-			return false
-		}
-	}
-	return true
 }
 
 // checkPermission runs the permission hook for the service, writing the

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -8,8 +8,12 @@ import (
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
+	xetclient "github.com/wzshiming/xet/client"
+	xetstorage "github.com/wzshiming/xet/storage"
 
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func addCommit(t *testing.T, repo *repository.Repository, file string) string {
@@ -37,30 +41,30 @@ func mainRef(t *testing.T, fs billy.Filesystem, path string) string {
 
 func TestPreOpenPullTTL(t *testing.T) {
 	ctx := context.Background()
-	cfg := defaultConfig()
-	cfg.DataDir = t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
 	srcRoot := t.TempDir()
-	cfg.PullMirrorURL = srcRoot
-	cfg.ProxyCacheTTL = time.Hour
-
-	st, err := buildStorage(ctx, cfg)
-	if err != nil {
-		t.Fatalf("build storage: %v", err)
-	}
-	xs, err := buildXETStorage(ctx, cfg)
+	dir := t.TempDir()
+	xs, err := xetstorage.NewFileStorage(xetstorage.WithBasePath(dir))
 	if err != nil {
 		t.Fatalf("build xet storage: %v", err)
 	}
-	xetC, err := buildXETClient(cfg)
+	xetC, err := xetclient.NewClient(xetclient.WithCacheDir(dir))
 	if err != nil {
 		t.Fatalf("build xet client: %v", err)
 	}
-	hooks := &serverHooks{storage: st, pullTTL: cfg.ProxyCacheTTL}
-	m, err := buildMirror(ctx, cfg, st, xs, hooks, xetC, nil, nil)
+	hooks := &Hooks{PullTTL: time.Hour}
+	m, err := mirror.NewMirror(
+		mirror.WithRepositoriesFS(st.RepositoriesFS()),
+		mirror.WithXETStorage(xs),
+		mirror.WithXETClient(xetC),
+		mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
+			return srcRoot + "/" + repoName, true, nil
+		}),
+	)
 	if err != nil {
 		t.Fatalf("build mirror: %v", err)
 	}
-	hooks.mirror = m
+	hooks.Mirror = m
 	t.Cleanup(m.Wait)
 
 	// The sync uses the source URL verbatim, so a local-path source needs the .git suffix.
@@ -68,42 +72,38 @@ func TestPreOpenPullTTL(t *testing.T) {
 	repoPath := repository.ResolvePath(repoName)
 	localFS := st.RepositoriesFS()
 
-	// (a) missing source: the pull fails and is not recorded.
-	if err := hooks.preOpen(ctx, repoName, false); err == nil {
-		t.Fatal("preOpen with missing source: want error, got nil")
+	if err := hooks.PreOpen(ctx, repoName, false); err == nil {
+		t.Fatal("PreOpen with missing source: want error, got nil")
 	}
 	if _, ok := hooks.lastPull.Load(repoPath); ok {
 		t.Fatal("failed pull must not be recorded in lastPull")
 	}
 
-	// (b) first pull syncs.
 	src, err := repository.Init(ctx, osfs.Default, filepath.Join(srcRoot, "org", "repo.git"), "main")
 	if err != nil {
 		t.Fatalf("init source repo: %v", err)
 	}
-	h1 := addCommit(t, src, "README.md")
-	if err := hooks.preOpen(ctx, repoName, false); err != nil {
-		t.Fatalf("first preOpen: %v", err)
+	first := addCommit(t, src, "README.md")
+	if err := hooks.PreOpen(ctx, repoName, false); err != nil {
+		t.Fatalf("first PreOpen: %v", err)
 	}
-	if got := mainRef(t, localFS, repoPath); got != h1 {
-		t.Fatalf("after first pull main = %s, want %s", got, h1)
-	}
-
-	// (c) within TTL: skipped.
-	h2 := addCommit(t, src, "new.txt")
-	if err := hooks.preOpen(ctx, repoName, false); err != nil {
-		t.Fatalf("throttled preOpen: %v", err)
-	}
-	if got := mainRef(t, localFS, repoPath); got != h1 {
-		t.Fatalf("within TTL main = %s, want unchanged %s", got, h1)
+	if got := mainRef(t, localFS, repoPath); got != first {
+		t.Fatalf("after first pull main = %s, want %s", got, first)
 	}
 
-	// (d) expired TTL: re-syncs.
+	second := addCommit(t, src, "new.txt")
+	if err := hooks.PreOpen(ctx, repoName, false); err != nil {
+		t.Fatalf("throttled PreOpen: %v", err)
+	}
+	if got := mainRef(t, localFS, repoPath); got != first {
+		t.Fatalf("within TTL main = %s, want unchanged %s", got, first)
+	}
+
 	hooks.lastPull.Store(repoPath, time.Now().Add(-2*time.Hour))
-	if err := hooks.preOpen(ctx, repoName, false); err != nil {
-		t.Fatalf("preOpen after TTL expiry: %v", err)
+	if err := hooks.PreOpen(ctx, repoName, false); err != nil {
+		t.Fatalf("PreOpen after TTL expiry: %v", err)
 	}
-	if got := mainRef(t, localFS, repoPath); got != h2 {
-		t.Fatalf("after TTL expiry main = %s, want %s", got, h2)
+	if got := mainRef(t, localFS, repoPath); got != second {
+		t.Fatalf("after TTL expiry main = %s, want %s", got, second)
 	}
 }

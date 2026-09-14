@@ -31,8 +31,7 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 
 	if m.gitOutputFunc != nil {
 		logctx := context.Background()
-		ui, _ := authenticate.GetUserInfo(ctx)
-		logctx = authenticate.WithContext(logctx, ui)
+		logctx = authenticate.WithIdentity(logctx, authenticate.IdentityFrom(ctx))
 		opt.Output = m.gitOutputFunc(logctx, repoName)
 	}
 

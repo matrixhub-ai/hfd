@@ -11,7 +11,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/gorilla/mux"
 
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -173,20 +172,14 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, ok := authenticate.GetUserInfo(r.Context())
-	if !ok {
-		user = authenticate.UserInfo{
-			User:  "HuggingFace",
-			Email: "hf@users.noreply.huggingface.co",
-		}
-	}
+	name, email := commitAuthorIdentity(r.Context())
 
 	message := req.Message
 	if message == "" {
 		message = "Super-squash branch '" + rev + "'"
 	}
 
-	if _, err := repo.SuperSquash(r.Context(), rev, message, user.User, user.Email); err != nil {
+	if _, err := repo.SuperSquash(r.Context(), rev, message, name, email); err != nil {
 		responseJSON(w, fmt.Errorf("failed to squash repository %q rev %q: %v", ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}

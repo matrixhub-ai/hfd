@@ -77,7 +77,7 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.S3Bucket, "s3-bucket", cfg.S3Bucket, "S3 bucket name")
 	flag.BoolVar(&cfg.S3UsePathStyle, "s3-use-path-style", cfg.S3UsePathStyle, "Use path style for S3 URLs")
 
-	flag.StringVar(&cfg.SSHAuthorizedKey, "ssh-authorized-key", cfg.SSHAuthorizedKey, "Path to SSH authorized_keys file for public key authentication")
+	flag.StringVar(&cfg.SSHAuthorizedKey, "ssh-authorized-key", cfg.SSHAuthorizedKey, "Path to SSH authorized_keys file; each key's comment becomes the authenticated user name; comment-less keys log in as the client-claimed username")
 	flag.StringVar(&cfg.AuthUsername, "username", cfg.AuthUsername, "Username for authentication (HTTP basic auth and SSH password auth)")
 	flag.StringVar(&cfg.AuthPassword, "password", cfg.AuthPassword, "Password for authentication (HTTP basic auth, bearer token, and SSH password auth)")
 	flag.StringVar(&cfg.AuthToken, "token", cfg.AuthToken, "Static token for authentication (alternative to username/password)")
