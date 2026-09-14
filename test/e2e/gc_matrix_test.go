@@ -16,12 +16,14 @@ import (
 
 	xetstorage "github.com/wzshiming/xet/storage"
 
+	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 // gcObject carries the gc.Object fields the test asserts on.
@@ -148,7 +150,10 @@ func TestGCLifecycle(t *testing.T) {
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(proxyMirror),
-		backendhf.WithNext(xet.tail),
+		backendhf.WithNext(backendcas.NewHandler(
+			backendcas.WithMirror(proxyMirror),
+			backendcas.WithNext(http.NotFoundHandler()),
+		)),
 		backendhf.WithPreOpenHookFunc(preOpen),
 	)
 	handler = backendlfs.NewHandler(
@@ -159,9 +164,10 @@ func TestGCLifecycle(t *testing.T) {
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
-		backendhttp.WithMirror(proxyMirror),
+		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(proxyMirror)),
 		backendhttp.WithPreOpenHookFunc(preOpen),
 	)
+	handler = xet.casServer(handler)
 	// The wiring under test: the internal management API wraps the whole
 	// chain outermost, the way cmd/hfd's internalAPI does.
 	gcs, ok := xet.xs.(xetstorage.GCStore)

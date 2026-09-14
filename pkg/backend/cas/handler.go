@@ -1,22 +1,24 @@
-// Package cas serves the hub-side control plane of the xet CAS data plane:
-// the three token routes that mint CAS credentials. Write-token is gated on
-// the update operation, read-token on read, and /xet-token is ungated. The
-// xet library's server side carries no token routes in this chain, so this
-// backend is the sole mint source — including the /xet-token endpoint that
-// Mirror.SetXETLinkHeaders advertises on downloads. Responses carry both the
-// X-Xet-* headers and the JSON body, serving huggingface_hub >= 1.29
-// (headers-only) and older clients (body) alike. Everything else falls
-// through to the next handler.
+// Package cas serves the hub-side control plane of the xet CAS data plane: the
+// token routes that mint CAS credentials as xet auth grants. xet-write-token is
+// gated on the update operation and mints Write, xet-read-token on read and
+// mints a Read not bound to a file (CAS-wide by hash, as on huggingface.co).
+// xet-read-token is the xet-auth Link advertised on downloads. This backend is the
+// sole token-route source; the LFS batch endpoint mints its upload grants
+// inline. Responses carry both the X-Xet-* headers and the JSON body, serving
+// huggingface_hub >= 1.29 (headers-only) and older clients (body) alike.
+// Everything else falls through to the next handler.
 package cas
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/wzshiming/xet/auth"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
@@ -83,8 +85,6 @@ func (h *Handler) register() {
 	// No .Methods(): the method check lives inside; non-GET falls through to next.
 	h.root.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token/{rev}", h.handleWriteToken)
 	h.root.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token/{rev}", h.handleReadToken)
-	// No gate: no repo context; CAS tokens are global, so a repo-scoped gate is impossible here.
-	h.root.HandleFunc("/xet-token", h.serveToken)
 
 	h.root.NotFoundHandler = h.next
 }
@@ -107,14 +107,14 @@ func typedRepoName(vars map[string]string) (string, bool) {
 }
 
 func (h *Handler) handleWriteToken(w http.ResponseWriter, r *http.Request) {
-	h.handleRepoToken(w, r, permission.OperationUpdateRepo)
+	h.handleRepoToken(w, r, permission.OperationUpdateRepo, auth.Write)
 }
 
 func (h *Handler) handleReadToken(w http.ResponseWriter, r *http.Request) {
-	h.handleRepoToken(w, r, permission.OperationReadRepo)
+	h.handleRepoToken(w, r, permission.OperationReadRepo, auth.Read)
 }
 
-func (h *Handler) handleRepoToken(w http.ResponseWriter, r *http.Request, op permission.Operation) {
+func (h *Handler) handleRepoToken(w http.ResponseWriter, r *http.Request, op permission.Operation, perm auth.Permission) {
 	repoName, ok := typedRepoName(mux.Vars(r))
 	if !ok {
 		h.next.ServeHTTP(w, r)
@@ -123,15 +123,20 @@ func (h *Handler) handleRepoToken(w http.ResponseWriter, r *http.Request, op per
 	if !h.checkPermission(w, r, op, repoName) {
 		return
 	}
-	h.serveToken(w, r)
+	h.serveToken(w, r, auth.Grant{Permission: perm})
 }
 
-func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveToken(w http.ResponseWriter, r *http.Request, grant auth.Grant) {
 	if r.Method != http.MethodGet || h.mirror == nil || !h.mirror.CanMintToken() {
 		h.next.ServeHTTP(w, r)
 		return
 	}
-	casURL, token, expiresAt := h.mirror.MintXETToken(r)
+	casURL, token, expiresAt, err := h.mirror.MintXETToken(r, grant)
+	if err != nil {
+		slog.WarnContext(r.Context(), "mint CAS token", "error", err)
+		httpapi.RespondJSON(w, "failed to mint CAS token", http.StatusInternalServerError)
+		return
+	}
 	respondToken(w, casURL, token, expiresAt.Unix())
 }
 

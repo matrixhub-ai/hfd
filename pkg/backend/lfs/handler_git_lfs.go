@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/wzshiming/xet/auth"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
@@ -44,7 +46,12 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	var casURL, casToken string
 	var casExpiresAt time.Time
 	if xetUpload {
-		casURL, casToken, casExpiresAt = h.mirror.MintXETToken(r)
+		var err error
+		casURL, casToken, casExpiresAt, err = h.mirror.MintXETToken(r, auth.Grant{Permission: auth.Write})
+		if err != nil {
+			slog.WarnContext(r.Context(), "mint CAS upload token", "error", err)
+			xetUpload = false
+		}
 	}
 
 	// Create a response object
@@ -125,19 +132,17 @@ func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
 	if h.mirror != nil {
-		// Fully ingested objects serve straight from the xet storage, with
-		// the hub metadata and xet Link headers.
+		// Fully ingested objects serve from the xet storage with the hub metadata headers.
 		if rs, size, err := h.mirror.OpenObject(r.Context(), rv.Oid); err == nil {
 			defer func() {
 				_ = rs.Close()
 			}()
-			h.mirror.SetXETLinkHeaders(w, r, rv.Oid, size)
+			lfs.SetObjectHeaders(w, rv.Oid, size)
 			w.Header().Set("Content-Type", "application/octet-stream")
 			http.ServeContent(w, r, rv.Oid, time.Time{}, rs)
 			return
 		}
-		// Objects known from a pull scan or a resolve delegate to the hub
-		// front end, streaming while they ingest.
+		// Known objects stream while they ingest.
 		if h.mirror.ServeOID(w, r, rv.Oid) {
 			return
 		}
@@ -173,13 +178,13 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 		Actions: make(map[string]*lfsLink),
 	}
 
-	user, _ := authenticate.GetUserInfo(ctx)
+	id := authenticate.IdentityFrom(ctx)
 
 	if download && op == "download" {
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, user.User, tokenExpiration); err != nil {
+			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, id, tokenExpiration); err != nil {
 				slog.WarnContext(ctx, "failed to sign token for LFS download link", "oid", rv.Oid, "error", err)
 			} else if token != "" {
 				header["Authorization"] = "Bearer " + token
@@ -194,7 +199,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, user.User, tokenExpiration); err != nil {
+			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, id, tokenExpiration); err != nil {
 				slog.WarnContext(ctx, "failed to sign token for LFS upload link", "oid", rv.Oid, "error", err)
 			} else if token != "" {
 				header["Authorization"] = "Bearer " + token
@@ -203,7 +208,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 			header["Authorization"] = rv.Authorization
 		}
 		rep.Actions["upload"] = &lfsLink{Href: link, Header: header}
-		rep.Actions["verify"] = h.verifyAction(ctx, rv, user.User)
+		rep.Actions["verify"] = h.verifyAction(ctx, rv, id)
 	}
 
 	if len(rep.Actions) == 0 {
@@ -215,11 +220,11 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 
 // verifyAction builds the post-upload verify action, always served by this
 // server so uploads are checked even when the content goes directly to S3.
-func (h *Handler) verifyAction(ctx context.Context, rv *lfsRequestVars, user string) *lfsLink {
+func (h *Handler) verifyAction(ctx context.Context, rv *lfsRequestVars, id authenticate.Identity) *lfsLink {
 	verifyHeader := make(map[string]string)
 	verifyLink := rv.verifyLink()
 	if h.tokenSignValidator != nil {
-		if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, user, tokenExpiration); err != nil {
+		if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, id, tokenExpiration); err != nil {
 			slog.WarnContext(ctx, "failed to sign token for LFS verify link", "oid", rv.Oid, "error", err)
 		} else if token != "" {
 			verifyHeader["Authorization"] = "Bearer " + token

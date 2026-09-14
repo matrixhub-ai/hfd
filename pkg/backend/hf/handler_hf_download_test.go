@@ -13,14 +13,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wzshiming/xet"
+	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -52,9 +53,9 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	if wrap != nil {
 		wrapped = wrap(xs)
 	}
-	mint, authFn, err := authenticate.NewXETTokenScheme(nil)
+	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
-		t.Fatalf("create token scheme: %v", err)
+		t.Fatalf("create issuer: %v", err)
 	}
 	var engine *xetmirror.Mirror
 	if upstreamURL != "" {
@@ -70,7 +71,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	}
 	cas := xetserver.NewHandler(
 		xetserver.WithStorage(wrapped),
-		xetserver.WithAuthFunc(authFn),
+		xetserver.WithAuthorizer(issuer),
 		xetserver.WithNext(http.NotFoundHandler()),
 	)
 	m, err := mirror.NewMirror(
@@ -78,7 +79,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 		mirror.WithXETClient(client),
 		mirror.WithXETMirror(engine),
 		mirror.WithDataDir(dataDir),
-		mirror.WithMintToken(mint),
+		mirror.WithMintToken(issuer.Sign),
 	)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
@@ -169,6 +170,11 @@ func TestResolveLFSRedirectsIngested(t *testing.T) {
 		}
 		if hd.Get("X-Repo-Commit") == "" {
 			t.Fatal("X-Repo-Commit not set")
+		}
+		fileHash := hd.Get("X-Xet-Hash")
+		wantLink := fmt.Sprintf("<http://example.com/api/models/org/repo/xet-read-token/main>; rel=\"xet-auth\", <http://example.com/v1/reconstructions/%s>; rel=\"xet-reconstruction-info\"", fileHash)
+		if got := hd.Get("Link"); fileHash == "" || got != wantLink {
+			t.Fatalf("Link = %q, want %q", got, wantLink)
 		}
 
 		bridge := httptest.NewRecorder()

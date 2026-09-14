@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-billy/v6"
 	"github.com/gorilla/mux"
 	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -21,6 +22,9 @@ import (
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoType := vars["repoType"]
+	if !h.checkPermission(w, r, permission.OperationListRepos, repoType, permission.Context{}) {
+		return
+	}
 	h.handleListRepos(w, r, repoType)
 }
 

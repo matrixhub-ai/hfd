@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,13 +17,14 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -47,9 +49,9 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 	if err != nil {
 		t.Fatalf("create xet storage: %v", err)
 	}
-	mint, authFn, err := authenticate.NewXETTokenScheme(nil)
+	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
-		t.Fatalf("create token scheme: %v", err)
+		t.Fatalf("create issuer: %v", err)
 	}
 	var engine *xetmirror.Mirror
 	if hubURL != "" {
@@ -65,7 +67,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 	}
 	cas := xetserver.NewHandler(
 		xetserver.WithStorage(xs),
-		xetserver.WithAuthFunc(authFn),
+		xetserver.WithAuthorizer(issuer),
 		xetserver.WithNext(http.NotFoundHandler()),
 	)
 	m, err := mirror.NewMirror(append([]mirror.Option{
@@ -73,7 +75,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		mirror.WithXETClient(client),
 		mirror.WithXETMirror(engine),
 		mirror.WithDataDir(dataDir),
-		mirror.WithMintToken(mint),
+		mirror.WithMintToken(issuer.Sign),
 	}, gitOpts...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
@@ -116,6 +118,81 @@ func lfsPointerText(oid string, size int) string {
 	return fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, size)
 }
 
+func TestBatchXETToken(t *testing.T) {
+	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failMint := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mintError=%v", failMint), func(t *testing.T) {
+			calls := 0
+			m, _ := newXETDataPlane(t, "", mirror.WithMintToken(func(grant auth.Grant) (string, int64, error) {
+				calls++
+				if failMint {
+					return "", 0, fmt.Errorf("mint failed")
+				}
+				return issuer.Sign(grant)
+			}))
+			h := NewHandler(WithMirror(m))
+			body := fmt.Sprintf(`{"operation":"upload","transfers":["xet","basic"],"objects":[{"oid":%q,"size":1},{"oid":%q,"size":2}]}`, strings.Repeat("a", 64), strings.Repeat("b", 64))
+			req := httptest.NewRequest(http.MethodPost, "/org/repo.git/info/lfs/objects/batch", strings.NewReader(body))
+			req.Header.Set("Content-Type", metaMediaType)
+			req.Header.Set("Accept", metaMediaType)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			var batch lfsBatchResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &batch); err != nil {
+				t.Fatal(err)
+			}
+			wantTransfer := "xet"
+			if failMint {
+				wantTransfer = "basic"
+			}
+			if calls != 1 || batch.Transfer != wantTransfer || len(batch.Objects) != 2 {
+				t.Fatalf("mint calls = %d, batch = %+v", calls, batch)
+			}
+			for _, object := range batch.Objects {
+				upload := object.Actions["upload"]
+				if upload == nil {
+					t.Fatal("missing upload action")
+				}
+				token := upload.Header["X-Xet-Access-Token"]
+				if failMint {
+					if token != "" {
+						t.Fatal("basic fallback carries a CAS token")
+					}
+				} else if grant, ok := issuer.Validate(token); !ok || grant != (auth.Grant{Permission: auth.Write}) {
+					t.Fatalf("grant = %+v, valid = %v, want unbound write", grant, ok)
+				}
+			}
+		})
+	}
+}
+
+func TestBatchXETTokenDenied(t *testing.T) {
+	calls := 0
+	m, _ := newXETDataPlane(t, "", mirror.WithMintToken(func(auth.Grant) (string, int64, error) {
+		calls++
+		return "", 0, nil
+	}))
+	deny := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
+		return false, nil
+	}
+	h := NewHandler(WithMirror(m), WithPermissionHookFunc(deny))
+	body := fmt.Sprintf(`{"operation":"upload","transfers":["xet","basic"],"objects":[{"oid":%q,"size":1}]}`, strings.Repeat("a", 64))
+	req := httptest.NewRequest(http.MethodPost, "/org/repo.git/info/lfs/objects/batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", metaMediaType)
+	req.Header.Set("Accept", metaMediaType)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || calls != 0 || strings.Contains(rec.Body.String(), "X-Xet-Access-Token") {
+		t.Fatalf("status = %d, mint calls = %d, body = %s; want 403 without minting", rec.Code, calls, rec.Body.String())
+	}
+}
+
 func TestGetContentServesIngested(t *testing.T) {
 	m, _ := newXETDataPlane(t, "")
 
@@ -143,11 +220,11 @@ func TestGetContentServesIngested(t *testing.T) {
 	if got := hd.Get("X-Linked-Size"); got != fmt.Sprint(len(data)) {
 		t.Fatalf("X-Linked-Size = %q, want %d", got, len(data))
 	}
-	if link := hd.Get("Link"); !strings.Contains(link, `rel="xet-auth"`) || !strings.Contains(link, `rel="xet-reconstruction-info"`) {
-		t.Fatalf("Link = %q, want xet-auth and xet-reconstruction-info", link)
+	if link := hd.Get("Link"); link != "" {
+		t.Fatalf("Link = %q, want empty", link)
 	}
-	if hd.Get("X-Xet-Hash") == "" {
-		t.Fatal("X-Xet-Hash not set")
+	if hash := hd.Get("X-Xet-Hash"); hash != "" {
+		t.Fatalf("X-Xet-Hash = %q, want empty", hash)
 	}
 
 	t.Run("Range", func(t *testing.T) {

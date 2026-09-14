@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -832,5 +833,48 @@ func TestHuggingFaceTreeSizeNotFound(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404: %s", path, resp.StatusCode, body)
 		}
+	}
+}
+
+func TestCommitAuthorFromIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		id   authenticate.Identity
+		want string
+	}{
+		{"anonymous", authenticate.Anonymous, "HuggingFace"},
+		{"named", authenticate.NewIdentity("alice", "alice@example.com"), "alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hf := NewHandler(WithStorage(storage.NewStorage(storage.WithRootDir(t.TempDir()))))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hf.ServeHTTP(w, r.WithContext(authenticate.WithIdentity(r.Context(), tt.id)))
+			}))
+			defer server.Close()
+
+			body := `{"type":"model","name":"repo","organization":"authors"}`
+			resp, err := http.Post(server.URL+"/api/repos/create", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("Failed to create repo: %v", err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("Expected 200, got %d", resp.StatusCode)
+			}
+
+			resp, err = http.Get(server.URL + "/api/models/authors/repo/commits/main")
+			if err != nil {
+				t.Fatalf("Failed to list commits: %v", err)
+			}
+			defer resp.Body.Close()
+			var commits []commitInfo
+			if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+				t.Fatalf("Failed to decode commits: %v", err)
+			}
+			if len(commits) != 1 || len(commits[0].Authors) != 1 || commits[0].Authors[0].User != tt.want {
+				t.Fatalf("commits = %+v, want one commit by %q", commits, tt.want)
+			}
+		})
 	}
 }

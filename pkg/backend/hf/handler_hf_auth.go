@@ -8,18 +8,18 @@ import (
 
 // handleWhoami handles GET /api/whoami-v2
 func (h *Handler) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	userInfo, ok := authenticate.GetUserInfo(r.Context())
-	if !ok || userInfo.User == authenticate.Anonymous {
+	id := authenticate.IdentityFrom(r.Context())
+	if authenticate.IsAnonymous(id) {
 		responseJSON(w, map[string]string{"error": "Unauthorized"}, http.StatusUnauthorized)
 		return
 	}
 
 	resp := whoamiResponse{
 		Type:          "user",
-		ID:            userInfo.User,
-		Name:          userInfo.User,
-		Fullname:      userInfo.User,
-		Email:         userInfo.Email,
+		ID:            id.Name(),
+		Name:          id.Name(),
+		Fullname:      id.Name(),
+		Email:         id.Email(),
 		EmailVerified: false,
 		IsPro:         false,
 		CanPay:        false,

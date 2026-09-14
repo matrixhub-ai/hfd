@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetstorage "github.com/wzshiming/xet/storage"
@@ -62,7 +62,7 @@ type Mirror struct {
 	xetStorage     xetstorage.Storage
 	xetClient      *xetclient.Client
 	xetMirror      *xetmirror.Mirror // ingest engine; nil without a pull upstream
-	mint           func(time.Time) (string, int64)
+	mint           func(auth.Grant) (string, int64, error)
 	externalURL    string
 	concurrency    int
 	dataDir        string
@@ -133,9 +133,8 @@ func WithXETMirror(x *xetmirror.Mirror) Option {
 	}
 }
 
-// WithMintToken sets the function that mints short-lived CAS access tokens;
-// see authenticate.NewXETTokenScheme.
-func WithMintToken(fn func(time.Time) (string, int64)) Option {
+// WithMintToken sets the CAS token mint, typically (*auth.Issuer).Sign.
+func WithMintToken(fn func(auth.Grant) (token string, exp int64, err error)) Option {
 	return func(m *Mirror) {
 		m.mint = fn
 	}

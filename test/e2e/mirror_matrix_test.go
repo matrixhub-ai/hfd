@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
@@ -303,7 +304,10 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	destHandler = backendhf.NewHandler(
 		backendhf.WithStorage(destStorage),
 		backendhf.WithMirror(destMirror),
-		backendhf.WithNext(destXET.tail),
+		backendhf.WithNext(backendcas.NewHandler(
+			backendcas.WithMirror(destMirror),
+			backendcas.WithNext(http.NotFoundHandler()),
+		)),
 	)
 	destHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(destStorage),
@@ -314,6 +318,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 		backendhttp.WithStorage(destStorage),
 		backendhttp.WithNext(destHandler),
 	)
+	destHandler = destXET.casServer(destHandler)
 
 	destServer := httptest.NewServer(destHandler)
 	t.Cleanup(destServer.Close)
@@ -356,7 +361,10 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	sourceHandler = backendhf.NewHandler(
 		backendhf.WithStorage(sourceStorage),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(srcXET.tail),
+		backendhf.WithNext(backendcas.NewHandler(
+			backendcas.WithMirror(sharedMirror),
+			backendcas.WithNext(http.NotFoundHandler()),
+		)),
 	)
 	sourceHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(sourceStorage),
@@ -368,6 +376,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 		backendhttp.WithNext(sourceHandler),
 		backendhttp.WithPostReceiveHookFunc(postHook),
 	)
+	sourceHandler = srcXET.casServer(sourceHandler)
 
 	sourceServer := httptest.NewServer(sourceHandler)
 	t.Cleanup(sourceServer.Close)

@@ -13,11 +13,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
@@ -236,8 +237,7 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 	}
 
 	// Start SSH server with public key auth
-	callback := backendssh.AuthorizedKeysCallback([]ssh.PublicKey{goodPubKey})
-	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithPublicKeyCallback(callback))
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{string(goodPubKey.Marshal()): ""})))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to listen: %v", err)
@@ -291,83 +291,98 @@ func TestSSHPublicKeyAuth(t *testing.T) {
 	})
 }
 
-func TestParseAuthorizedKeys(t *testing.T) {
-	// Generate a test key
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
+func TestSSHPublicKeyIdentity(t *testing.T) {
+	repoDir := t.TempDir()
+	clientDir := t.TempDir()
+	repoName := "identity.git"
+	repoPath := filepath.Join(repoDir, "repositories", repoName)
+	runGitCmd(t, "", nil, "init", "--bare", repoPath)
+	hostKey, err := generateHostKey()
 	if err != nil {
-		t.Fatalf("Failed to generate key: %v", err)
+		t.Fatal(err)
 	}
-	signer, err := ssh.NewSignerFromKey(priv)
+	boundKeyFile := filepath.Join(clientDir, "id_bound")
+	boundKey, err := generateClientKeyFile(boundKeyFile)
 	if err != nil {
-		t.Fatalf("Failed to create signer: %v", err)
+		t.Fatal(err)
 	}
-
-	// Create an authorized_keys entry
-	pubKey := signer.PublicKey()
-	authorizedKey := ssh.MarshalAuthorizedKey(pubKey)
-
-	t.Run("SingleKey", func(t *testing.T) {
-		keys, err := pkgssh.ParseAuthorizedKeys(authorizedKey)
-		if err != nil {
-			t.Fatalf("Failed to parse authorized keys: %v", err)
-		}
-		if len(keys) != 1 {
-			t.Fatalf("Expected 1 key, got %d", len(keys))
-		}
-		if string(keys[0].Marshal()) != string(pubKey.Marshal()) {
-			t.Error("Parsed key does not match original")
-		}
-	})
-
-	t.Run("MultipleKeys", func(t *testing.T) {
-		_, priv2, _ := ed25519.GenerateKey(rand.Reader)
-		signer2, _ := ssh.NewSignerFromKey(priv2)
-		authorizedKey2 := ssh.MarshalAuthorizedKey(signer2.PublicKey())
-
-		combined := append(authorizedKey, authorizedKey2...)
-		keys, err := pkgssh.ParseAuthorizedKeys(combined)
-		if err != nil {
-			t.Fatalf("Failed to parse authorized keys: %v", err)
-		}
-		if len(keys) != 2 {
-			t.Fatalf("Expected 2 keys, got %d", len(keys))
-		}
-	})
-
-	t.Run("InvalidData", func(t *testing.T) {
-		_, err := pkgssh.ParseAuthorizedKeys([]byte("invalid-key-data"))
-		if err == nil {
-			t.Error("Expected error for invalid key data")
-		}
-	})
-}
-
-func TestAuthorizedKeysCallback(t *testing.T) {
-	// Generate two key pairs
-	_, priv1, _ := ed25519.GenerateKey(rand.Reader)
-	signer1, _ := ssh.NewSignerFromKey(priv1)
-	pub1 := signer1.PublicKey()
-
-	_, priv2, _ := ed25519.GenerateKey(rand.Reader)
-	signer2, _ := ssh.NewSignerFromKey(priv2)
-	pub2 := signer2.PublicKey()
-
-	// Only authorize key1
-	callback := backendssh.AuthorizedKeysCallback([]ssh.PublicKey{pub1})
-
-	t.Run("AuthorizedKeyAccepted", func(t *testing.T) {
-		_, err := callback(nil, pub1)
-		if err != nil {
-			t.Errorf("Expected authorized key to be accepted, got: %v", err)
-		}
-	})
-
-	t.Run("UnauthorizedKeyRejected", func(t *testing.T) {
-		_, err := callback(nil, pub2)
-		if err == nil {
-			t.Error("Expected unauthorized key to be rejected")
-		}
-	})
+	freeKeyFile := filepath.Join(clientDir, "id_free")
+	freeKey, err := generateClientKeyFile(freeKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badKeyFile := filepath.Join(clientDir, "id_bad")
+	if _, err := generateClientKeyFile(badKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var names []string
+	server := backendssh.NewServer(
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(storage.NewStorage(storage.WithRootDir(repoDir))),
+		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{
+			string(boundKey.Marshal()): "deploy",
+			string(freeKey.Marshal()):  "",
+		})),
+		backendssh.WithPermissionHookFunc(func(ctx context.Context, _ permission.Operation, _ string, _ permission.Context) (bool, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			names = append(names, authenticate.IdentityFrom(ctx).Name())
+			return true, nil
+		}),
+	)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = server.Serve(t.Context(), listener) }()
+	addr := listener.Addr().(*net.TCPAddr)
+	for _, test := range []struct {
+		name    string
+		keyFile string
+		user    string
+		want    string
+	}{
+		{name: "BoundIdentity", keyFile: boundKeyFile, user: "git", want: "deploy"},
+		{name: "ClaimedIdentity", keyFile: freeKeyFile, user: "alice", want: "alice"},
+		{name: "UnauthorizedKey", keyFile: badKeyFile, user: "git"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mu.Lock()
+			names = nil
+			mu.Unlock()
+			sshURL := "ssh://" + test.user + "@" + addr.String() + "/" + repoName
+			sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o BatchMode=yes -i %s -p %d", test.keyFile, addr.Port)
+			env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=" + sshCmd}
+			cloneDir := filepath.Join(clientDir, test.name)
+			if test.want == "" {
+				cmd := exec.CommandContext(t.Context(), "git", "clone", sshURL, cloneDir)
+				cmd.Env = append(os.Environ(), env...)
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("Expected clone to fail with unauthorized key, but it succeeded: %s", output)
+				}
+			} else {
+				runGitCmd(t, "", env, "clone", sshURL, cloneDir)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if test.want == "" {
+				if len(names) != 0 {
+					t.Fatalf("unauthorized key reached permission hook: %v", names)
+				}
+				return
+			}
+			if len(names) == 0 {
+				t.Fatal("permission hook was not called")
+			}
+			for _, name := range names {
+				if name != test.want {
+					t.Errorf("identity name = %q, want %q", name, test.want)
+				}
+			}
+		})
+	}
 }
 
 func TestSSHLFSAuthenticate(t *testing.T) {
@@ -686,7 +701,7 @@ func TestSSHPublicKeyAuthViaAuthenticator(t *testing.T) {
 	}
 
 	// Start SSH server with public key auth
-	auth := authenticate.NewSimplePublicKeyValidator([][]byte{goodPubKey.Marshal()})
+	auth := authenticate.NewSimplePublicKeyValidator(map[string]string{string(goodPubKey.Marshal()): ""})
 	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(storage), backendssh.WithPublicKeyValidator(auth))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -837,12 +852,12 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 		// Validate the signed token can be verified and contains the right subject
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		batchURL := expectedHref + "/objects/batch"
-		user, _, valid, _ := tokenSignValidator.Validate(context.Background(), http.MethodPost, batchURL, tokenStr)
-		if !valid {
+		id, err := tokenSignValidator.Validate(context.Background(), http.MethodPost, batchURL, tokenStr)
+		if err != nil || id == nil {
 			t.Fatal("Expected signed token to be valid")
 		}
-		if user != "admin" {
-			t.Errorf("Expected user 'admin', got %q", user)
+		if id.Name() != "admin" {
+			t.Errorf("Expected user 'admin', got %q", id.Name())
 		}
 	})
 }

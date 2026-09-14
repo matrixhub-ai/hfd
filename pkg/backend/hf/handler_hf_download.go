@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -188,8 +190,10 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 			// Hub parity: fully ingested files answer with metadata and a
 			// redirect to the sha256 bridge; only in-flight ingests stream
 			// bytes on this response (via the mirror's spool).
-			if h.mirror.HasObject(r.Context(), ptr.OID()) {
-				h.mirror.SetXETLinkHeaders(w, r, ptr.OID(), ptr.Size())
+			if fileHash := h.mirror.FileHash(r.Context(), ptr.OID()); fileHash != "" {
+				base := h.mirror.ExternalBase(r)
+				lfs.SetObjectHeaders(w, ptr.OID(), ptr.Size())
+				lfs.SetXETLinkHeaders(w, fileHash, base, base+"/api/"+ri.RepoType+"/"+ri.FullName+"/xet-read-token/"+url.PathEscape(rev))
 				// huggingface_hub >= 1.30 follows same-host redirects on its
 				// metadata HEAD and reads the headers off the final response,
 				// which the bridge cannot supply; answer the probe here.
@@ -198,7 +202,7 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusOK)
 					return
 				}
-				http.Redirect(w, r, h.mirror.ExternalBase(r)+"/xet-bridge/"+ptr.OID(), http.StatusFound)
+				http.Redirect(w, r, base+"/xet-bridge/"+ptr.OID(), http.StatusFound)
 				return
 			}
 			resolveRev := commitHash

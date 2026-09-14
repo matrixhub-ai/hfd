@@ -19,6 +19,14 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
+func commitAuthorIdentity(ctx context.Context) (name, email string) {
+	id := authenticate.IdentityFrom(ctx)
+	if authenticate.IsAnonymous(id) {
+		return "HuggingFace", "hf@users.noreply.huggingface.co"
+	}
+	return id.Name(), id.Email()
+}
+
 func requestOrigin(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
@@ -78,13 +86,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, ok := authenticate.GetUserInfo(r.Context())
-	if !ok {
-		user = authenticate.UserInfo{
-			User:  "HuggingFace",
-			Email: "hf@users.noreply.huggingface.co",
-		}
-	}
+	name, email := commitAuthorIdentity(r.Context())
 
 	urlName := "/" + storageName
 
@@ -119,7 +121,7 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create initial commit with default .gitattributes
-	commitHash, err := repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", user.User, user.Email, []repository.CommitOperation{
+	commitHash, err := repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", name, email, []repository.CommitOperation{
 		{
 			Type:    repository.CommitOperationAdd,
 			Path:    repository.GitattributesFileName,
@@ -202,13 +204,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, ok := authenticate.GetUserInfo(r.Context())
-	if !ok {
-		user = authenticate.UserInfo{
-			User:  "HuggingFace",
-			Email: "hf@users.noreply.huggingface.co",
-		}
-	}
+	name, email := commitAuthorIdentity(r.Context())
 
 	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
 	if !ok {
@@ -330,7 +326,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	commitHash, err := repo.CreateCommit(r.Context(), rev, message, user.User, user.Email, ops, header.ParentCommit)
+	commitHash, err := repo.CreateCommit(r.Context(), rev, message, name, email, ops, header.ParentCommit)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return

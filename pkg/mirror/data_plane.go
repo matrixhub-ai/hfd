@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wzshiming/httpseek"
+	"github.com/wzshiming/xet/auth"
 	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
@@ -76,7 +76,7 @@ func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bo
 			return m.serveDrained(w, r, oid, t)
 		}
 		defer func() { _ = rs.Close() }()
-		m.SetXETLinkHeaders(w, r, oid, size)
+		lfs.SetObjectHeaders(w, oid, size)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeContent(w, r, oid, time.Time{}, rs)
 		return true
@@ -109,7 +109,7 @@ func (m *Mirror) serveIngested(w http.ResponseWriter, r *http.Request, oid strin
 		return false
 	}
 	defer func() { _ = rs.Close() }()
-	m.SetXETLinkHeaders(w, r, oid, size)
+	lfs.SetObjectHeaders(w, oid, size)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, oid, time.Time{}, rs)
 	return true
@@ -126,42 +126,21 @@ func (m *Mirror) serveDrained(w http.ResponseWriter, r *http.Request, oid string
 	return m.serveIngested(w, r, oid)
 }
 
-// MintXETToken mints a short-lived CAS access token for xet transfers,
-// returning the externally visible CAS base URL, the token, and its expiry.
-func (m *Mirror) MintXETToken(r *http.Request) (casURL, token string, expiresAt time.Time) {
+// MintXETToken mints a CAS grant and returns the external CAS URL, token, and expiry.
+func (m *Mirror) MintXETToken(r *http.Request, g auth.Grant) (casURL, token string, expiresAt time.Time, err error) {
 	if m.mint == nil {
-		return "", "", time.Time{}
+		return "", "", time.Time{}, errors.New("no CAS token mint configured")
 	}
-	tok, exp := m.mint(time.Now())
-	return m.ExternalBase(r), tok, time.Unix(exp, 0)
+	tok, exp, err := m.mint(g)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	return m.ExternalBase(r), tok, time.Unix(exp, 0), nil
 }
 
 // CanMintToken reports whether the mirror can mint CAS access tokens.
 func (m *Mirror) CanMintToken() bool {
 	return m.mint != nil
-}
-
-// SetXETLinkHeaders writes the hub metadata headers for an LFS object, plus
-// the xet Link headers and file hash when the object's reconstruction is
-// known, steering capable clients to the CAS.
-func (m *Mirror) SetXETLinkHeaders(w http.ResponseWriter, r *http.Request, oid string, size int64) {
-	w.Header().Set("ETag", fmt.Sprintf("%q", oid))
-	w.Header().Set("X-Linked-Etag", fmt.Sprintf("%q", oid))
-	w.Header().Set("X-Linked-Size", strconv.FormatInt(size, 10))
-	if m.xetStorage == nil {
-		return
-	}
-	digest, ok := parseOID(oid)
-	if !ok {
-		return
-	}
-	fh, err := m.xetStorage.GetFileHashBySHA256(r.Context(), xetNamespace, digest)
-	if err != nil {
-		return
-	}
-	base := m.ExternalBase(r)
-	w.Header().Add("Link", fmt.Sprintf("<%s/xet-token>; rel=\"xet-auth\", <%s/v1/reconstructions/%s>; rel=\"xet-reconstruction-info\"", base, base, fh.String()))
-	w.Header().Set("X-Xet-Hash", fh.String())
 }
 
 // ExternalBase returns the externally visible base URL, derived from the
@@ -180,18 +159,27 @@ func (m *Mirror) ExternalBase(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-// HasObject reports whether the xet storage holds a fully ingested file with
-// the given SHA-256 OID.
-func (m *Mirror) HasObject(ctx context.Context, oid string) bool {
+// FileHash returns the xet file hash of a fully ingested object, or "" when
+// the xet storage does not hold it.
+func (m *Mirror) FileHash(ctx context.Context, oid string) string {
 	if m.xetStorage == nil {
-		return false
+		return ""
 	}
 	digest, ok := parseOID(oid)
 	if !ok {
-		return false
+		return ""
 	}
-	_, err := m.xetStorage.GetFileHashBySHA256(ctx, xetNamespace, digest)
-	return err == nil
+	fh, err := m.xetStorage.GetFileHashBySHA256(ctx, xetNamespace, digest)
+	if err != nil {
+		return ""
+	}
+	return fh.String()
+}
+
+// HasObject reports whether the xet storage holds a fully ingested file with
+// the given SHA-256 OID.
+func (m *Mirror) HasObject(ctx context.Context, oid string) bool {
+	return m.FileHash(ctx, oid) != ""
 }
 
 // KnowsObject reports whether the object is either fully ingested or known

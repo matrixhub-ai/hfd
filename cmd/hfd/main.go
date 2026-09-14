@@ -6,10 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	xetauth "github.com/wzshiming/xet/auth"
+
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/server"
 )
 
 func main() {
@@ -42,20 +46,14 @@ func run(ctx context.Context, cfg *config) error {
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
 	// Phase 2: auth layer.
-	// Integrators may assemble e.g. permission.SplitReadWrite(permission.AllowAll(), permission.RequireAuthenticated()).
-	hooks := &serverHooks{
-		storage:    st,
-		proxyToken: cfg.ProxyToken,
-		permission: permission.Logged(permission.AllowAll()),
-		pullTTL:    cfg.ProxyCacheTTL,
-	}
+	hooks := &server.Hooks{ProxyToken: cfg.ProxyToken, PullTTL: cfg.ProxyCacheTTL}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("prepare authenticators: %w", err)
 	}
-	mint, authFn, err := authenticate.NewXETTokenScheme(auth.TokenSign)
+	issuer, err := xetauth.NewIssuer([]byte(cfg.AuthSignKey), time.Hour, nil)
 	if err != nil {
-		return fmt.Errorf("prepare XET token scheme: %w", err)
+		return fmt.Errorf("prepare XET issuer: %w", err)
 	}
 
 	// Phase 3: xet/mirror layer.
@@ -68,20 +66,41 @@ func run(ctx context.Context, cfg *config) error {
 		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
 	// The mirror is built with the hooks and the hooks call back into the mirror.
-	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, xetC, engine, mint)
+	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, xetC, engine, issuer.Sign)
 	if err != nil {
 		return fmt.Errorf("prepare mirror: %w", err)
 	}
-	hooks.mirror = sharedMirror
+	hooks.Mirror = sharedMirror
+	// Integrators may assemble e.g. permission.SplitReadWrite(permission.AllowAll(), permission.RequireAuthenticated()).
+	policy := permission.Logged(permission.PullMirrorReadOnly(sharedMirror))
 
 	// Phase 4: frontends.
-	handler := buildHTTPHandler(ctx, cfg, st, xs, hooks, sharedMirror, auth, authFn)
+	opts := server.Options{
+		Storage:        st,
+		XETStorage:     xs,
+		Mirror:         sharedMirror,
+		Authenticators: auth,
+		CASAuthorizer:  issuer,
+		Permission:     policy,
+		PreOpen:        hooks.PreOpen,
+		PreReceive:     hooks.PreReceive,
+		PostReceive:    hooks.PostReceive,
+		AccessLog:      os.Stderr,
+		HostURL:        cfg.HostURL,
+	}
+	if cfg.Internal {
+		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
+		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), xs)
+		opts.GCGrace = time.Hour
+	}
+	handler := server.NewHTTPHandler(opts)
 	var sshServer *backendssh.Server
 	if cfg.SSHAddr != "" {
-		sshServer, err = buildSSHServer(ctx, cfg, st, hooks, sharedMirror, auth)
+		hostKeySigner, err := loadOrGenerateHostKey(ctx, cfg, st)
 		if err != nil {
 			return fmt.Errorf("prepare SSH server: %w", err)
 		}
+		sshServer = server.NewSSHServer(opts, hostKeySigner)
 	}
 
 	return serve(ctx, cfg, handler, sshServer)
