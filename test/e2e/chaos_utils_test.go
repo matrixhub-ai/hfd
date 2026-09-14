@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -144,12 +145,14 @@ func (c *latencyConn) wait() {
 type Limit struct {
 	// Limit is the maximum amount of data in bytes that can be transmitted.
 	Limit int64
+	Cuts  atomic.Int64
 }
 
 func (l *Limit) Wrap(conn Conn) Conn {
 	return &limitConn{
 		Conn:      conn,
 		remaining: l.Limit,
+		cuts:      &l.Cuts,
 	}
 }
 
@@ -158,6 +161,8 @@ type limitConn struct {
 
 	mu        sync.Mutex
 	remaining int64
+	cuts      *atomic.Int64
+	cutOnce   sync.Once
 }
 
 func (c *limitConn) Read(p []byte) (int, error) {
@@ -190,6 +195,7 @@ func (c *limitConn) readBuffer(p []byte) ([]byte, bool) {
 	defer c.mu.Unlock()
 
 	if c.remaining <= 0 {
+		c.cutOnce.Do(func() { c.cuts.Add(1) })
 		return nil, true
 	}
 	if int64(len(p)) > c.remaining {
