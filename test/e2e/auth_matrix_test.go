@@ -499,7 +499,7 @@ func runAuthResolve(t *testing.T, s *e2eServer, c authMatrixCred) {
 func TestCASAuthBoundary(t *testing.T) {
 	s := newE2EServer(t, withAuth("admin", "secret"))
 	fileHash := xet.FileHash{1, 2, 3}
-	token, _, err := s.issuer.Sign(auth.Grant{Permission: auth.Read, File: fileHash})
+	token, _, err := s.issuer.Sign(auth.Grant{Permission: auth.Read, File: &fileHash})
 	if err != nil {
 		t.Fatal(err)
 	}

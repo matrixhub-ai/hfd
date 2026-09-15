@@ -69,7 +69,7 @@ func TestNewHTTPHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	fileHash := xet.FileHash{1, 2, 3}
-	casToken, _, err := issuer.Sign(auth.Grant{Permission: auth.Read, File: fileHash})
+	casToken, _, err := issuer.Sign(auth.Grant{Permission: auth.Read, File: &fileHash})
 	if err != nil {
 		t.Fatal(err)
 	}

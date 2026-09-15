@@ -23,7 +23,7 @@ import (
 
 func TestMintXETToken(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	grant := auth.Grant{Permission: auth.Read, File: xet.FileHash{1, 2, 3}}
+	grant := auth.Grant{Permission: auth.Read, File: &xet.FileHash{1, 2, 3}}
 	m := newMirror(t, "")
 	if m.CanMintToken() {
 		t.Fatal("unexpected mint configured")
