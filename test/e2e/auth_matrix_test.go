@@ -17,6 +17,7 @@ import (
 
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
+	xetclient "github.com/wzshiming/xet/client"
 	xethf "github.com/wzshiming/xet/client/hf"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -536,4 +537,36 @@ func TestCASAuthBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLFSBatchTokenBoundToOID checks the batch's CAS token registers only its intended object.
+func TestLFSBatchTokenBoundToOID(t *testing.T) {
+	s := newE2EServer(t)
+	repoID := "auth-org/lfs-token-bound"
+	s.createRepo(t, "auth-org", "lfs-token-bound")
+	dataA := makeBinaryData(64*1024, 91)
+	dataB := makeBinaryData(64*1024, 92)
+	oidA := fmt.Sprintf("%x", sha256.Sum256(dataA))
+	oidB := fmt.Sprintf("%x", sha256.Sum256(dataB))
+	upload, _ := negotiateXetUpload(t, s, repoID, oidA, len(dataA))
+	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create xet client: %v", err)
+	}
+	provider := xetclient.StaticAuthProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])
+	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(dataB)); err == nil {
+		t.Fatal("upload of other content succeeded with the token for oidA")
+	}
+	resp, err := http.Get(s.httpURL + "/objects/" + oidB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("other object status = %d, want 404", resp.StatusCode)
+	}
+	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(dataA)); err != nil {
+		t.Fatalf("xet upload: %v", err)
+	}
+	verifyObjectsEndpoint(t, s, oidA, dataA)
 }
