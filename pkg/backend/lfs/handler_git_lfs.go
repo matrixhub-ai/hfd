@@ -43,16 +43,6 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	// the data plane can receive xorbs; uploaded objects land in xet storage.
 	xetUpload := bv.Operation == "upload" && h.mirror != nil && h.mirror.CanMintToken() &&
 		slices.ContainsFunc(bv.Transfers, func(tr string) bool { return strings.EqualFold(tr, "xet") })
-	var casURL, casToken string
-	var casExpiresAt time.Time
-	if xetUpload {
-		var err error
-		casURL, casToken, casExpiresAt, err = h.mirror.MintXETToken(r, auth.Grant{Permission: auth.Write})
-		if err != nil {
-			slog.WarnContext(r.Context(), "mint CAS upload token", "error", err)
-			xetUpload = false
-		}
-	}
 
 	// Create a response object
 	for _, object := range bv.Objects {
@@ -65,6 +55,12 @@ func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 		if bv.Operation == "upload" {
 			rep := h.lfsRepresent(r.Context(), bv.Operation, object, false, true)
 			if xetUpload {
+				casURL, casToken, casExpiresAt, err := h.mirror.MintXETToken(r, auth.Grant{Permission: auth.Write, SHA256: object.Oid})
+				if err != nil {
+					slog.WarnContext(r.Context(), "mint CAS upload token", "oid", object.Oid, "error", err)
+					responseObjects = append(responseObjects, rep)
+					continue
+				}
 				addXETUploadHeaders(rep, casURL, casToken, casExpiresAt)
 			}
 			responseObjects = append(responseObjects, rep)
