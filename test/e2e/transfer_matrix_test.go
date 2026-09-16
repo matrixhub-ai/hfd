@@ -231,9 +231,44 @@ func pushViaXetBatch(t *testing.T, s *e2eServer, repoID string, data []byte) {
 	runGit(t, dir, env, "commit", "-m", "add lfs pointer")
 	runGit(t, dir, env, "push", "origin", "main")
 
-	// Batch negotiation: advertising xet must select the xet transfer and
-	// hand out CAS credentials on the upload action.
-	batchBody := fmt.Sprintf(`{"operation":"upload","transfers":["xet","basic"],"objects":[{"oid":%q,"size":%d}]}`, oid, len(data))
+	upload, verify := negotiateXetUpload(t, s, repoID, oid, len(data))
+	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create xet client: %v", err)
+	}
+	provider := xetclient.StaticAuthProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])
+	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(data)); err != nil {
+		t.Fatalf("xet upload: %v", err)
+	}
+
+	verifyBody := fmt.Sprintf(`{"oid":%q,"size":%d}`, oid, len(data))
+	vreq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, verify.Href, strings.NewReader(verifyBody))
+	if err != nil {
+		t.Fatalf("build verify request: %v", err)
+	}
+	vreq.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+	for k, v := range verify.Header {
+		vreq.Header.Set(k, v)
+	}
+	vresp, err := http.DefaultClient.Do(vreq)
+	if err != nil {
+		t.Fatalf("verify request: %v", err)
+	}
+	vresp.Body.Close()
+	if vresp.StatusCode != http.StatusOK {
+		t.Fatalf("verify status = %d, want 200", vresp.StatusCode)
+	}
+}
+
+type lfsBatchAction struct {
+	Href   string            `json:"href"`
+	Header map[string]string `json:"header"`
+}
+
+// negotiateXetUpload negotiates the xet transfer and returns its upload and verify actions.
+func negotiateXetUpload(t *testing.T, s *e2eServer, repoID, oid string, size int) (upload, verify lfsBatchAction) {
+	t.Helper()
+	batchBody := fmt.Sprintf(`{"operation":"upload","transfers":["xet","basic"],"objects":[{"oid":%q,"size":%d}]}`, oid, size)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.httpURL+"/"+repoID+".git/info/lfs/objects/batch", strings.NewReader(batchBody))
 	if err != nil {
 		t.Fatalf("build batch request: %v", err)
@@ -252,11 +287,8 @@ func pushViaXetBatch(t *testing.T, s *e2eServer, repoID string, data []byte) {
 	var batch struct {
 		Transfer string `json:"transfer"`
 		Objects  []struct {
-			Oid     string `json:"oid"`
-			Actions map[string]struct {
-				Href   string            `json:"href"`
-				Header map[string]string `json:"header"`
-			} `json:"actions"`
+			Oid     string                    `json:"oid"`
+			Actions map[string]lfsBatchAction `json:"actions"`
 		} `json:"objects"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
@@ -278,36 +310,11 @@ func pushViaXetBatch(t *testing.T, s *e2eServer, repoID string, data []byte) {
 		t.Fatalf("upload action missing CAS credentials: %v", upload.Header)
 	}
 
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
-	if err != nil {
-		t.Fatalf("create xet client: %v", err)
-	}
-	provider := xetclient.StaticAuthProvider(casURL, casToken)
-	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(data)); err != nil {
-		t.Fatalf("xet upload: %v", err)
-	}
-
-	verify, ok := batch.Objects[0].Actions["verify"]
+	verify, ok = batch.Objects[0].Actions["verify"]
 	if !ok {
 		t.Fatal("batch response has no verify action")
 	}
-	verifyBody := fmt.Sprintf(`{"oid":%q,"size":%d}`, oid, len(data))
-	vreq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, verify.Href, strings.NewReader(verifyBody))
-	if err != nil {
-		t.Fatalf("build verify request: %v", err)
-	}
-	vreq.Header.Set("Content-Type", "application/vnd.git-lfs+json")
-	for k, v := range verify.Header {
-		vreq.Header.Set(k, v)
-	}
-	vresp, err := http.DefaultClient.Do(vreq)
-	if err != nil {
-		t.Fatalf("verify request: %v", err)
-	}
-	vresp.Body.Close()
-	if vresp.StatusCode != http.StatusOK {
-		t.Fatalf("verify status = %d, want 200", vresp.StatusCode)
-	}
+	return upload, verify
 }
 
 // verifyGitLFSPull clones over the given remote and pulls the LFS content
