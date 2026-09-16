@@ -55,11 +55,45 @@ func IsRepository(fs billy.Filesystem, repoPath string) bool {
 	if _, ok := lruCache.Get(cacheKey{fs, repoPath}); ok {
 		return true
 	}
+	return hasHEAD(fs, repoPath)
+}
+
+// hasHEAD is IsRepository's on-disk check alone; lruCache.Get would promote the entry.
+func hasHEAD(fs billy.Filesystem, repoPath string) bool {
 	stat, err := fs.Stat(filepath.Join(repoPath, "HEAD"))
-	if err == nil && stat.Size() != 0 {
-		return true
+	return err == nil && stat.Size() != 0
+}
+
+// Walk calls fn with the path of every bare repository under root, in lexical order, never descending into one.
+// A directory that cannot be read, or a non-nil return from fn, aborts the walk with that error.
+func Walk(ctx context.Context, fs billy.Filesystem, root string, fn func(path string) error) error {
+	return walk(ctx, fs, root, fn)
+}
+
+func walk(ctx context.Context, fs billy.Filesystem, dir string, fn func(path string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return false
+	if strings.HasSuffix(dir, ".git") && hasHEAD(fs, dir) {
+		return fn(dir)
+	}
+	entries, err := fs.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	// osfs returns raw directory order; only memfs and s3fs sort.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		err = walk(ctx, fs, path, fn)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IsValidGitProtocol reports whether value is a valid GIT_PROTOCOL string.

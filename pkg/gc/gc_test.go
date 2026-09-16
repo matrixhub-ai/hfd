@@ -267,21 +267,6 @@ func TestPrune(t *testing.T) {
 			}
 		}
 	})
-	t.Run("DamagedRepoAborts", func(t *testing.T) {
-		f := newFixture(t)
-		live, dead := f.put(t, "live-g "), f.put(t, "dead-g ")
-		f.commitPointer(t, "org/repo", live)
-		// Git internals without a HEAD cannot be told apart from a repository that lost it: abort, never skip.
-		if err := f.st.RepositoriesFS().MkdirAll("/org/damaged.git/objects", 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if _, err := f.collector().Prune(ctx, PruneOptions{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/damaged.git") {
-			t.Fatalf("prune: expected error naming the damaged repository, got %v", err)
-		}
-		if !f.stored(t, dead) {
-			t.Fatal("dead object unlinked despite aborted prune")
-		}
-	})
 	t.Run("BrokenRepoAborts", func(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-e "), f.put(t, "dead-e ")

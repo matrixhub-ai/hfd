@@ -2,11 +2,17 @@ package repository
 
 import (
 	"context"
+	"errors"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
+
+	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 
 func TestDiskUsage(t *testing.T) {
@@ -89,4 +95,132 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 		t.Errorf("Expected DiskUsage to include LFS size (%d): before=%d, after=%d, delta=%d",
 			lfsSize, usageBefore, usageAfter, usageAfter-usageBefore)
 	}
+}
+
+func TestWalk(t *testing.T) {
+	ctx := context.Background()
+	mustInit := func(t *testing.T, fs billy.Filesystem, paths ...string) {
+		t.Helper()
+		for _, p := range paths {
+			if _, err := Init(ctx, fs, p, "main"); err != nil {
+				t.Fatalf("Init(%s): %v", p, err)
+			}
+		}
+	}
+
+	t.Run("Layouts", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		mustInit(t, fs, "/repo.git", "/org/repo.git", "/datasets/org/ds.git", "/org/a/b/c.git", "/ns.git/repo.git")
+		var got []string
+		err := Walk(ctx, fs, "/", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		want := []string{"/datasets/org/ds.git", "/ns.git/repo.git", "/org/a/b/c.git", "/org/repo.git", "/repo.git"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Walk yielded %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Noise", func(t *testing.T) {
+		dir := t.TempDir()
+		fs := osfs.New(dir)
+		if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hi"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []string{"/empty", "/empty.git"} {
+			if err := fs.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mustInit(t, fs, "/org/repo.git")
+		var got []string
+		err := Walk(ctx, fs, "/", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		if want := []string{"/org/repo.git"}; !slices.Equal(got, want) {
+			t.Fatalf("Walk yielded %v, want %v", got, want)
+		}
+	})
+
+	t.Run("MissingRoot", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		err := Walk(ctx, fs, "/missing", func(path string) error {
+			t.Errorf("fn called with %s", path)
+			return nil
+		})
+		if !errors.Is(err, iofs.ErrNotExist) {
+			t.Fatalf("Walk = %v, want ErrNotExist", err)
+		}
+	})
+
+	t.Run("Abort", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		mustInit(t, fs, "/a/x.git", "/b/y.git")
+		errStop := errors.New("stop")
+		calls := 0
+		err := Walk(ctx, fs, "/", func(string) error {
+			calls++
+			return errStop
+		})
+		if err != errStop {
+			t.Fatalf("Walk = %v, want errStop unwrapped", err)
+		}
+		if calls != 1 {
+			t.Fatalf("fn called %d times, want 1", calls)
+		}
+	})
+
+	t.Run("Canceled", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		mustInit(t, fs, "/org/repo.git")
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		err := Walk(cctx, fs, "/", func(path string) error {
+			t.Errorf("fn called with %s after cancel", path)
+			return nil
+		})
+		if err != context.Canceled {
+			t.Fatalf("Walk = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("RootIsRepo", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		mustInit(t, fs, "/org/repo.git")
+		var got []string
+		err := Walk(ctx, fs, "/org/repo.git", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		if want := []string{"/org/repo.git"}; !slices.Equal(got, want) {
+			t.Fatalf("Walk yielded %v, want %v", got, want)
+		}
+	})
+
+	t.Run("LeavesLRUOrder", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		saved := lruCache
+		lruCache = lru.New[cacheKey, *Repository](128)
+		t.Cleanup(func() { lruCache = saved })
+		// Init opens x then y, so x is the eviction candidate unless the walk (y first) touches the cache.
+		mustInit(t, fs, "/b/x.git", "/a/y.git")
+		if err := Walk(ctx, fs, "/", func(string) error { return nil }); err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		lruCache.RemoveOldest()
+		if _, ok := lruCache.Get(cacheKey{fs, "/b/x.git"}); ok {
+			t.Fatal("Walk promoted /b/x.git in the LRU: /a/y.git was evicted instead")
+		}
+	})
 }

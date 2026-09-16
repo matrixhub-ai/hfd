@@ -1,6 +1,7 @@
 package hf
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -67,8 +68,7 @@ func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoTy
 		baseDir = filepath.Join("/", repoType)
 	}
 
-	entries := discoverRepos(h.storage.RepositoriesFS(), baseDir, isModel, f.author)
-	items := buildRepoListItems(h.storage.RepositoriesFS(), entries, isModel, f.search, f.filterTags)
+	items := buildRepoListItems(r.Context(), h.storage.RepositoriesFS(), baseDir, isModel, f)
 
 	// Sort results
 	sortRepoItems(items, f.sortField)
@@ -96,92 +96,66 @@ func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoTy
 	responseJSON(w, items, http.StatusOK)
 }
 
-// repoEntry represents a discovered repository on disk.
-type repoEntry struct {
-	fullName string // "namespace/repo"
-	repoPath string // absolute path to the .git directory
-}
-
-// discoverRepos walks the base directory and returns all valid repository entries,
-// applying namespace-level filters (author, skipping non-model prefixes).
-func discoverRepos(fs billy.Filesystem, baseDir string, isModel bool, author string) []repoEntry {
-	if author != "" {
-		return discoverReposInNamespace(fs, filepath.Join(baseDir, author), author)
-	}
-	namespaces, err := fs.ReadDir(baseDir)
-	if err != nil {
-		return nil
-	}
-
-	var entries []repoEntry
-	for _, nsEntry := range namespaces {
-		if !nsEntry.IsDir() {
-			continue
+// buildRepoListItems walks the namespaces under baseDir (or only f.author's) and returns the
+// list items passing the search and tag filters, with metadata read from each repository.
+func buildRepoListItems(ctx context.Context, fs billy.Filesystem, baseDir string, isModel bool, f repoListFilter) []repoListItem {
+	var roots []string
+	if f.author != "" {
+		// An author is one path element; a slash or dot path would walk out of its namespace.
+		if strings.Contains(f.author, "/") || f.author == "." || f.author == ".." || (isModel && (f.author == "datasets" || f.author == "spaces")) {
+			return nil
 		}
-		nsName := nsEntry.Name()
-
-		// For models, skip the datasets/ and spaces/ directories
-		if isModel && (nsName == "datasets" || nsName == "spaces") {
-			continue
+		roots = []string{filepath.Join(baseDir, f.author)}
+	} else {
+		namespaces, err := fs.ReadDir(baseDir)
+		if err != nil {
+			return nil
 		}
-		entries = append(entries, discoverReposInNamespace(fs, filepath.Join(baseDir, nsName), nsName)...)
-	}
-	return entries
-}
+		for _, nsEntry := range namespaces {
+			if !nsEntry.IsDir() {
+				continue
+			}
+			nsName := nsEntry.Name()
 
-// discoverReposInNamespace returns all valid repository entries within a single namespace directory.
-func discoverReposInNamespace(fs billy.Filesystem, nsPath, nsName string) []repoEntry {
-	repos, err := fs.ReadDir(nsPath)
-	if err != nil {
-		return nil
-	}
-
-	var entries []repoEntry
-	for _, repoDir := range repos {
-		if !repoDir.IsDir() || !strings.HasSuffix(repoDir.Name(), ".git") {
-			continue
+			// For models, skip the datasets/ and spaces/ directories
+			if isModel && (nsName == "datasets" || nsName == "spaces") {
+				continue
+			}
+			roots = append(roots, filepath.Join(baseDir, nsName))
 		}
-		repoPath := filepath.Join(nsPath, repoDir.Name())
-		if !repository.IsRepository(fs, repoPath) {
-			continue
-		}
-		name := strings.TrimSuffix(repoDir.Name(), ".git")
-		entries = append(entries, repoEntry{
-			fullName: nsName + "/" + name,
-			repoPath: repoPath,
-		})
 	}
-	return entries
-}
 
-// buildRepoListItems converts discovered repo entries into list items,
-// applying search and tag filters and reading metadata from each repository.
-func buildRepoListItems(fs billy.Filesystem, entries []repoEntry, isModel bool, search string, filterTags []string) []repoListItem {
 	var items []repoListItem
-	for _, e := range entries {
-		if search != "" && !strings.Contains(strings.ToLower(e.fullName), strings.ToLower(search)) {
-			continue
-		}
+	for _, root := range roots {
+		// An unreadable directory ends this namespace's walk; the others still get listed.
+		_ = repository.Walk(ctx, fs, root, func(path string) error {
+			rel, _ := filepath.Rel(baseDir, path)
+			fullName := strings.TrimSuffix(rel, ".git")
+			if f.search != "" && !strings.Contains(strings.ToLower(fullName), strings.ToLower(f.search)) {
+				return nil
+			}
 
-		item := repoListItem{
-			RepoID: e.fullName,
-		}
-		if isModel {
-			item.ModelID = e.fullName
-		}
+			item := repoListItem{
+				RepoID: fullName,
+			}
+			if isModel {
+				item.ModelID = fullName
+			}
 
-		if repo, err := repository.Open(fs, e.repoPath); err == nil {
-			meta := collectRepoMetadata(repo, repo.DefaultBranch())
-			item.Tags = meta.tags
-			item.PipelineTag = meta.pipelineTag
-			item.LibraryName = meta.libraryName
-		}
+			if repo, err := repository.Open(fs, path); err == nil {
+				meta := collectRepoMetadata(repo, repo.DefaultBranch())
+				item.Tags = meta.tags
+				item.PipelineTag = meta.pipelineTag
+				item.LibraryName = meta.libraryName
+			}
 
-		if len(filterTags) > 0 && !matchesAllTags(item.Tags, filterTags) {
-			continue
-		}
+			if len(f.filterTags) > 0 && !matchesAllTags(item.Tags, f.filterTags) {
+				return nil
+			}
 
-		items = append(items, item)
+			items = append(items, item)
+			return nil
+		})
 	}
 	return items
 }
