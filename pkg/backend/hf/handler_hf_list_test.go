@@ -6,10 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -864,5 +868,55 @@ func TestHandleListModelsSortByTrendingScore(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("Expected 2 models, got %d", len(items))
+	}
+}
+
+// TestHandleListRepoIDIsPath pins that a listed id is the repository's path below its type's base
+// directory with only the trailing .git removed, and that search and author apply to that path.
+func TestHandleListRepoIDIsPath(t *testing.T) {
+	server, dataDir := setupTestServer(t)
+	endpoint := server.URL
+
+	for _, p := range []string{"org/a/b.git", "ns.git/repo.git", "datasets/org/a/b.git", "datasets/alice/ds.git"} {
+		if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(p)), "main"); err != nil {
+			t.Fatalf("Init(%s): %v", p, err)
+		}
+	}
+
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{"/api/models", []string{"ns.git/repo", "org/a/b"}},
+		{"/api/models?search=a/b", []string{"org/a/b"}},
+		{"/api/models?author=org", []string{"org/a/b"}},
+		{"/api/datasets", []string{"alice/ds", "org/a/b"}},
+		{"/api/datasets?author=org", []string{"org/a/b"}},
+		// The author is a walk root: it must stay one element inside its own type.
+		{"/api/models?author=datasets", nil},
+		{"/api/models?author=datasets%2Forg", nil},
+		{"/api/models?author=..", nil},
+		{"/api/models?author=.", nil},
+	}
+	for _, tt := range tests {
+		resp, err := http.Get(endpoint + tt.query)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.query, err)
+		}
+		var items []repoListItem
+		if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+			t.Fatalf("%s: decode: %v", tt.query, err)
+		}
+		resp.Body.Close()
+		var got []string
+		for _, item := range items {
+			got = append(got, item.RepoID)
+			if isModel := strings.HasPrefix(tt.query, "/api/models"); (item.ModelID != "") != isModel || (isModel && item.ModelID != item.RepoID) {
+				t.Errorf("%s: %s has modelId %q", tt.query, item.RepoID, item.ModelID)
+			}
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: got %v, want %v", tt.query, got, tt.want)
+		}
 	}
 }

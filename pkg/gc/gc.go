@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -122,7 +121,7 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 
 	res := &PruneResult{DryRun: opts.DryRun, Unlinked: []string{}}
 	live := map[string]struct{}{}
-	repos, err := c.mark(ctx, "/", live)
+	repos, err := c.mark(ctx, live)
 	if err != nil {
 		return nil, err
 	}
@@ -236,51 +235,29 @@ func (c *Collector) List(ctx context.Context) ([]Object, error) {
 	return objects, nil
 }
 
-// mark walks dir for repositories at any depth, adding their LFS OIDs to live and returning the
-// repository count. A .git-suffixed directory without a valid HEAD is a namespace, unless it
-// holds git internals: then it is a damaged repository and the run aborts rather than miss it.
-func (c *Collector) mark(ctx context.Context, dir string, live map[string]struct{}) (int, error) {
-	entries, err := c.repos.ReadDir(dir)
-	if err != nil {
-		if dir == "/" && errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read %s: %w", dir, err)
+// mark walks the repositories for LFS pointers, adding their OIDs to live and returning the repository count.
+func (c *Collector) mark(ctx context.Context, live map[string]struct{}) (int, error) {
+	if _, err := c.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
 	}
 	repos := 0
-	for _, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		if !e.IsDir() {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		if !strings.HasSuffix(e.Name(), ".git") || !repository.IsRepository(c.repos, path) {
-			if strings.HasSuffix(e.Name(), ".git") {
-				if _, err := c.repos.Stat(filepath.Join(path, "objects")); err == nil {
-					return 0, fmt.Errorf("damaged repository %s: git internals without a valid HEAD", path)
-				}
-			}
-			n, err := c.mark(ctx, path, live)
-			if err != nil {
-				return 0, err
-			}
-			repos += n
-			continue
-		}
+	err := repository.Walk(ctx, c.repos, "/", func(path string) error {
 		repo, err := repository.Open(c.repos, path)
 		if err != nil {
-			return 0, fmt.Errorf("open %s: %w", path, err)
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 		ptrs, err := repo.ScanLFSPointers()
 		if err != nil {
-			return 0, fmt.Errorf("scan %s: %w", path, err)
+			return fmt.Errorf("scan %s: %w", path, err)
 		}
 		for _, ptr := range ptrs {
 			live[ptr.OID()] = struct{}{}
 		}
 		repos++
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	return repos, nil
 }
