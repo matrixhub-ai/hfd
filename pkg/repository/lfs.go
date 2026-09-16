@@ -6,40 +6,115 @@ import (
 	"io"
 
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
-// ScanLFSPointers scans all branches in the repository for LFS pointer files
-// and returns a list of unique LFS pointers
+// ScanLFSPointers returns LFS pointers from unique blobs reachable from
+// repository refs: commits and their ancestors, or directly tagged trees and blobs.
 func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
-	blobIter, err := r.repo.BlobObjects()
+	refs, err := r.repo.References()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get blob objects: %w", err)
+		return nil, fmt.Errorf("failed to get references: %w", err)
 	}
 
 	result := []*lfs.Pointer{}
-	err = blobIter.ForEach(func(obj *object.Blob) error {
+	seenCommits := map[plumbing.Hash]bool{}
+	seenTrees := map[plumbing.Hash]bool{}
+	seenBlobs := map[plumbing.Hash]bool{}
+	scanBlob := func(hash plumbing.Hash) error {
+		if seenBlobs[hash] {
+			return nil
+		}
+		seenBlobs[hash] = true
+		obj, err := r.repo.BlobObject(hash)
+		if err != nil {
+			return fmt.Errorf("read blob %s: %w", hash, err)
+		}
 		if obj.Size > lfs.MaxLFSPointerSize {
 			return nil
 		}
-
 		reader, err := obj.Reader()
 		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+			return fmt.Errorf("read blob %s: %w", hash, err)
 		}
 		data, err := io.ReadAll(reader)
 		_ = reader.Close()
 		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+			return fmt.Errorf("read blob %s: %w", hash, err)
 		}
-		// Only a decode failure means "not a pointer"; read errors above must surface.
 		ptr, _ := lfs.DecodePointer(bytes.NewReader(data))
-		if ptr == nil {
+		if ptr != nil {
+			result = append(result, ptr)
+		}
+		return nil
+	}
+	var scanTree func(*object.Tree) error
+	scanTree = func(tree *object.Tree) error {
+		for _, entry := range tree.Entries {
+			if entry.Mode == filemode.Dir {
+				if seenTrees[entry.Hash] {
+					continue
+				}
+				seenTrees[entry.Hash] = true
+				subtree, err := object.GetTree(r.repo.Storer, entry.Hash)
+				if err != nil {
+					return fmt.Errorf("read tree %s: %w", entry.Hash, err)
+				}
+				if err := scanTree(subtree); err != nil {
+					return err
+				}
+				continue
+			}
+			if !entry.Mode.IsFile() {
+				continue
+			}
+			if err := scanBlob(entry.Hash); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	err = refs.ForEach(func(ref *plumbing.Reference) error {
+		if ref.Type() != plumbing.HashReference {
 			return nil
 		}
-
-		result = append(result, ptr)
+		target, err := object.GetObject(r.repo.Storer, ref.Hash())
+		if err != nil {
+			return fmt.Errorf("ref %s: %w", ref.Name(), err)
+		}
+		for target.Type() == plumbing.TagObject {
+			target, err = object.GetObject(r.repo.Storer, target.(*object.Tag).Target)
+			if err != nil {
+				return fmt.Errorf("ref %s: %w", ref.Name(), err)
+			}
+		}
+		switch target := target.(type) {
+		case *object.Blob:
+			return scanBlob(target.Hash)
+		case *object.Tree:
+			if seenTrees[target.Hash] {
+				return nil
+			}
+			seenTrees[target.Hash] = true
+			return scanTree(target)
+		case *object.Commit:
+			commits := object.NewCommitPreorderIter(target, seenCommits, nil)
+			defer commits.Close()
+			return commits.ForEach(func(commit *object.Commit) error {
+				seenCommits[commit.Hash] = true
+				if seenTrees[commit.TreeHash] {
+					return nil
+				}
+				tree, err := commit.Tree()
+				if err != nil {
+					return err
+				}
+				seenTrees[tree.Hash] = true
+				return scanTree(tree)
+			})
+		}
 		return nil
 	})
 	if err != nil {

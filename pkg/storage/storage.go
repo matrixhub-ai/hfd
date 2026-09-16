@@ -2,12 +2,13 @@ package storage
 
 import (
 	"github.com/go-git/go-billy/v6"
-	"github.com/go-git/go-billy/v6/helper/chroot"
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // Storage manages the filesystem for git repositories, carved out of one
 // backing filesystem. LFS content lives in the xet storage, not here.
+// Git objects are shared across repositories under /git/sha1 via alternates.
 type Storage struct {
 	rootDir        string
 	fs             billy.Filesystem
@@ -47,18 +48,9 @@ func NewStorage(opts ...Option) *Storage {
 		h.fs = osfs.New(h.rootDir)
 	}
 
-	h.repositoriesFS = chrootFS(h.fs, "/repositories")
+	h.repositoriesFS = repository.BindSharedObjects(h.fs, "/repositories", "/git/sha1")
 
 	return h
-}
-
-// chrootFS scopes fs to dir, preferring the filesystem's own Chroot.
-func chrootFS(fs billy.Filesystem, dir string) billy.Filesystem {
-	sub, err := fs.Chroot(dir)
-	if err != nil {
-		return chroot.New(fs, dir)
-	}
-	return sub
 }
 
 // FS returns the filesystem holding repositories.

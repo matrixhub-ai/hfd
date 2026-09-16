@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -242,6 +243,9 @@ func (c *Collector) mark(ctx context.Context, live map[string]struct{}) (int, er
 	}
 	repos := 0
 	err := repository.Walk(ctx, c.repos, "/", func(path string) error {
+		if fi, err := c.repos.Stat(filepath.Join(path, "objects")); err == nil && !fi.IsDir() {
+			return fmt.Errorf("damaged repository %s: objects is not a directory", path)
+		}
 		repo, err := repository.Open(c.repos, path)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", path, err)

@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/cache"
 	"github.com/go-git/go-git/v6/storage/filesystem"
+	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -47,7 +48,12 @@ type Repository struct {
 
 // newStorer returns a go-git storer for the bare repository at repoPath on fs.
 func newStorer(fs billy.Filesystem, repoPath string) *filesystem.Storage {
-	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), cache.NewObjectLRUDefault(), filesystem.Options{})
+	opts := filesystem.Options{}
+	if bound, ok := fs.(*sharedObjectsFS); ok {
+		// go-git resolves relative alternates from the filesystem root.
+		opts.AlternatesFS = bound.dataFS
+	}
+	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), cache.NewObjectLRUDefault(), opts)
 }
 
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
@@ -144,7 +150,16 @@ var lruCache = lru.New[cacheKey, *Repository](128) // Cache up to 128 repositori
 func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
 		var r *git.Repository
-		r, err = git.Open(newStorer(fs, repoPath), nil)
+		st := newStorer(fs, repoPath)
+		if bound, ok := fs.(*sharedObjectsFS); ok {
+			objects := filesystem.NewObjectStorage(dotgit.New(bound.objectsFS), cache.NewObjectLRUDefault())
+			r, err = git.Open(&sharedStorer{Storer: st, local: st, objects: objects}, nil)
+			if err == nil {
+				err = bound.ensure(repoPath)
+			}
+		} else {
+			r, err = git.Open(st, nil)
+		}
 		if err != nil {
 			return nil, false
 		}
@@ -423,7 +438,14 @@ func (r *Repository) Move(newPath string) error {
 	}
 	lruCache.Remove(cacheKey{r.fs, r.repoPath})
 	lruCache.Remove(cacheKey{r.fs, newPath})
-	return r.fs.Rename(r.repoPath, newPath)
+	if err := r.fs.Rename(r.repoPath, newPath); err != nil {
+		return err
+	}
+	if bound, ok := r.fs.(*sharedObjectsFS); ok {
+		// C git reads the alternates depth as-is; only the next Open would rewrite it.
+		return bound.ensure(newPath)
+	}
+	return nil
 }
 
 // DiskUsage returns the total disk usage of the repository in bytes.
