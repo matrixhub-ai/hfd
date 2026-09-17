@@ -58,13 +58,7 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath := repository.ResolvePath(repoName)
-	if repoPath == "" {
-		responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
-		return
-	}
-
-	repo, ok := h.openRepoChecked(w, r, repoPath, repoName, service)
+	repo, ok := h.openRepoChecked(w, r, repoName, service)
 	if !ok {
 		return
 	}
@@ -93,17 +87,11 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	repoPath := repository.ResolvePath(repoName)
-	if repoPath == "" {
-		responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
-		return
-	}
-
 	if !h.checkPermission(w, r, repoName, service) {
 		return
 	}
 
-	repo, ok := h.openRepoChecked(w, r, repoPath, repoName, service)
+	repo, ok := h.openRepoChecked(w, r, repoName, service)
 	if !ok {
 		return
 	}
@@ -173,7 +161,11 @@ func (h *Handler) afterReceivePack(ctx context.Context, repoName string, updates
 	}
 }
 
-func (h *Handler) openRepo(ctx context.Context, repoPath, repoName, service string) (*repository.Repository, error) {
+func (h *Handler) openRepo(ctx context.Context, repoName, service string) (*repository.Repository, error) {
+	repoPath := repository.ResolvePath(repoName)
+	if repoPath == "" {
+		return nil, repository.ErrRepositoryNotExists
+	}
 	if err := h.preOpenHook(ctx, repoName, service == repository.GitReceivePack); err != nil {
 		return nil, err
 	}
@@ -194,8 +186,8 @@ func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, repoNa
 }
 
 // openRepoChecked opens the repository, mapping open errors to HTTP responses.
-func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPath, repoName, service string) (*repository.Repository, bool) {
-	repo, err := h.openRepo(r.Context(), repoPath, repoName, service)
+func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoName, service string) (*repository.Repository, bool) {
+	repo, err := h.openRepo(r.Context(), repoName, service)
 	if err != nil {
 		if errors.Is(err, repository.ErrRepositoryNotExists) {
 			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
