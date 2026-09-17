@@ -276,6 +276,18 @@ func TestHuggingFaceRepoSettings(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
+
+	// Settings of a missing repository
+	req, _ = http.NewRequest(http.MethodPut, endpoint+"/api/models/test-user/missing/settings", strings.NewReader(settingsBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to update settings: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404, got %d", resp.StatusCode)
+	}
 }
 
 func TestHuggingFaceCreateAndDeleteBranch(t *testing.T) {

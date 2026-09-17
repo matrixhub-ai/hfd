@@ -3,6 +3,7 @@ package hf
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +112,16 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		hookErr = repository.ErrRepositoryNotExists
 		defer func() { hookErr = nil }()
 		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusNotFound)
+	})
+
+	t.Run("InvalidNameSkipsHook", func(t *testing.T) {
+		calls = nil
+		if _, err := h.openRepo(ctx, "x/../repo", true); !errors.Is(err, repository.ErrRepositoryNotExists) {
+			t.Fatalf("openRepo error = %v, want ErrRepositoryNotExists", err)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("hook calls = %v, want none", calls)
+		}
 	})
 
 	t.Run("DirectOperationsBypass", func(t *testing.T) {

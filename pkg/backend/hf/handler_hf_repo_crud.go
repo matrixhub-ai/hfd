@@ -31,11 +31,7 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationDeleteRepo, storageName, permission.Context{}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, storageName, storageName)
-	if !ok {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, repoPath, storageName)
+	repo, ok := h.openRepoDirect(w, storageName)
 	if !ok {
 		return
 	}
@@ -71,11 +67,7 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPath, ok := h.resolveRepoPath(w, fromName, fromName)
-	if !ok {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, fromPath, fromName)
+	repo, ok := h.openRepoDirect(w, fromName)
 	if !ok {
 		return
 	}
@@ -107,13 +99,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
-	if !ok {
-		return
-	}
-
-	if !repository.IsRepository(h.storage.RepositoriesFS(), repoPath) {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	if _, ok := h.openRepoDirect(w, ri.RepoName); !ok {
 		return
 	}
 
