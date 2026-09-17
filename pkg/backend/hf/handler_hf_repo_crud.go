@@ -31,17 +31,17 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationDeleteRepo, storageName, permission.Context{}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, storageName, repoName)
+	repoPath, ok := h.resolveRepoPath(w, storageName, storageName)
 	if !ok {
 		return
 	}
-	repo, ok := h.openRepoDirect(w, repoPath, repoName)
+	repo, ok := h.openRepoDirect(w, repoPath, storageName)
 	if !ok {
 		return
 	}
 
 	if err := repo.Remove(); err != nil {
-		responseJSON(w, fmt.Errorf("failed to delete repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to delete repository %q: %v", storageName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -71,20 +71,18 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPath := repository.ResolvePath(fromName)
-	if fromPath == "" {
-		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
+	fromPath, ok := h.resolveRepoPath(w, fromName, fromName)
+	if !ok {
+		return
+	}
+	repo, ok := h.openRepoDirect(w, fromPath, fromName)
+	if !ok {
 		return
 	}
 
 	toPath := repository.ResolvePath(toName)
 	if toPath == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
-		return
-	}
-
-	repo, ok := h.openRepoDirect(w, fromPath, req.FromRepo)
-	if !ok {
 		return
 	}
 

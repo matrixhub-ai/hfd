@@ -105,6 +105,20 @@ func TestHuggingFaceDeleteRepoNotFound(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("Expected 404, got %d", resp.StatusCode)
 	}
+
+	// The error names the repository as stored, type prefix included.
+	deleteBody = `{"type":"dataset","name":"nonexistent","organization":"test-user"}`
+	req, _ = http.NewRequest(http.MethodDelete, endpoint+"/api/repos/delete", strings.NewReader(deleteBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to delete repo: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(respBody), `datasets/test-user/nonexistent`) {
+		t.Fatalf("Expected 404 naming datasets/test-user/nonexistent, got %d: %s", resp.StatusCode, respBody)
+	}
 }
 
 func TestHuggingFaceDeleteRepoInvalidName(t *testing.T) {
@@ -200,6 +214,28 @@ func TestHuggingFaceMoveRepo(t *testing.T) {
 	content, _ := io.ReadAll(resp.Body)
 	if string(content) != "# Test\n" {
 		t.Errorf("Unexpected content: %q", content)
+	}
+}
+
+// An unresolvable source is a repository that does not exist, and it is
+// judged before the destination.
+func TestHuggingFaceMoveRepoInvalidSource(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	for _, moveBody := range []string{
+		`{"fromRepo":"x/../repo","toRepo":"x/repo","type":"dataset"}`,
+		`{"fromRepo":"x/../repo","toRepo":"y/../repo","type":"dataset"}`,
+	} {
+		resp, err := http.Post(endpoint+"/api/repos/move", "application/json", strings.NewReader(moveBody))
+		if err != nil {
+			t.Fatalf("Failed to move repo: %v", err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(respBody), `datasets/x/../repo`) {
+			t.Fatalf("%s: got %d %s, want 404 naming datasets/x/../repo", moveBody, resp.StatusCode, respBody)
+		}
 	}
 }
 
