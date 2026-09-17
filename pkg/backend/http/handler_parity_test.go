@@ -134,6 +134,36 @@ func newServeParityFixture(t *testing.T) *serveParityFixture {
 	runGitCmd(t, f.work, "checkout", "main")
 	f.pushBoth(t, "refs/heads/main", "refs/heads/topic/nested", "refs/tags/v1", "refs/tags/v2")
 
+	for _, extension := range []string{"*.pack", "*.idx"} {
+		files, err := filepath.Glob(filepath.Join(goGitRepo, "objects/pack", extension))
+		if err != nil || len(files) != 0 {
+			t.Errorf("local %s files = %v, %v", extension, files, err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(root, "gogit/git/sha1/objects", "[0-9a-f][0-9a-f]", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasSharedObject := false
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().IsRegular() {
+			hasSharedObject = true
+			break
+		}
+	}
+	if !hasSharedObject {
+		t.Error("shared objects store has no loose object in a two-hex-digit fan-out directory")
+	}
+	runGitCmd(t, goGitRepo, "fsck", "--full", "--strict")
+	alternates, err := os.ReadFile(filepath.Join(goGitRepo, "objects/info/alternates"))
+	if err != nil || string(alternates) != "../../../git/sha1/objects\n" {
+		t.Errorf("alternates = %q, %v; want %q", alternates, err, "../../../git/sha1/objects\n")
+	}
+
 	return f
 }
 

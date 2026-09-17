@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 
@@ -10,42 +11,39 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
-// ScanLFSPointers scans all branches in the repository for LFS pointer files
-// and returns a list of unique LFS pointers
-func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
-	blobIter, err := r.repo.BlobObjects()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get blob objects: %w", err)
-	}
-
+// ScanLFSPointers returns LFS pointers from unique blobs reachable from
+// repository refs: commits and their ancestors, or directly tagged trees and blobs.
+func (r *Repository) ScanLFSPointers(ctx context.Context) ([]*lfs.Pointer, error) {
 	result := []*lfs.Pointer{}
-	err = blobIter.ForEach(func(obj *object.Blob) error {
+	err := r.WalkObjects(ctx, func(hash plumbing.Hash, typ plumbing.ObjectType) error {
+		if typ != plumbing.BlobObject {
+			return nil
+		}
+		obj, err := r.repo.BlobObject(hash)
+		if err != nil {
+			return fmt.Errorf("read blob %s: %w", hash, err)
+		}
 		if obj.Size > lfs.MaxLFSPointerSize {
 			return nil
 		}
-
 		reader, err := obj.Reader()
 		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+			return fmt.Errorf("read blob %s: %w", hash, err)
 		}
 		data, err := io.ReadAll(reader)
 		_ = reader.Close()
 		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
+			return fmt.Errorf("read blob %s: %w", hash, err)
 		}
-		// Only a decode failure means "not a pointer"; read errors above must surface.
 		ptr, _ := lfs.DecodePointer(bytes.NewReader(data))
-		if ptr == nil {
-			return nil
+		if ptr != nil {
+			result = append(result, ptr)
 		}
-
-		result = append(result, ptr)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-
 	return result, nil
 }
 

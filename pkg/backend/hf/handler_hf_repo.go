@@ -47,7 +47,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	usedStorage, _ := repo.DiskUsage()
+	usedStorage, _ := repo.DiskUsage(r.Context())
 
 	// Get the commit SHA for this revision
 	commitHash := ""

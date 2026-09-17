@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,6 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/util"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 const (
@@ -57,6 +62,7 @@ func TestGitOperationsMatrix(t *testing.T) {
 	}{
 		{name: "CloneEmptyRepo", test: testCloneEmptyRepo},
 		{name: "PushCommit", test: testPushCommit},
+		{name: "PushLandsInSharedStore", test: testPushLandsInSharedStore},
 		{name: "CloneWithContent", test: testCloneWithContent},
 		{name: "FetchFromRepo", test: testFetchFromRepo},
 		{name: "PushMoreCommits", test: testPushMoreCommits},
@@ -108,6 +114,41 @@ func testPushCommit(t *testing.T, s *e2eServer, remote string, env []string) {
 	runGit(t, cloneDir, env, "add", "README.md")
 	runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
 	runGit(t, cloneDir, env, "push", "origin", "main")
+}
+
+func testPushLandsInSharedStore(t *testing.T, s *e2eServer, remote string, env []string) {
+	testPushCommit(t, s, remote, env)
+
+	fs := s.storage.FS()
+	objectsPath := "/repositories" + repository.ResolvePath(gitMatrixRepoID) + "/objects"
+	alternates, err := util.ReadFile(fs, objectsPath+"/info/alternates")
+	if err != nil {
+		t.Fatalf("Failed to read alternates: %v", err)
+	}
+	if string(alternates) != "../../../../git/sha1/objects\n" {
+		t.Errorf("Unexpected alternates: %q", alternates)
+	}
+	packs, err := fs.ReadDir(objectsPath + "/pack")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("Failed to read repository packs: %v", err)
+	}
+	for _, entry := range packs {
+		if strings.HasSuffix(entry.Name(), ".pack") || strings.HasSuffix(entry.Name(), ".idx") {
+			t.Errorf("Unexpected repository pack entry: %s", entry.Name())
+		}
+	}
+	objects, err := fs.ReadDir("/git/sha1/objects")
+	if err != nil {
+		t.Fatalf("Failed to read shared objects: %v", err)
+	}
+	for _, entry := range objects {
+		if entry.IsDir() && len(entry.Name()) == 2 {
+			if _, err := hex.DecodeString(entry.Name()); err == nil {
+				return
+			}
+		}
+	}
+	t.Fatal("No two-hex-character directory in shared object store")
 }
 
 func testCloneWithContent(t *testing.T, s *e2eServer, remote string, env []string) {

@@ -1,4 +1,4 @@
-// Package gc reclaims xet LFS content no git repository references any more.
+// Package gc reclaims xet LFS content and shared git objects no git repository references any more.
 package gc
 
 import (
@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -24,7 +26,11 @@ var zeroSHA256 = strings.Repeat("0", 64)
 // ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
 var ErrInvalidOID = errors.New("invalid oid")
 
-// Collector prunes xet sha256 index entries no repository LFS pointer names; SweepStep reclaims the data afterwards.
+// now is the sweep budget clock; tests replace it.
+var now = time.Now
+
+// Collector prunes xet sha256 index entries no repository LFS pointer names; SweepStep reclaims the data afterwards,
+// then the shared git objects no repository reaches.
 //
 // Liveness is a git pointer in any repository.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
@@ -46,25 +52,28 @@ func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
 type Options struct {
 	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
 	DryRun     bool
-	MaxDeletes int           // max shard+xorb deletions per sweep, 0 = unlimited
+	MaxDeletes int           // max shard+xorb+git object deletions per sweep, 0 = unlimited
 	Budget     time.Duration // wall-clock cap per sweep, 0 = unlimited
 }
 
-// SweepResult reports one sweep step.
+// SweepResult reports one sweep step over both stores.
 type SweepResult struct {
-	DryRun           bool     `json:"dry_run"`
-	SweptShards      int      `json:"swept_shards"`
-	SweptXorbs       int      `json:"swept_xorbs"`
-	ReclaimedBytes   int64    `json:"reclaimed_bytes"`
-	SkippedInGrace   int      `json:"skipped_in_grace"`
-	Dangling         []string `json:"dangling"`          // OIDs whose data is missing; reported, never deleted
-	UnreadableShards []string `json:"unreadable_shards"` // treated live; no xorb deleted that pass
-	Done             bool     `json:"done"`
-	RemainingShards  int      `json:"remaining_shards"`
-	RemainingXorbs   int      `json:"remaining_xorbs"`
+	DryRun              bool     `json:"dry_run"`
+	SweptShards         int      `json:"swept_shards"`
+	SweptXorbs          int      `json:"swept_xorbs"`
+	SweptGitObjects     int      `json:"swept_git_objects"`
+	ReclaimedBytes      int64    `json:"reclaimed_bytes"`
+	SkippedInGrace      int      `json:"skipped_in_grace"`
+	Dangling            []string `json:"dangling"`          // OIDs whose data is missing; reported, never deleted
+	UnreadableShards    []string `json:"unreadable_shards"` // treated live; no xorb deleted that pass
+	Done                bool     `json:"done"`
+	RemainingShards     int      `json:"remaining_shards"`
+	RemainingXorbs      int      `json:"remaining_xorbs"`
+	RemainingGitObjects int      `json:"remaining_git_objects"`
 }
 
-// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Prune, so the store has a single sweeper.
+// SweepStep runs one bounded sweep step under the same lock as Prune, so the stores have a single sweeper:
+// xet's sha256-anchored pass first, then, once that pass is done, the shared git objects no repository reaches.
 func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
@@ -73,15 +82,22 @@ func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, 
 	return c.sweep(ctx, opts)
 }
 
+type gitObject struct {
+	hash plumbing.Hash
+	size int64
+}
+
 // sweep is the only place hfd builds xet's sweep options, always sha256-anchored; the caller holds c.mu.
+// MaxDeletes and Budget span both stores: the whole xet pass is charged, git marking is not.
 func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, error) {
+	start := now()
 	xr, err := c.gc.SweepStep(ctx, xetstorage.SweepOptions{
 		Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace, DryRun: opts.DryRun, MaxDeletes: opts.MaxDeletes, Budget: opts.Budget,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &SweepResult{
+	res := &SweepResult{
 		DryRun:           xr.DryRun,
 		SweptShards:      len(xr.SweptShards),
 		SweptXorbs:       len(xr.SweptXorbs),
@@ -92,7 +108,76 @@ func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, erro
 		Done:             xr.Done,
 		RemainingShards:  xr.RemainingShards,
 		RemainingXorbs:   xr.RemainingXorbs,
-	}, nil
+	}
+	if !xr.Done {
+		return res, nil
+	}
+
+	markStart := now()
+	// Keyed by hex so the ObjectID format field cannot split equal digests.
+	live := map[string]struct{}{}
+	_, err = c.forEachRepository(ctx, func(repo *repository.Repository) error {
+		return repo.WalkObjects(ctx, func(hash plumbing.Hash, _ plumbing.ObjectType) error {
+			live[hash.String()] = struct{}{}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	grace := opts.Grace
+	if grace == 0 {
+		grace = xetstorage.DefaultSweepGrace
+	}
+	cutoff := start.Add(-grace).Truncate(time.Second)
+	var dead []gitObject
+	err = repository.WalkSharedObjects(c.repos, func(hash plumbing.Hash, info fs.FileInfo) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := live[hash.String()]; ok {
+			return nil
+		}
+		if grace > 0 && (info.ModTime().IsZero() || !info.ModTime().Before(cutoff)) {
+			res.SkippedInGrace++
+			return nil
+		}
+		dead = append(dead, gitObject{hash: hash, size: info.Size()})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk shared objects: %w", err)
+	}
+	slices.SortFunc(dead, func(a, b gitObject) int { return a.hash.Compare(b.hash.Bytes()) })
+	start = start.Add(now().Sub(markStart))
+
+	swept := res.SweptShards + res.SweptXorbs
+	exhausted := func() bool {
+		return !opts.DryRun && ((opts.MaxDeletes > 0 && swept >= opts.MaxDeletes) ||
+			(opts.Budget > 0 && swept > 0 && now().Sub(start) >= opts.Budget))
+	}
+	for i, obj := range dead {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if exhausted() {
+			res.Done, res.RemainingGitObjects = false, len(dead)-i
+			return res, nil
+		}
+		if !opts.DryRun {
+			err := repository.RemoveSharedObject(c.repos, obj.hash)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("remove shared object %s: %w", obj.hash, err)
+			}
+			swept++
+		}
+		res.SweptGitObjects++
+		res.ReclaimedBytes += obj.size
+	}
+	return res, nil
 }
 
 // PruneOptions configures one prune run.
@@ -237,21 +322,34 @@ func (c *Collector) List(ctx context.Context) ([]Object, error) {
 
 // mark walks the repositories for LFS pointers, adding their OIDs to live and returning the repository count.
 func (c *Collector) mark(ctx context.Context, live map[string]struct{}) (int, error) {
+	return c.forEachRepository(ctx, func(repo *repository.Repository) error {
+		ptrs, err := repo.ScanLFSPointers(ctx)
+		if err != nil {
+			return err
+		}
+		for _, ptr := range ptrs {
+			live[ptr.OID()] = struct{}{}
+		}
+		return nil
+	})
+}
+
+// forEachRepository opens every repository under the root for fn and returns how many there were; any error aborts.
+func (c *Collector) forEachRepository(ctx context.Context, fn func(*repository.Repository) error) (int, error) {
 	if _, err := c.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
 	repos := 0
 	err := repository.Walk(ctx, c.repos, "/", func(path string) error {
+		if fi, err := c.repos.Stat(filepath.Join(path, "objects")); err == nil && !fi.IsDir() {
+			return fmt.Errorf("damaged repository %s: objects is not a directory", path)
+		}
 		repo, err := repository.Open(c.repos, path)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
-		ptrs, err := repo.ScanLFSPointers()
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", path, err)
-		}
-		for _, ptr := range ptrs {
-			live[ptr.OID()] = struct{}{}
+		if err := fn(repo); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
 		}
 		repos++
 		return nil
