@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -78,6 +79,67 @@ func (fs *sharedObjectsFS) ensure(repoPath string) error {
 		return nil
 	}
 	return util.WriteFile(fs.Filesystem, filename, []byte(want), 0o644)
+}
+
+// Listing metadata avoids an extra S3 HEAD request per object.
+func WalkSharedObjects(fs billy.Filesystem, fn func(hash plumbing.Hash, info os.FileInfo) error) error {
+	bound, ok := fs.(*sharedObjectsFS)
+	if !ok {
+		return nil
+	}
+	dirs, err := bound.objectsFS.ReadDir("objects")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, dir := range dirs {
+		if !dir.IsDir() || !isLooseObjectName(dir.Name(), 2) {
+			continue
+		}
+		entries, err := bound.objectsFS.ReadDir(path.Join("objects", dir.Name()))
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() || !isLooseObjectName(entry.Name(), 38) {
+				continue
+			}
+			info, err := entry.Info()
+			if errors.Is(err, iofs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if err := fn(plumbing.NewHash(dir.Name()+entry.Name()), info); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isLooseObjectName(name string, size int) bool {
+	if len(name) != size {
+		return false
+	}
+	for _, c := range name {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func RemoveSharedObject(fs billy.Filesystem, hash plumbing.Hash) error {
+	bound, ok := fs.(*sharedObjectsFS)
+	if !ok {
+		return nil
+	}
+	hex := hash.String()
+	return bound.objectsFS.Remove(path.Join("objects", hex[:2], hex[2:]))
 }
 
 // Do not embed filesystem.Storage: its DeltaObject only reads local objects.

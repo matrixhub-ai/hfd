@@ -103,6 +103,11 @@ func TestHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &sweep); err != nil || !sweep.Done || sweep.DryRun {
 		t.Fatalf("sweep body %s: err=%v result=%+v", rec.Body, err, sweep)
 	}
+	for _, field := range []string{`"swept_git_objects":0`, `"remaining_git_objects":0`} {
+		if !strings.Contains(rec.Body.String(), field) {
+			t.Fatalf("sweep body must report %s: %s", field, rec.Body)
+		}
+	}
 }
 
 // blockingStore parks the first shard walk until released; later walks pass through.

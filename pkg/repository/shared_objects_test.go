@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	iofs "io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path"
@@ -455,7 +457,7 @@ func TestSharedObjectsScanLFSPointers(t *testing.T) {
 	if _, err := bound.Stat(path.Join(repoPath, "objects", hash[:2], hash[2:])); !os.IsNotExist(err) {
 		t.Fatalf("local blob: want not exist, got %v", err)
 	}
-	pointers, err := repo.ScanLFSPointers()
+	pointers, err := repo.ScanLFSPointers(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,5 +466,122 @@ func TestSharedObjectsScanLFSPointers(t *testing.T) {
 	}
 	if got := pointers[0].OID(); got != oid {
 		t.Fatalf("pointer oid = %q, want %q", got, oid)
+	}
+}
+
+type readDirFailFS struct {
+	billy.Filesystem
+	err error
+}
+
+func (fs readDirFailFS) ReadDir(string) ([]iofs.DirEntry, error) { return nil, fs.err }
+
+func TestWalkSharedObjects(t *testing.T) {
+	dataDir := t.TempDir()
+	dataFS := osfs.New(dataDir)
+	bound := BindSharedObjects(dataFS, "/repositories", "/git/sha1")
+	repo, err := Init(t.Context(), bound, "/org/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("shared\n")
+	commit := plumbing.NewHash(mustCommit(t, repo, "main", "",
+		CommitOperation{Type: CommitOperationAdd, Path: "a.txt", Content: content}))
+	commitObject, err := repo.repo.CommitObject(commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := plumbing.NewHash(sharedBlobHash(content))
+	objectPath := func(hash plumbing.Hash) string {
+		hex := hash.String()
+		return path.Join("/git/sha1/objects", hex[:2], hex[2:])
+	}
+	// Any well-named regular file counts, whatever its content.
+	garbage := plumbing.NewHash("cd" + strings.Repeat("c", 38))
+	if err := util.WriteFile(dataFS, objectPath(garbage), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := map[plumbing.Hash]int64{}
+	for _, hash := range []plumbing.Hash{commit, commitObject.TreeHash, blob, garbage} {
+		info, err := dataFS.Stat(objectPath(hash))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[hash] = info.Size()
+	}
+	for _, name := range []string{"tmp_obj_1", "pack/pack-1.pack", "info/x", "ab/short",
+		"ab/" + strings.Repeat("g", 38), "ab/" + strings.Repeat("B", 38), "zz/" + strings.Repeat("d", 38)} {
+		if err := util.WriteFile(dataFS, path.Join("/git/sha1/objects", name), []byte("noise"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dataFS.MkdirAll("/git/sha1/objects/ef/"+strings.Repeat("e", 38), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dataDir, objectPath(blob)),
+		filepath.Join(dataDir, "git/sha1/objects/ef", strings.Repeat("f", 38))); err != nil {
+		t.Fatal(err)
+	}
+	walk := func(t *testing.T, fs billy.Filesystem) map[plumbing.Hash]int64 {
+		t.Helper()
+		got := map[plumbing.Hash]int64{}
+		err := WalkSharedObjects(fs, func(hash plumbing.Hash, info os.FileInfo) error {
+			if _, dup := got[hash]; dup || info.Name() != hash.String()[2:] {
+				t.Errorf("%s yielded as %s (seen before: %v)", hash, info.Name(), dup)
+			}
+			got[hash] = info.Size()
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WalkSharedObjects: %v", err)
+		}
+		return got
+	}
+	if got := walk(t, bound); !maps.Equal(got, want) {
+		t.Fatalf("WalkSharedObjects yielded %v, want %v", got, want)
+	}
+
+	if err := RemoveSharedObject(bound, blob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataFS.Stat(objectPath(blob)); !os.IsNotExist(err) {
+		t.Fatalf("removed blob: want not exist, got %v", err)
+	}
+	if _, err := bound.Stat("/org/repo.git/objects/info/alternates"); err != nil {
+		t.Fatalf("repository objects dir touched: %v", err)
+	}
+	delete(want, blob)
+	if got := walk(t, bound); !maps.Equal(got, want) {
+		t.Fatalf("after removal yielded %v, want %v", got, want)
+	}
+
+	none := func(hash plumbing.Hash, info os.FileInfo) error {
+		t.Errorf("fn called with %s", hash)
+		return nil
+	}
+	plain := osfs.New(t.TempDir())
+	if err := WalkSharedObjects(plain, none); err != nil {
+		t.Fatalf("unbound walk: %v", err)
+	}
+	if err := RemoveSharedObject(plain, commit); err != nil {
+		t.Fatalf("unbound removal: %v", err)
+	}
+	if err := WalkSharedObjects(BindSharedObjects(osfs.New(t.TempDir()), "/repositories", "/git/sha1"), none); err != nil {
+		t.Fatalf("absent store walk: %v", err)
+	}
+
+	errStop := errors.New("stop")
+	calls := 0
+	err = WalkSharedObjects(bound, func(plumbing.Hash, os.FileInfo) error {
+		calls++
+		return errStop
+	})
+	if err != errStop || calls != 1 {
+		t.Fatalf("abort: err = %v, calls = %d; want errStop after 1 call", err, calls)
+	}
+	errRead := errors.New("read failed")
+	broken := &sharedObjectsFS{objectsFS: readDirFailFS{err: errRead}}
+	if err := WalkSharedObjects(broken, none); !errors.Is(err, errRead) {
+		t.Fatalf("read error = %v, want %v", err, errRead)
 	}
 }

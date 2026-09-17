@@ -74,7 +74,7 @@ func TestScanLFSPointersMissingTreeFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.missing = subtree.Hash
-	if _, err := repo.ScanLFSPointers(); !errors.Is(err, plumbing.ErrObjectNotFound) {
+	if _, err := repo.ScanLFSPointers(t.Context()); !errors.Is(err, plumbing.ErrObjectNotFound) {
 		t.Fatalf("scan error = %v, want missing tree error", err)
 	}
 }
@@ -88,7 +88,7 @@ func TestScanLFSPointersSurfacesReadErrors(t *testing.T) {
 	repo := &Repository{repo: r}
 	mustCommit(t, repo, "main", "",
 		CommitOperation{Type: CommitOperationAdd, Path: "f", Content: []byte("not a pointer")})
-	if _, err := repo.ScanLFSPointers(); !errors.Is(err, errUnreadable) {
+	if _, err := repo.ScanLFSPointers(t.Context()); !errors.Is(err, errUnreadable) {
 		t.Fatalf("scan: got %v, want the blob read error surfaced", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestScanLFSPointersReachability(t *testing.T) {
 			}
 		}
 	}
-	pointers, err := repo.ScanLFSPointers()
+	pointers, err := repo.ScanLFSPointers(t.Context())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestScanLFSPointersTagTargets(t *testing.T) {
 			t.Fatalf("delete branch %s: %v", kind, err)
 		}
 	}
-	pointers, err := repo.ScanLFSPointers()
+	pointers, err := repo.ScanLFSPointers(t.Context())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}

@@ -3,7 +3,9 @@ package repository
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +18,9 @@ import (
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/storage/filesystem"
 	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
 
@@ -61,17 +66,23 @@ func IsRepository(fs billy.Filesystem, repoPath string) bool {
 	if _, ok := lruCache.Get(cacheKey{fs, repoPath}); ok {
 		return true
 	}
-	return hasHEAD(fs, repoPath)
+	ok, _ := hasHEAD(fs, repoPath)
+	return ok
 }
 
 // hasHEAD is IsRepository's on-disk check alone; lruCache.Get would promote the entry.
-func hasHEAD(fs billy.Filesystem, repoPath string) bool {
+func hasHEAD(fs billy.Filesystem, repoPath string) (bool, error) {
 	stat, err := fs.Stat(filepath.Join(repoPath, "HEAD"))
-	return err == nil && stat.Size() != 0
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return stat.Size() != 0, nil
 }
 
-// Walk calls fn with the path of every bare repository under root, in lexical order, never descending into one.
-// A directory that cannot be read, or a non-nil return from fn, aborts the walk with that error.
+// Walk visits bare repositories in lexical order without descending into them.
 func Walk(ctx context.Context, fs billy.Filesystem, root string, fn func(path string) error) error {
 	return walk(ctx, fs, root, fn)
 }
@@ -80,8 +91,14 @@ func walk(ctx context.Context, fs billy.Filesystem, dir string, fn func(path str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if strings.HasSuffix(dir, ".git") && hasHEAD(fs, dir) {
-		return fn(dir)
+	if strings.HasSuffix(dir, ".git") {
+		ok, err := hasHEAD(fs, dir)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return fn(dir)
+		}
 	}
 	entries, err := fs.ReadDir(dir)
 	if err != nil {
@@ -100,6 +117,137 @@ func walk(ctx context.Context, fs billy.Filesystem, dir string, fn func(path str
 		}
 	}
 	return nil
+}
+
+// Gitlinks are excluded; known blobs are yielded without reading their contents.
+func (r *Repository) WalkObjects(ctx context.Context, fn func(hash plumbing.Hash, typ plumbing.ObjectType) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	refs, err := r.repo.References()
+	if err != nil {
+		return fmt.Errorf("failed to get references: %w", err)
+	}
+	defer refs.Close()
+	w := &objectWalker{ctx: ctx, storer: r.repo.Storer, fn: fn, seen: map[plumbing.Hash]plumbing.ObjectType{}}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ref, err := refs.Next()
+		if err == io.EOF {
+			return ctx.Err()
+		}
+		if err != nil {
+			return fmt.Errorf("read references: %w", err)
+		}
+		if ref.Type() != plumbing.HashReference {
+			continue
+		}
+		if err := w.walk(ref); err != nil {
+			return err
+		}
+	}
+}
+
+type objectWalker struct {
+	ctx     context.Context
+	storer  storer.EncodedObjectStorer
+	fn      func(plumbing.Hash, plumbing.ObjectType) error
+	seen    map[plumbing.Hash]plumbing.ObjectType
+	ref     plumbing.ReferenceName
+	pending []link
+}
+
+// link is a queued object with the type its referrer declared; a ref root declares AnyObject.
+type link struct {
+	hash plumbing.Hash
+	typ  plumbing.ObjectType
+}
+
+// walk keeps commit parents and tag targets on an explicit stack so history depth never recurses.
+func (w *objectWalker) walk(ref *plumbing.Reference) error {
+	w.ref = ref.Name()
+	w.pending = append(w.pending[:0], link{ref.Hash(), plumbing.AnyObject})
+	for len(w.pending) > 0 {
+		next := w.pending[len(w.pending)-1]
+		w.pending = w.pending[:len(w.pending)-1]
+		if err := w.visit(next.hash, next.typ); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// visit loads hash, checks it against the declared typ and yields it once.
+// Reaching one hash as two types fails closed like C git instead of skipping a subtree.
+func (w *objectWalker) visit(hash plumbing.Hash, typ plumbing.ObjectType) error {
+	if err := w.ctx.Err(); err != nil {
+		return err
+	}
+	if known, ok := w.seen[hash]; ok {
+		if known == plumbing.BlobObject && (typ == plumbing.AnyObject || typ == plumbing.BlobObject) {
+			// An unread leaf named by a ref or tag must really be a blob.
+			obj, err := w.storer.EncodedObject(plumbing.AnyObject, hash)
+			if err != nil {
+				return fmt.Errorf("ref %s: read object %s: %w", w.ref, hash, err)
+			}
+			known, typ = obj.Type(), plumbing.BlobObject
+		}
+		if typ != plumbing.AnyObject && known != typ {
+			return fmt.Errorf("ref %s: object %s is a %s, expected %s", w.ref, hash, known, typ)
+		}
+		return nil
+	}
+	obj, err := object.GetObject(w.storer, hash)
+	if err != nil {
+		return fmt.Errorf("ref %s: read object %s: %w", w.ref, hash, err)
+	}
+	if typ != plumbing.AnyObject && obj.Type() != typ {
+		return fmt.Errorf("ref %s: object %s is a %s, expected %s", w.ref, hash, obj.Type(), typ)
+	}
+	w.seen[hash] = obj.Type()
+	if err := w.fn(hash, obj.Type()); err != nil {
+		return err
+	}
+	switch obj := obj.(type) {
+	case *object.Tag:
+		w.pending = append(w.pending, link{obj.Target, obj.TargetType})
+	case *object.Commit:
+		for _, parent := range obj.ParentHashes {
+			w.pending = append(w.pending, link{parent, plumbing.CommitObject})
+		}
+		return w.visit(obj.TreeHash, plumbing.TreeObject)
+	case *object.Tree:
+		for _, entry := range obj.Entries {
+			switch entry.Mode {
+			case filemode.Dir:
+				err = w.visit(entry.Hash, plumbing.TreeObject)
+			case filemode.Submodule:
+			default:
+				err = w.leaf(entry.Hash)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// leaf yields a tree entry's blob without loading it.
+func (w *objectWalker) leaf(hash plumbing.Hash) error {
+	if err := w.ctx.Err(); err != nil {
+		return err
+	}
+	if known, ok := w.seen[hash]; ok {
+		if known != plumbing.BlobObject {
+			return fmt.Errorf("ref %s: object %s is a %s, expected %s", w.ref, hash, known, plumbing.BlobObject)
+		}
+		return nil
+	}
+	w.seen[hash] = plumbing.BlobObject
+	return w.fn(hash, plumbing.BlobObject)
 }
 
 // IsValidGitProtocol reports whether value is a valid GIT_PROTOCOL string.
@@ -451,7 +599,7 @@ func (r *Repository) Move(newPath string) error {
 // DiskUsage returns the total disk usage of the repository in bytes.
 // This includes the on-disk size of the git repository directory plus the
 // declared sizes of any LFS-tracked objects (from their pointer files).
-func (r *Repository) DiskUsage() (int64, error) {
+func (r *Repository) DiskUsage(ctx context.Context) (int64, error) {
 	var total int64
 	err := util.Walk(r.fs, r.repoPath, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -468,7 +616,7 @@ func (r *Repository) DiskUsage() (int64, error) {
 
 	// Add declared LFS content sizes. LFS objects are stored outside the git
 	// repo directory, so the walk above only captures the tiny pointer blobs.
-	lfsPointers, err := r.ScanLFSPointers()
+	lfsPointers, err := r.ScanLFSPointers(ctx)
 	if err != nil {
 		return 0, err
 	}

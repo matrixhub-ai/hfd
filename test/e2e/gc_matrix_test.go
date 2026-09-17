@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -34,12 +37,15 @@ type gcObject struct {
 
 // gcSweepResult carries the gc.SweepResult fields the test asserts on.
 type gcSweepResult struct {
-	SweptShards     int   `json:"swept_shards"`
-	SweptXorbs      int   `json:"swept_xorbs"`
-	ReclaimedBytes  int64 `json:"reclaimed_bytes"`
-	Done            bool  `json:"done"`
-	RemainingShards int   `json:"remaining_shards"`
-	RemainingXorbs  int   `json:"remaining_xorbs"`
+	DryRun              bool  `json:"dry_run"`
+	SweptShards         int   `json:"swept_shards"`
+	SweptXorbs          int   `json:"swept_xorbs"`
+	SweptGitObjects     int   `json:"swept_git_objects"`
+	ReclaimedBytes      int64 `json:"reclaimed_bytes"`
+	Done                bool  `json:"done"`
+	RemainingShards     int   `json:"remaining_shards"`
+	RemainingXorbs      int   `json:"remaining_xorbs"`
+	RemainingGitObjects int   `json:"remaining_git_objects"`
 }
 
 // gcPruneResult carries the gc.PruneResult fields the test asserts on.
@@ -408,9 +414,10 @@ func TestGCSharedReferences(t *testing.T) {
 		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 1 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
 			t.Fatalf("prune = %+v, want 1 repository, 1 live object, nothing unlinked or skipped", prune)
 		}
+		// shared-a's own git objects are dead now; the xet content stays live through shared-b.
 		sweep := postSweep(t, s.httpURL)
-		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.SweptGitObjects <= 0 || sweep.ReclaimedBytes <= 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 || sweep.RemainingGitObjects != 0 {
+			t.Fatalf("sweep = %+v, want done with only shared-a's git objects reclaimed, nothing remaining", sweep)
 		}
 		assertGCObjects(t, s.httpURL, object)
 		if got := mustGet(t, s.httpURL+"/gc-org/shared-b/resolve/main/"+transferMatrixFile); !bytes.Equal(got, data) {
@@ -488,9 +495,10 @@ func TestGCHistoryReferences(t *testing.T) {
 		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 2 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
 			t.Fatalf("prune = %+v, want 1 repository, 2 live objects, nothing unlinked or skipped", prune)
 		}
+		// staging's own git objects are dead now; both pointers stay reachable from history's main and side.
 		sweep := postSweep(t, s.httpURL)
-		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.SweptGitObjects <= 0 || sweep.ReclaimedBytes <= 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 || sweep.RemainingGitObjects != 0 {
+			t.Fatalf("sweep = %+v, want done with only staging's git objects reclaimed, nothing remaining", sweep)
 		}
 		assertGCObjects(t, s.httpURL, gcObject{OID: historyOID, Size: uint64(len(historyData))}, gcObject{OID: branchOID, Size: uint64(len(branchData))})
 		for oid, data := range map[string][]byte{historyOID: historyData, branchOID: branchData} {
@@ -664,6 +672,175 @@ func TestGCPrune(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("legacy GC status = %d, want 404 (body %q)", resp.StatusCode, body)
+		}
+	})
+}
+
+// TestGCGitObjects sweeps a deleted repository's shared loose objects while the repository sharing a blob with it stays intact.
+func TestGCGitObjects(t *testing.T) {
+	const shared = "shared text\n"
+	s := newE2EServer(t, withInternalAPI())
+	fs := s.storage.FS()
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+	snapshot := func(t *testing.T) map[string]int64 {
+		t.Helper()
+		objects := map[string]int64{}
+		dirs, err := fs.ReadDir("/git/sha1/objects")
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read shared objects: %v", err)
+		}
+		for _, dir := range dirs {
+			if _, err := hex.DecodeString(dir.Name()); err != nil || !dir.IsDir() || len(dir.Name()) != 2 {
+				continue
+			}
+			entries, err := fs.ReadDir("/git/sha1/objects/" + dir.Name())
+			if err != nil {
+				t.Fatalf("read shared objects %s: %v", dir.Name(), err)
+			}
+			for _, entry := range entries {
+				if _, err := hex.DecodeString(entry.Name()); err != nil || entry.IsDir() || len(entry.Name()) != 38 {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					t.Fatalf("stat shared object %s%s: %v", dir.Name(), entry.Name(), err)
+				}
+				objects[dir.Name()+entry.Name()] = info.Size()
+			}
+		}
+		return objects
+	}
+	total := func(objects map[string]int64) int64 {
+		var sum int64
+		for _, size := range objects {
+			sum += size
+		}
+		return sum
+	}
+	push := func(t *testing.T, repo, unique string) (string, []string) {
+		t.Helper()
+		s.createRepo(t, "gc-org", repo)
+		remote, env := s.httpRemote("gc-org/" + repo)
+		dir := filepath.Join(t.TempDir(), repo)
+		runGit(t, "", env, "clone", remote, dir)
+		runGit(t, dir, env, "config", "user.email", "test@test.com")
+		runGit(t, dir, env, "config", "user.name", "Test User")
+		for name, content := range map[string]string{"shared.txt": shared, "unique.txt": unique} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		runGit(t, dir, env, "add", ".")
+		runGit(t, dir, env, "commit", "-m", "Add "+repo)
+		runGit(t, dir, env, "push", "origin", "main")
+		return dir, env
+	}
+	resolve := func(t *testing.T, repo, name, want string) {
+		t.Helper()
+		if got := mustGet(t, s.httpURL+"/gc-org/"+repo+"/resolve/main/"+name); string(got) != want {
+			t.Fatalf("%s resolve %s = %q, want %q", repo, name, got, want)
+		}
+	}
+
+	var initial, live map[string]int64
+	step("PushBoth", func(t *testing.T) {
+		push(t, "loose-a", "only in loose-a\n")
+		dir, env := push(t, "loose-b", "only in loose-b\n")
+		initial = snapshot(t)
+		live = map[string]int64{}
+		for _, line := range strings.Split(strings.TrimSpace(runGit(t, dir, env, "rev-list", "--objects", "--all")), "\n") {
+			hash, _, _ := strings.Cut(line, " ")
+			size, ok := initial[hash]
+			if !ok {
+				t.Fatalf("loose-b object %s missing from the shared store %v", hash, initial)
+			}
+			live[hash] = size
+		}
+		blob := strings.TrimSpace(runGit(t, dir, env, "rev-parse", "HEAD:shared.txt"))
+		if _, ok := live[blob]; !ok || len(initial) <= len(live) {
+			t.Fatalf("shared store %v, loose-b reaches %v, want the shared blob %s reachable and loose-a's own objects on top", initial, live, blob)
+		}
+		resolve(t, "loose-a", "shared.txt", shared)
+		resolve(t, "loose-b", "shared.txt", shared)
+	})
+	step("LiveSweep", func(t *testing.T) {
+		sweep := postSweep(t, s.httpURL)
+		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.SweptGitObjects != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 || sweep.RemainingGitObjects != 0 {
+			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		}
+		if got := snapshot(t); !maps.Equal(got, initial) {
+			t.Fatalf("shared store = %v after a live sweep, want %v", got, initial)
+		}
+		resolve(t, "loose-a", "unique.txt", "only in loose-a\n")
+		resolve(t, "loose-b", "unique.txt", "only in loose-b\n")
+	})
+	var dry, bounded gcSweepResult
+	step("DryRun", func(t *testing.T) {
+		s.deleteRepo(t, "gc-org", "loose-a")
+		dry = postSweep(t, s.httpURL, "dry_run=true", "max=1", "budget=1ns")
+		dead, deadBytes := len(initial)-len(live), total(initial)-total(live)
+		if !dry.DryRun || !dry.Done || dry.SweptShards != 0 || dry.SweptXorbs != 0 || dry.SweptGitObjects != dead || dead < 2 || dry.ReclaimedBytes != deadBytes || dry.RemainingShards != 0 || dry.RemainingXorbs != 0 || dry.RemainingGitObjects != 0 {
+			t.Fatalf("dry run = %+v, want done with all %d dead objects (%d bytes) reported despite the limits, nothing remaining", dry, dead, deadBytes)
+		}
+		if got := snapshot(t); !maps.Equal(got, initial) {
+			t.Fatalf("shared store = %v after a dry run, want %v", got, initial)
+		}
+		resolve(t, "loose-b", "shared.txt", shared)
+	})
+	step("OneDeletion", func(t *testing.T) {
+		bounded = postSweep(t, s.httpURL, "max=1")
+		if bounded.DryRun || bounded.Done || bounded.SweptShards != 0 || bounded.SweptXorbs != 0 || bounded.SweptGitObjects != 1 || bounded.RemainingGitObjects != dry.SweptGitObjects-1 {
+			t.Fatalf("bounded sweep = %+v after dry run %+v, want unfinished with 1 object swept and the rest remaining", bounded, dry)
+		}
+		got := snapshot(t)
+		if len(got) != len(initial)-1 || total(initial)-total(got) != bounded.ReclaimedBytes {
+			t.Fatalf("shared store = %v after bounded sweep %+v, want %v minus one object", got, bounded, initial)
+		}
+		for hash, size := range got {
+			if initial[hash] != size {
+				t.Fatalf("shared store gained %s (%d bytes) missing from %v", hash, size, initial)
+			}
+		}
+		for hash, size := range live {
+			if got[hash] != size {
+				t.Fatalf("shared store = %v lost loose-b's object %s (%d bytes)", got, hash, size)
+			}
+		}
+	})
+	step("Drain", func(t *testing.T) {
+		drain := postSweep(t, s.httpURL)
+		if !drain.Done || drain.SweptShards != 0 || drain.SweptXorbs != 0 || drain.SweptGitObjects != bounded.RemainingGitObjects || drain.ReclaimedBytes != dry.ReclaimedBytes-bounded.ReclaimedBytes || drain.RemainingGitObjects != 0 {
+			t.Fatalf("sweep = %+v after bounded = %+v and dry run = %+v, want the remaining objects and bytes reclaimed, done", drain, bounded, dry)
+		}
+		if got := snapshot(t); !maps.Equal(got, live) {
+			t.Fatalf("shared store = %v after draining, want exactly loose-b's objects %v", got, live)
+		}
+		remote, env := s.httpRemote("gc-org/loose-b")
+		dir := filepath.Join(t.TempDir(), "verify")
+		runGit(t, "", env, "clone", remote, dir)
+		runGit(t, dir, env, "fsck")
+		for name, want := range map[string]string{"shared.txt": shared, "unique.txt": "only in loose-b\n"} {
+			if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+				t.Fatalf("clone %s = %q (%v), want %q", name, got, err, want)
+			}
+		}
+	})
+	step("DeleteLast", func(t *testing.T) {
+		s.deleteRepo(t, "gc-org", "loose-b")
+		last := postSweep(t, s.httpURL)
+		if !last.Done || last.SweptShards != 0 || last.SweptXorbs != 0 || last.SweptGitObjects != len(live) || last.ReclaimedBytes != total(live) || last.RemainingGitObjects != 0 {
+			t.Fatalf("sweep = %+v after deleting the last repository, want all %d objects (%d bytes) reclaimed, done", last, len(live), total(live))
+		}
+		if got := snapshot(t); len(got) != 0 {
+			t.Fatalf("shared store = %v with no repositories left, want empty", got)
+		}
+		if again := postSweep(t, s.httpURL); !again.Done || again.SweptGitObjects != 0 || again.ReclaimedBytes != 0 || again.RemainingGitObjects != 0 {
+			t.Fatalf("second sweep = %+v, want done with nothing reclaimed or remaining", again)
 		}
 	})
 }

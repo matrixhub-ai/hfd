@@ -49,7 +49,7 @@ func (m *Mirror) PushToRemote(ctx context.Context, repoPath, repoName string, op
 	}
 
 	_, err, _ = m.pushGroup.Do(repoPath, func() (any, error) {
-		if err := m.pushMirrorLFS(repo, opt.DestinationURL); err != nil {
+		if err := m.pushMirrorLFS(ctx, repo, opt.DestinationURL); err != nil {
 			return nil, fmt.Errorf("failed to push LFS objects to remote: %w", err)
 		}
 
@@ -113,14 +113,12 @@ func buildPushRefspecs(refs []string) (refspecs []string, prune bool) {
 }
 
 // pushMirrorLFS uploads LFS objects referenced by the repository to the remote LFS endpoint.
-func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) error {
+func (m *Mirror) pushMirrorLFS(ctx context.Context, repo *repository.Repository, destURL string) error {
 	if m.xetStorage == nil {
 		return nil
 	}
 
-	ctx := context.Background()
-
-	lfsPointers, err := repo.ScanLFSPointers()
+	lfsPointers, err := repo.ScanLFSPointers(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to scan LFS pointers: %w", err)
 	}
