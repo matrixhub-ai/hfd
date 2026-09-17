@@ -23,10 +23,11 @@ import (
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoType := vars["repoType"]
-	if !h.checkPermission(w, r, permission.OperationListRepos, repoType, permission.Context{}) {
+	filter := parseRepoListFilter(r)
+	if !h.checkPermission(w, r, permission.OperationListRepos, repoType, permission.Context{Author: filter.author}) {
 		return
 	}
-	h.handleListRepos(w, r, repoType)
+	h.handleListRepos(w, r, repoType, filter)
 }
 
 // repoListFilter holds the parsed query parameters for listing repositories.
@@ -58,9 +59,7 @@ func parseRepoListFilter(r *http.Request) repoListFilter {
 }
 
 // handleListRepos is the unified handler for listing models, datasets, or spaces.
-func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoType string) {
-	f := parseRepoListFilter(r)
-
+func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoType string, f repoListFilter) {
 	isModel := repoType == "models"
 
 	baseDir := "/"

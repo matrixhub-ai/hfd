@@ -27,7 +27,7 @@ const (
 	OperationReadRepo = operationAboutRead | operationAboutRepo
 	// OperationUpdateRepo represents updating repository settings.
 	OperationUpdateRepo = operationAboutUpdate | operationAboutRepo
-	// OperationListRepos represents listing repositories of a type; repoName is the type segment.
+	// OperationListRepos lists a type (repoName), optionally scoped by Context.Author.
 	OperationListRepos = operationAboutRead | operationAboutList
 )
 
@@ -77,6 +77,8 @@ type Context struct {
 	Ref string
 	// DestRepo is the destination repository name (for move operations).
 	DestRepo string
+	// Author is the namespace a list operation is scoped to; empty means all namespaces.
+	Author string
 }
 
 // PermissionHookFunc is a function that checks whether an operation on a repository is allowed.

@@ -18,35 +18,48 @@ import (
 )
 
 func TestHandleListPermission(t *testing.T) {
+	authors := []struct {
+		name, query, want string
+	}{
+		{"NoAuthor", "", ""},
+		{"Author", "?author=alice", "alice"},
+		{"EncodedAuthor", "?author=my%20org%2Fteam&limit=1", "my org/team"},
+	}
+	seedRepo := map[string]string{"models": "alice/hidden-repo.git", "datasets": "datasets/alice/hidden-repo.git"}
 	for _, repoType := range []string{"models", "datasets"} {
-		t.Run(repoType, func(t *testing.T) {
-			var gotOp permission.Operation
-			var gotRepo string
-			calls := 0
-			hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-				calls++
-				gotOp, gotRepo = op, repoName
-				if opCtx != (permission.Context{}) {
-					t.Errorf("unexpected permission context: %+v", opCtx)
+		for _, tc := range authors {
+			t.Run(repoType+"/"+tc.name, func(t *testing.T) {
+				dataDir := t.TempDir()
+				if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(seedRepo[repoType])), "main"); err != nil {
+					t.Fatalf("Init: %v", err)
 				}
-				return false, nil
-			}
-			handler := NewHandler(
-				WithStorage(storage.NewStorage(storage.WithRootDir(t.TempDir()))),
-				WithPermissionHookFunc(hook),
-			)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/"+repoType, nil))
-			if response.Code != http.StatusForbidden {
-				t.Errorf("status=%d, want 403; body=%s", response.Code, response.Body.String())
-			}
-			if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
-				t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
-			}
-			if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != repoType {
-				t.Errorf("hook calls=%d, op=%s, repo=%q; want 1, list_repos, %q", calls, gotOp, gotRepo, repoType)
-			}
-		})
+				var gotOp permission.Operation
+				var gotRepo string
+				var gotCtx permission.Context
+				calls := 0
+				hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+					calls++
+					gotOp, gotRepo, gotCtx = op, repoName, opCtx
+					return false, nil
+				}
+				handler := NewHandler(
+					WithStorage(storage.NewStorage(storage.WithRootDir(dataDir))),
+					WithPermissionHookFunc(hook),
+				)
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/"+repoType+tc.query, nil))
+				if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "hidden-repo") {
+					t.Errorf("status=%d, want 403 with no repositories enumerated; body=%s", response.Code, response.Body.String())
+				}
+				if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
+					t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
+				}
+				want := permission.Context{Author: tc.want}
+				if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != repoType || gotCtx != want {
+					t.Errorf("hook calls=%d, op=%s, repo=%q, ctx=%+v; want 1, list_repos, %q, %+v", calls, gotOp, gotRepo, gotCtx, repoType, want)
+				}
+			})
+		}
 	}
 }
 
