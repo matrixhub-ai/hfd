@@ -30,7 +30,7 @@ type Handler struct {
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
-type PreOpenHookFunc func(ctx context.Context, repoPath string, write bool) error
+type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
@@ -200,7 +200,11 @@ func getRepoInformation(r *http.Request) repoInformation {
 	}
 }
 
-func (h *Handler) openRepo(ctx context.Context, repoPath, repoName string, write bool) (*repository.Repository, error) {
+func (h *Handler) openRepo(ctx context.Context, repoName string, write bool) (*repository.Repository, error) {
+	repoPath := repository.ResolvePath(repoName)
+	if repoPath == "" {
+		return nil, repository.ErrRepositoryNotExists
+	}
 	if err := h.preOpenHook(ctx, repoName, write); err != nil {
 		return nil, err
 	}
@@ -216,21 +220,10 @@ func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op per
 	}.Allow(w, r, op, repoName, permCtx)
 }
 
-// resolveRepoPath resolves storageName to its storage path, writing a 404
-// naming displayName when it cannot be resolved.
-func (h *Handler) resolveRepoPath(w http.ResponseWriter, storageName, displayName string) (string, bool) {
-	repoPath := repository.ResolvePath(storageName)
-	if repoPath == "" {
-		responseJSON(w, fmt.Errorf("repository %q not found", displayName), http.StatusNotFound)
-		return "", false
-	}
-	return repoPath, true
-}
-
 // openRepoChecked opens the repository via the pre-open hook, mapping open
 // errors to HTTP responses.
-func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPath, repoName string, write bool) (*repository.Repository, bool) {
-	repo, err := h.openRepo(r.Context(), repoPath, repoName, write)
+func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoName string, write bool) (*repository.Repository, bool) {
+	repo, err := h.openRepo(r.Context(), repoName, write)
 	if err != nil {
 		respondOpenRepoError(w, repoName, err)
 		return nil, false
@@ -240,10 +233,15 @@ func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoPa
 
 // openRepoDirect opens the repository without the pre-open hook, for
 // operations that must not trigger a mirror sync (delete/move/squash).
-func (h *Handler) openRepoDirect(w http.ResponseWriter, repoPath, displayName string) (*repository.Repository, bool) {
+func (h *Handler) openRepoDirect(w http.ResponseWriter, repoName string) (*repository.Repository, bool) {
+	repoPath := repository.ResolvePath(repoName)
+	if repoPath == "" {
+		respondOpenRepoError(w, repoName, repository.ErrRepositoryNotExists)
+		return nil, false
+	}
 	repo, err := repository.Open(h.storage.RepositoriesFS(), repoPath)
 	if err != nil {
-		respondOpenRepoError(w, displayName, err)
+		respondOpenRepoError(w, repoName, err)
 		return nil, false
 	}
 	return repo, true

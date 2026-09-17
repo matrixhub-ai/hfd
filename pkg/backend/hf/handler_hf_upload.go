@@ -160,11 +160,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
-	if !ok {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, repoPath, ri.RepoName)
+	repo, ok := h.openRepoDirect(w, ri.RepoName)
 	if !ok {
 		return
 	}
@@ -205,11 +201,6 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name, email := commitAuthorIdentity(r.Context())
-
-	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
-	if !ok {
-		return
-	}
 
 	// Parse NDJSON body
 	scanner := bufio.NewScanner(r.Body)
@@ -303,7 +294,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open the repository
-	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, true)
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
 	}

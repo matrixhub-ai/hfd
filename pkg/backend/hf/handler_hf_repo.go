@@ -21,11 +21,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
-	if !ok {
-		return
-	}
-	repo, ok := h.openRepoChecked(w, r, repoPath, ri.RepoName, false)
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return
 	}

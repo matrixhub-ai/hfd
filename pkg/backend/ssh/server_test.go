@@ -6,12 +6,14 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
@@ -860,4 +863,91 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 			t.Errorf("Expected user 'admin', got %q", id.Name())
 		}
 	})
+}
+
+func TestSSHPreOpenHook(t *testing.T) {
+	repoDir := t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(repoDir))
+	runGitCmd(t, "", nil, "init", "--bare", filepath.Join(repoDir, "repositories", "test-repo.git"))
+
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatalf("Failed to generate host key: %v", err)
+	}
+
+	type call struct {
+		name  string
+		write bool
+	}
+	var mu sync.Mutex
+	var calls []call
+	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(st),
+		backendssh.WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
+			mu.Lock()
+			calls = append(calls, call{repoName, write})
+			mu.Unlock()
+			if repoName == "/late.git" {
+				_, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(repoName), "main")
+				return err
+			}
+			return nil
+		}))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		_ = server.Serve(t.Context(), listener)
+	}()
+
+	for _, test := range []struct {
+		name   string
+		cmd    string
+		exit   int
+		stderr string
+		calls  []call
+	}{
+		{"UploadPack", "git-upload-pack 'test-repo'", 0, "", []call{{"test-repo", false}}},
+		{"ReceivePack", "git-receive-pack '/test-repo.git'", 0, "", []call{{"/test-repo.git", true}}},
+		{"HookCreatesRepository", "git-upload-pack '/late.git'", 0, "", []call{{"/late.git", false}}},
+		{"MissingRepository", "git-upload-pack '/missing.git'", 1, "repository not found\n", []call{{"/missing.git", false}}},
+		{"InvalidName", "git-upload-pack '/org/../repo.git'", 1, "repository not found\n", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mu.Lock()
+			calls = nil
+			mu.Unlock()
+			client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{User: "git", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
+			if err != nil {
+				t.Fatalf("Failed to dial SSH: %v", err)
+			}
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				t.Fatalf("Failed to create session: %v", err)
+			}
+			defer session.Close()
+			var stderr strings.Builder
+			// A lone flush packet ends the service right after the advertisement.
+			session.Stdin = strings.NewReader("0000")
+			session.Stderr = &stderr
+			exit := 0
+			if err := session.Run(test.cmd); err != nil {
+				var exitErr *ssh.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("%s: %v", test.cmd, err)
+				}
+				exit = exitErr.ExitStatus()
+			}
+			if exit != test.exit || stderr.String() != test.stderr {
+				t.Errorf("exit = %d, stderr = %q; want %d, %q", exit, stderr.String(), test.exit, test.stderr)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(calls, test.calls) {
+				t.Errorf("hook calls = %v, want %v", calls, test.calls)
+			}
+		})
+	}
 }

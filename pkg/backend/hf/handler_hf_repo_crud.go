@@ -31,17 +31,13 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationDeleteRepo, storageName, permission.Context{}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, storageName, repoName)
-	if !ok {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, repoPath, repoName)
+	repo, ok := h.openRepoDirect(w, storageName)
 	if !ok {
 		return
 	}
 
 	if err := repo.Remove(); err != nil {
-		responseJSON(w, fmt.Errorf("failed to delete repository %q: %v", repoName, err), http.StatusInternalServerError)
+		responseJSON(w, fmt.Errorf("failed to delete repository %q: %v", storageName, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -71,20 +67,14 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromPath := repository.ResolvePath(fromName)
-	if fromPath == "" {
-		responseJSON(w, fmt.Errorf("invalid source repository: %q", req.FromRepo), http.StatusBadRequest)
+	repo, ok := h.openRepoDirect(w, fromName)
+	if !ok {
 		return
 	}
 
 	toPath := repository.ResolvePath(toName)
 	if toPath == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
-		return
-	}
-
-	repo, ok := h.openRepoDirect(w, fromPath, req.FromRepo)
-	if !ok {
 		return
 	}
 
@@ -109,13 +99,7 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-	repoPath, ok := h.resolveRepoPath(w, ri.RepoName, ri.RepoName)
-	if !ok {
-		return
-	}
-
-	if !repository.IsRepository(h.storage.RepositoriesFS(), repoPath) {
-		responseJSON(w, fmt.Errorf("repository %q not found", ri.RepoName), http.StatusNotFound)
+	if _, ok := h.openRepoDirect(w, ri.RepoName); !ok {
 		return
 	}
 

@@ -1,7 +1,9 @@
 package hf
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -47,6 +50,92 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Cleanup(func() { server.Close() })
 
 	return server, dataDir
+}
+
+// TestHuggingFacePreOpenHook pins what the pre-open hook observes: the
+// request's repository name and write flag, that it runs before the open so
+// it can create the repository, that its errors map like open errors, and
+// that direct operations never reach it.
+func TestHuggingFacePreOpenHook(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	repo, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath("datasets/org/repo"), "main")
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := repo.CreateCommit(ctx, "main", "init", "Test", "test@test.com",
+		[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "README.md", Content: []byte("# Test\n")}}, ""); err != nil {
+		t.Fatalf("create commit: %v", err)
+	}
+
+	type call struct {
+		name  string
+		write bool
+	}
+	var calls []call
+	var hookErr error
+	h := NewHandler(WithStorage(st), WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
+		calls = append(calls, call{repoName, write})
+		if hookErr != nil {
+			return hookErr
+		}
+		if repoName == "org/late" {
+			_, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(repoName), "main")
+			return err
+		}
+		return nil
+	}))
+	do := func(t *testing.T, method, target, body string, want int) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, target, strings.NewReader(body)))
+		if rec.Code != want {
+			t.Fatalf("%s %s: status = %d, want %d: %s", method, target, rec.Code, want, rec.Body)
+		}
+	}
+
+	t.Run("ForwardsNameAndWrite", func(t *testing.T) {
+		calls = nil
+		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusOK)
+		do(t, http.MethodPost, "/api/datasets/org/repo/tag/main", `{"tag":"v1"}`, http.StatusOK)
+		want := []call{{"datasets/org/repo", false}, {"datasets/org/repo", true}}
+		if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+			t.Fatalf("hook calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("RunsBeforeOpen", func(t *testing.T) {
+		do(t, http.MethodGet, "/api/models/org/late", "", http.StatusOK)
+	})
+
+	t.Run("ErrorMapsLikeOpen", func(t *testing.T) {
+		hookErr = repository.ErrRepositoryNotExists
+		defer func() { hookErr = nil }()
+		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusNotFound)
+	})
+
+	t.Run("InvalidNameSkipsHook", func(t *testing.T) {
+		calls = nil
+		if _, err := h.openRepo(ctx, "x/../repo", true); !errors.Is(err, repository.ErrRepositoryNotExists) {
+			t.Fatalf("openRepo error = %v, want ErrRepositoryNotExists", err)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("hook calls = %v, want none", calls)
+		}
+	})
+
+	t.Run("DirectOperationsBypass", func(t *testing.T) {
+		calls = nil
+		do(t, http.MethodPost, "/api/datasets/org/repo/preupload/main", `{"files":[{"path":"a.txt","size":1}]}`, http.StatusOK)
+		do(t, http.MethodPost, "/api/datasets/org/repo/branch/feature", `{"startingPoint":"main"}`, http.StatusOK)
+		do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
+		do(t, http.MethodPost, "/api/datasets/org/repo/super-squash/main", `{"message":"squash"}`, http.StatusOK)
+		do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
+		do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
+		if len(calls) != 0 {
+			t.Fatalf("hook calls = %v, want none", calls)
+		}
+	})
 }
 
 func TestHuggingFaceCreateRepo(t *testing.T) {
