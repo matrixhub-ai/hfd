@@ -865,10 +865,6 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 	})
 }
 
-// TestSSHPreOpenHook pins what the pre-open hook observes: the command's
-// repository name and write flag, that it runs before the open so it can
-// create the repository, and that a missing repository exits 1 after the hook
-// while an interior ".." never reaches it.
 func TestSSHPreOpenHook(t *testing.T) {
 	repoDir := t.TempDir()
 	st := storage.NewStorage(storage.WithRootDir(repoDir))
@@ -912,7 +908,7 @@ func TestSSHPreOpenHook(t *testing.T) {
 		stderr string
 		calls  []call
 	}{
-		{"UploadPack", "git-upload-pack '/test-repo.git'", 0, "", []call{{"/test-repo.git", false}}},
+		{"UploadPack", "git-upload-pack 'test-repo'", 0, "", []call{{"test-repo", false}}},
 		{"ReceivePack", "git-receive-pack '/test-repo.git'", 0, "", []call{{"/test-repo.git", true}}},
 		{"HookCreatesRepository", "git-upload-pack '/late.git'", 0, "", []call{{"/late.git", false}}},
 		{"MissingRepository", "git-upload-pack '/missing.git'", 1, "repository not found\n", []call{{"/missing.git", false}}},

@@ -290,10 +290,6 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 	})
 }
 
-// TestHTTPHandlerPreOpenHook pins what the pre-open hook observes: the
-// route's repository name and write flag, that it runs before the open so it
-// can create the repository, and that a missing repository answers 404 after
-// the hook while an interior ".." never reaches it.
 func TestHTTPHandlerPreOpenHook(t *testing.T) {
 	dataDir := t.TempDir()
 	st := storage.NewStorage(storage.WithRootDir(dataDir))
