@@ -107,6 +107,23 @@ func TestHuggingFaceDeleteRepoNotFound(t *testing.T) {
 	}
 }
 
+func TestHuggingFaceDeleteRepoInvalidName(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	deleteBody := `{"type":"model","name":"../repo","organization":"x"}`
+	req, _ := http.NewRequest(http.MethodDelete, endpoint+"/api/repos/delete", strings.NewReader(deleteBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to delete repo: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected 404, got %d", resp.StatusCode)
+	}
+}
+
 func TestHuggingFaceDeleteDatasetRepo(t *testing.T) {
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
