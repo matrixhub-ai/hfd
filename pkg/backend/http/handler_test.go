@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -286,4 +288,59 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 			t.Errorf("Expected operation %v, got %v", permission.OperationReadRepo, capturedOp)
 		}
 	})
+}
+
+// TestHTTPHandlerPreOpenHook pins what the pre-open hook observes: the
+// route's repository name and write flag, that it runs before the open so it
+// can create the repository, and that a missing repository answers 404 after
+// the hook while an interior ".." never reaches it.
+func TestHTTPHandlerPreOpenHook(t *testing.T) {
+	dataDir := t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(dataDir))
+	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "test-repo.git"))
+
+	type call struct {
+		name  string
+		write bool
+	}
+	var calls []call
+	handler := backendhttp.NewHandler(
+		backendhttp.WithStorage(st),
+		backendhttp.WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
+			calls = append(calls, call{repoName, write})
+			if repoName == "late" {
+				_, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(repoName), "main")
+				return err
+			}
+			return nil
+		}),
+	)
+	for _, test := range []struct {
+		name   string
+		method string
+		target string
+		body   string
+		want   int
+		calls  []call
+	}{
+		{"InfoRefsRead", http.MethodGet, "/test-repo.git/info/refs?service=git-upload-pack", "", http.StatusOK, []call{{"test-repo", false}}},
+		{"InfoRefsWrite", http.MethodGet, "/test-repo.git/info/refs?service=git-receive-pack", "", http.StatusOK, []call{{"test-repo", true}}},
+		{"ReceivePack", http.MethodPost, "/test-repo.git/git-receive-pack", "0000", http.StatusOK, []call{{"test-repo", true}}},
+		{"HookCreatesRepository", http.MethodGet, "/late.git/info/refs?service=git-upload-pack", "", http.StatusOK, []call{{"late", false}}},
+		{"MissingRepository", http.MethodGet, "/missing.git/info/refs?service=git-upload-pack", "", http.StatusNotFound, []call{{"missing", false}}},
+		// The router redirects to the cleaned path, so the handler never sees an interior "..".
+		{"InvalidName", http.MethodGet, "/org/../repo.git/info/refs?service=git-upload-pack", "", http.StatusMovedPermanently, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls = nil
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(test.method, test.target, strings.NewReader(test.body)))
+			if rec.Code != test.want {
+				t.Errorf("status = %d, want %d; body = %q", rec.Code, test.want, rec.Body.String())
+			}
+			if !slices.Equal(calls, test.calls) {
+				t.Errorf("hook calls = %v, want %v", calls, test.calls)
+			}
+		})
+	}
 }
