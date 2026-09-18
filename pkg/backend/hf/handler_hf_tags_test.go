@@ -74,11 +74,11 @@ func TestHandleTagsByType(t *testing.T) {
 	endpoint := server.URL
 
 	seedRepoFiles(t, endpoint, "model", "org", "model-a", map[string]string{
-		"README.md":   "---\nlanguage:\n- en\n- zh\nlicense: mit\npipeline_tag: text-classification\nlibrary_name: transformers\ndatasets:\n- imdb\ntags:\n- pytorch\n- safetensors\n- custom-thing\n- arxiv:1234.56789\n- dataset:org/ds\n- region:us\n- base_model:finetune:org/base\n---\n# A\n",
+		"README.md":   "---\nlanguage:\n- en\n- zh\nlicense: mit\npipeline_tag: text-classification\nlibrary_name: transformers\ndatasets:\n- imdb\ntags:\n- pytorch\n- safetensors\n- custom-thing\n- endpoints_compatible\n- arxiv:1234.56789\n- dataset:org/ds\n- region:us\n- base_model:finetune:org/base\n---\n# A\n",
 		"config.json": `{"model_type":"llama","quantization_config":{"quant_method":"fp8"}}`,
 	})
 	seedRepoFiles(t, endpoint, "model", "org", "model-b", map[string]string{
-		"README.md": "---\nlanguage: en\nlicense: mit\npipeline_tag: my-pipeline\nlibrary_name: my-lib\ntags:\n- pytorch\n---\n# B\n",
+		"README.md": "---\nlanguage: en\nlicense: mit\npipeline_tag: my-pipeline\nlibrary_name: my-lib\ntags:\n- pytorch\n- deploy:sagemaker\n---\n# B\n",
 	})
 	seedRepoFiles(t, endpoint, "model", "org", "model-empty", nil)
 	seedRepoFiles(t, endpoint, "dataset", "org", "ds", map[string]string{
@@ -98,7 +98,9 @@ func TestHandleTagsByType(t *testing.T) {
 			{"id":"llama","label":"llama","type":"other","clickable":true}],
 		"license": [{"id":"license:mit","label":"mit","type":"license"}],
 		"language": [{"id":"en","label":"en","type":"language"},{"id":"zh","label":"zh","type":"language"}],
-		"deploy": [],
+		"deploy": [
+			{"id":"deploy:sagemaker","label":"sagemaker","type":"deploy"},
+			{"id":"endpoints_compatible","label":"Inference Endpoints","type":"deploy","clickable":true}],
 		"dataset": [{"id":"dataset:imdb","label":"imdb","type":"dataset"},{"id":"dataset:org/ds","label":"org/ds","type":"dataset"}],
 		"bucket": [],
 		"pipeline_tag": [
@@ -138,7 +140,8 @@ func TestHandleTagsByType(t *testing.T) {
 		`{"id":"pytorch","label":"PyTorch","type":"library"}`,
 		`{"id":"text-classification","label":"Text Classification","type":"pipeline_tag","subType":"nlp"}`,
 		`{"id":"custom-thing","label":"custom-thing","type":"other","clickable":true}`,
-		`"deploy":[]`,
+		`{"id":"endpoints_compatible","label":"Inference Endpoints","type":"deploy","clickable":true}`,
+		`"bucket":[]`,
 	} {
 		if !strings.Contains(body, item) {
 			t.Errorf("models body lacks %s: %s", item, body)

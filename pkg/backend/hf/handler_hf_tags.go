@@ -160,6 +160,8 @@ func classifyRepoTags(repoType string, meta repoMetadata, add func(category, val
 			add("pipeline_tag", tag)
 		case tag == card.LibraryName || (isModel && isLibrary):
 			add("library", tag)
+		case isModel && tag == "endpoints_compatible":
+			add("deploy", tag)
 		case prefixed:
 			if slices.Contains(tagCategories[repoType], prefix) && tagFacetFor(repoType, prefix, value).ID == tag {
 				add(prefix, value)
@@ -185,13 +187,17 @@ func classifyRepoTags(repoType string, meta repoMetadata, add func(category, val
 	}
 }
 
-// tagFacetFor builds the HF-shaped facet: ids are "category:value" except for other and, on
-// models, library, pipeline_tag and language, which HF keeps bare.
+// tagFacetFor builds the HF-shaped facet: ids are "category:value" except for other, endpoints_compatible
+// and, on models, library, pipeline_tag and language, which HF keeps bare.
 func tagFacetFor(repoType, category, value string) tagFacet {
 	f := tagFacet{ID: category + ":" + value, Label: value, Type: category}
 	switch category {
 	case "other":
 		f.ID, f.Clickable = value, true
+	case "deploy":
+		if value == "endpoints_compatible" {
+			f.ID, f.Label, f.Clickable = value, "Inference Endpoints", true
+		}
 	case "pipeline_tag":
 		f.ID = value
 		if p, ok := pipelineTaxonomy[value]; ok {
