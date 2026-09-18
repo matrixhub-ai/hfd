@@ -4,7 +4,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 
 | Status | Method | Path | Tags | Description |
 |:------:|--------|------|------|-------------|
-| ❌ | `GET` | `/api/models-tags-by-type` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models-tags-by-type) | Get model tags |
+| ✅ | `GET` | `/api/models-tags-by-type` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models-tags-by-type) | Get model tags |
 | ✅ | `POST` | `/api/models/{namespace}/{repo}/branch/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/branch/{rev}) | Create branch |
 | ✅ | `DELETE` | `/api/models/{namespace}/{repo}/branch/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/DELETE/api/models/{namespace}/{repo}/branch/{rev}) | Delete a branch |
 | ✅ | `POST` | `/api/models/{namespace}/{repo}/commit/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/commit/{rev}) | Commit |
@@ -41,7 +41,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/{namespace}/{repo}/ask-access` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/{namespace}/{repo}/ask-access) | Request access |
 | ✅ | `GET` | `/{namespace}/{repo}/resolve/{rev}/{path}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/{namespace}/{repo}/resolve/{rev}/{path}) | Resolve a file |
 | ❌ | `GET` | `/{namespace}/{repo}/user-access-report` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/{namespace}/{repo}/user-access-report) | Export access report |
-| ❌ | `GET` | `/api/datasets-tags-by-type` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets-tags-by-type) | Get dataset tags |
+| ✅ | `GET` | `/api/datasets-tags-by-type` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets-tags-by-type) | Get dataset tags |
 | ✅ | `POST` | `/api/datasets/{namespace}/{repo}/branch/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/branch/{rev}) | Create branch |
 | ✅ | `DELETE` | `/api/datasets/{namespace}/{repo}/branch/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/DELETE/api/datasets/{namespace}/{repo}/branch/{rev}) | Delete a branch |
 | ✅ | `POST` | `/api/datasets/{namespace}/{repo}/commit/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/commit/{rev}) | Commit |

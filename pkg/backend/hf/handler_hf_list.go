@@ -95,37 +95,40 @@ func (h *Handler) handleListRepos(w http.ResponseWriter, r *http.Request, repoTy
 	responseJSON(w, items, http.StatusOK)
 }
 
+// repoRoots returns the namespace directories to walk under baseDir, or only author's.
+func repoRoots(fs billy.Filesystem, baseDir string, isModel bool, author string) []string {
+	if author != "" {
+		// An author is one path element; a slash or dot path would walk out of its namespace.
+		if strings.Contains(author, "/") || author == "." || author == ".." || (isModel && (author == "datasets" || author == "spaces")) {
+			return nil
+		}
+		return []string{filepath.Join(baseDir, author)}
+	}
+	namespaces, err := fs.ReadDir(baseDir)
+	if err != nil {
+		return nil
+	}
+	var roots []string
+	for _, nsEntry := range namespaces {
+		if !nsEntry.IsDir() {
+			continue
+		}
+		nsName := nsEntry.Name()
+
+		// For models, skip the datasets/ and spaces/ directories
+		if isModel && (nsName == "datasets" || nsName == "spaces") {
+			continue
+		}
+		roots = append(roots, filepath.Join(baseDir, nsName))
+	}
+	return roots
+}
+
 // buildRepoListItems walks the namespaces under baseDir (or only f.author's) and returns the
 // list items passing the search and tag filters, with metadata read from each repository.
 func buildRepoListItems(ctx context.Context, fs billy.Filesystem, baseDir string, isModel bool, f repoListFilter) []repoListItem {
-	var roots []string
-	if f.author != "" {
-		// An author is one path element; a slash or dot path would walk out of its namespace.
-		if strings.Contains(f.author, "/") || f.author == "." || f.author == ".." || (isModel && (f.author == "datasets" || f.author == "spaces")) {
-			return nil
-		}
-		roots = []string{filepath.Join(baseDir, f.author)}
-	} else {
-		namespaces, err := fs.ReadDir(baseDir)
-		if err != nil {
-			return nil
-		}
-		for _, nsEntry := range namespaces {
-			if !nsEntry.IsDir() {
-				continue
-			}
-			nsName := nsEntry.Name()
-
-			// For models, skip the datasets/ and spaces/ directories
-			if isModel && (nsName == "datasets" || nsName == "spaces") {
-				continue
-			}
-			roots = append(roots, filepath.Join(baseDir, nsName))
-		}
-	}
-
 	var items []repoListItem
-	for _, root := range roots {
+	for _, root := range repoRoots(fs, baseDir, isModel, f.author) {
 		// An unreadable directory ends this namespace's walk; the others still get listed.
 		_ = repository.Walk(ctx, fs, root, func(path string) error {
 			rel, _ := filepath.Rel(baseDir, path)
@@ -168,6 +171,7 @@ type repoMetadata struct {
 	pipelineTag string
 	libraryName string
 	cardData    any
+	card        hfmeta.Card
 }
 
 // collectRepoMetadata reads metadata from an already-opened repository at the
@@ -198,6 +202,7 @@ func collectRepoMetadata(repo *repository.Repository, rev string) repoMetadata {
 				meta.pipelineTag = rm.Card.PipelineTag
 				meta.libraryName = rm.Card.LibraryName
 				meta.cardData = rm.CardData
+				meta.card = *rm.Card
 			}
 			rc.Close()
 		}
