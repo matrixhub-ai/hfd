@@ -75,6 +75,15 @@ type repoListItem struct {
 	ModelID       string   `json:"modelId,omitempty"`
 }
 
+// tagFacet is one entry of the models/datasets-tags-by-type category maps.
+type tagFacet struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Type      string `json:"type"`
+	SubType   string `json:"subType,omitempty"`
+	Clickable bool   `json:"clickable,omitempty"`
+}
+
 // repoInfo represents the info response for HuggingFace API
 type repoInfo struct {
 	ID           string    `json:"id"`

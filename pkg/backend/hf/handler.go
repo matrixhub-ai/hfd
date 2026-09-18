@@ -128,6 +128,9 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	// Agent harness registry - fetched anonymously by huggingface_hub >=1.29 during xet bootstrap
 	r.HandleFunc("/api/agent-harnesses", h.handleAgentHarnesses).Methods(http.MethodGet)
 
+	// Tag facets - the category maps behind the models/datasets filter sidebars
+	r.HandleFunc("/api/{repoType:models|datasets}-tags-by-type", h.handleTagsByType).Methods(http.MethodGet)
+
 	// Repository management endpoints - used by huggingface_hub for repo CRUD
 	r.HandleFunc("/api/repos/create", h.handleCreateRepo).Methods(http.MethodPost)
 	r.HandleFunc("/api/repos/delete", h.handleDeleteRepo).Methods(http.MethodDelete)
