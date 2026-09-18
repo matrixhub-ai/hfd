@@ -208,6 +208,51 @@ func TestWalk(t *testing.T) {
 		}
 	})
 
+	t.Run("StopsAtRepository", func(t *testing.T) {
+		fs := osfs.New(t.TempDir())
+		mustInit(t, fs, "/org/a.git", "/org/a.git/nested.git", "/org/b.git/nested.git", "/org/b.git")
+		var got []string
+		err := Walk(ctx, fs, "/", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		want := []string{"/org/a.git", "/org/b.git"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("Walk yielded %v, want %v", got, want)
+		}
+		got = nil
+		err = Walk(ctx, fs, "/org/a.git", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("Walk: %v", err)
+		}
+		if want := want[:1]; !slices.Equal(got, want) {
+			t.Fatalf("Walk from a repository yielded %v, want %v", got, want)
+		}
+	})
+
+	t.Run("HEADStatError", func(t *testing.T) {
+		fs := &headFaultFS{Filesystem: osfs.New(t.TempDir()), err: errors.New("unreadable")}
+		mustInit(t, fs, "/a/x.git", "/b/y.git")
+		fs.head = "/b/y.git/HEAD"
+		var got []string
+		err := Walk(ctx, fs, "/", func(path string) error {
+			got = append(got, path)
+			return nil
+		})
+		if !errors.Is(err, fs.err) {
+			t.Fatalf("Walk = %v, want the HEAD stat error", err)
+		}
+		if want := []string{"/a/x.git"}; !slices.Equal(got, want) {
+			t.Fatalf("Walk yielded %v, want %v", got, want)
+		}
+	})
+
 	t.Run("LeavesLRUOrder", func(t *testing.T) {
 		fs := osfs.New(t.TempDir())
 		saved := lruCache
@@ -223,4 +268,18 @@ func TestWalk(t *testing.T) {
 			t.Fatal("Walk promoted /b/x.git in the LRU: /a/y.git was evicted instead")
 		}
 	})
+}
+
+// headFaultFS fails Stat on one HEAD with a non-NotExist error.
+type headFaultFS struct {
+	billy.Filesystem
+	head string
+	err  error
+}
+
+func (h *headFaultFS) Stat(name string) (os.FileInfo, error) {
+	if name == h.head {
+		return nil, &os.PathError{Op: "stat", Path: name, Err: h.err}
+	}
+	return h.Filesystem.Stat(name)
 }

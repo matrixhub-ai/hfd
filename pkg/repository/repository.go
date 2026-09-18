@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,13 +56,20 @@ func IsRepository(fs billy.Filesystem, repoPath string) bool {
 	if _, ok := lruCache.Get(cacheKey{fs, repoPath}); ok {
 		return true
 	}
-	return hasHEAD(fs, repoPath)
+	ok, _ := hasHEAD(fs, repoPath)
+	return ok
 }
 
 // hasHEAD is IsRepository's on-disk check alone; lruCache.Get would promote the entry.
-func hasHEAD(fs billy.Filesystem, repoPath string) bool {
+func hasHEAD(fs billy.Filesystem, repoPath string) (bool, error) {
 	stat, err := fs.Stat(filepath.Join(repoPath, "HEAD"))
-	return err == nil && stat.Size() != 0
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return stat.Size() != 0, nil
 }
 
 // Walk calls fn with the path of every bare repository under root, in lexical order, never descending into one.
@@ -74,8 +82,14 @@ func walk(ctx context.Context, fs billy.Filesystem, dir string, fn func(path str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if strings.HasSuffix(dir, ".git") && hasHEAD(fs, dir) {
-		return fn(dir)
+	if strings.HasSuffix(dir, ".git") {
+		ok, err := hasHEAD(fs, dir)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return fn(dir)
+		}
 	}
 	entries, err := fs.ReadDir(dir)
 	if err != nil {
