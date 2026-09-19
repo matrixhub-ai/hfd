@@ -15,7 +15,6 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 var _ permission.MirrorRoles = (*mirror.Mirror)(nil)
@@ -31,6 +30,10 @@ func (pullOnlyMirrorRoles) IsMirrorDestination(context.Context, string) (bool, e
 }
 
 func TestHTTPHandlerPullMirrorReadOnly(t *testing.T) {
+	forEachMode(t, testHTTPHandlerPullMirrorReadOnly)
+}
+
+func testHTTPHandlerPullMirrorReadOnly(t *testing.T, native bool) {
 	dataDir := t.TempDir()
 	repoPath := filepath.Join(dataDir, "repositories", "test-repo.git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
@@ -38,7 +41,7 @@ func TestHTTPHandlerPullMirrorReadOnly(t *testing.T) {
 	}
 	runGitCmd(t, "", "init", "--bare", repoPath)
 	handler := backendhttp.NewHandler(
-		backendhttp.WithStorage(storage.NewStorage(storage.WithRootDir(dataDir))),
+		backendhttp.WithStorage(newStorage(dataDir, native)),
 		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(pullOnlyMirrorRoles{})),
 	)
 	for _, test := range []struct {
@@ -58,6 +61,9 @@ func TestHTTPHandlerPullMirrorReadOnly(t *testing.T) {
 			if test.want == http.StatusForbidden && strings.TrimSpace(response.Body.String()) != "permission denied" {
 				t.Errorf("body = %q, want permission denied", response.Body.String())
 			}
+			if test.want == http.StatusOK && !strings.Contains(response.Body.String(), wantAgent(native)) {
+				t.Errorf("advertisement lacks %q: %q", wantAgent(native), response.Body.String())
+			}
 		})
 	}
 }
@@ -76,6 +82,10 @@ func runGitCmd(t *testing.T, dir string, args ...string) string {
 }
 
 func TestHTTPHandler(t *testing.T) {
+	forEachMode(t, testHTTPHandler)
+}
+
+func testHTTPHandler(t *testing.T, native bool) {
 	// Create a temporary directory for the upstream server
 	upstreamDir, err := os.MkdirTemp("", "http-test-upstream")
 	if err != nil {
@@ -94,7 +104,7 @@ func TestHTTPHandler(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
+	upstreamStorage := newStorage(upstreamDir, native)
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
@@ -112,6 +122,7 @@ func TestHTTPHandler(t *testing.T) {
 	defer upstreamServer.Close()
 
 	upstreamURL := upstreamServer.URL + "/" + repoName + ".git"
+	requireAgent(t, upstreamURL, native)
 
 	t.Run("CloneEmptyRepository", func(t *testing.T) {
 		cloneDir := filepath.Join(clientDir, "clone-empty")
@@ -155,6 +166,10 @@ func TestHTTPHandler(t *testing.T) {
 }
 
 func TestHTTPHandlerAuthHook(t *testing.T) {
+	forEachMode(t, testHTTPHandlerAuthHook)
+}
+
+func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 	// Create a temporary directory for the upstream server
 	upstreamDir, err := os.MkdirTemp("", "http-test-authhook")
 	if err != nil {
@@ -173,7 +188,7 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	upstreamStorage := storage.NewStorage(storage.WithRootDir(upstreamDir))
+	upstreamStorage := newStorage(upstreamDir, native)
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
@@ -193,6 +208,7 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 		)
 		server := httptest.NewServer(handler)
 		defer server.Close()
+		requireAgent(t, server.URL+"/"+repoName+".git", native)
 
 		// Clone should succeed
 		cloneDir := filepath.Join(clientDir, "clone-allowed")
@@ -291,8 +307,12 @@ func TestHTTPHandlerAuthHook(t *testing.T) {
 }
 
 func TestHTTPHandlerPreOpenHook(t *testing.T) {
+	forEachMode(t, testHTTPHandlerPreOpenHook)
+}
+
+func testHTTPHandlerPreOpenHook(t *testing.T, native bool) {
 	dataDir := t.TempDir()
-	st := storage.NewStorage(storage.WithRootDir(dataDir))
+	st := newStorage(dataDir, native)
 	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "test-repo.git"))
 
 	type call struct {

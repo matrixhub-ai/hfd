@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM ${IMAGE_PREFIX}library/alpine:${ALPINE_VERSION} AS hfd
 
+RUN apk add --no-cache git
+
 COPY --from=builder /out/hfd /usr/local/bin/hfd
 
 EXPOSE 8080
