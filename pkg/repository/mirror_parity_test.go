@@ -17,6 +17,7 @@ package repository
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
 	"os"
@@ -182,23 +183,29 @@ func legacyPushMirrorRefs(t *testing.T, repoPath, destURL string, refspecs []str
 	runGit(t, repoPath, args...)
 }
 
-// newGitHTTPBackend serves every bare repository under root over smart HTTP
-// using the canonical `git http-backend` CGI, and returns the base URL.
-func newGitHTTPBackend(t *testing.T, root string) string {
+// gitHTTPBackend returns the canonical `git http-backend` CGI handler for every bare repository under root.
+func gitHTTPBackend(t *testing.T, root string) http.Handler {
 	t.Helper()
 	execPath := strings.TrimSpace(gitOut(t, "", "--exec-path"))
 	backend := filepath.Join(execPath, "git-http-backend")
 	if _, err := os.Stat(backend); err != nil {
 		t.Skipf("git-http-backend not available: %v", err)
 	}
-	srv := httptest.NewServer(&cgi.Handler{
+	return &cgi.Handler{
 		Path:       backend,
 		InheritEnv: []string{"PATH"},
 		Env: []string{
 			"GIT_PROJECT_ROOT=" + root,
 			"GIT_HTTP_EXPORT_ALL=1",
 		},
-	})
+	}
+}
+
+// newGitHTTPBackend serves every bare repository under root over smart HTTP
+// using the canonical `git http-backend` CGI, and returns the base URL.
+func newGitHTTPBackend(t *testing.T, root string) string {
+	t.Helper()
+	srv := httptest.NewServer(gitHTTPBackend(t, root))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -401,6 +408,10 @@ func TestGitParityGetRemoteDefaultBranch(t *testing.T) {
 }
 
 func TestGitParityPullMirrorRefs(t *testing.T) {
+	forEachGitMode(t, testGitParityPullMirrorRefs)
+}
+
+func testGitParityPullMirrorRefs(t *testing.T, native bool) {
 	ctx := t.Context()
 
 	type stage struct {
@@ -464,6 +475,7 @@ func TestGitParityPullMirrorRefs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("init go-git mirror: %v", err)
 			}
+			requireGitMode(t, repo, native)
 			legacyMirror := filepath.Join(root, "legacy-mirror.git")
 			runGit(t, "", "init", "--bare", "--initial-branch=main", legacyMirror)
 
@@ -517,6 +529,10 @@ func TestGitParityPullMirrorRefs(t *testing.T) {
 }
 
 func TestGitParityPushMirrorRefs(t *testing.T) {
+	forEachGitMode(t, testGitParityPushMirrorRefs)
+}
+
+func testGitParityPushMirrorRefs(t *testing.T, native bool) {
 	ctx := t.Context()
 
 	// The production wildcard refspecs used by mirror push with prune.
@@ -591,6 +607,7 @@ func TestGitParityPushMirrorRefs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open local repository: %v", err)
 			}
+			requireGitMode(t, repo, native)
 
 			goGitDest := filepath.Join(root, "gogit-dest.git")
 			legacyDest := filepath.Join(root, "legacy-dest.git")

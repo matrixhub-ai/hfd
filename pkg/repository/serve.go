@@ -21,6 +21,14 @@ import (
 // Stateless serves a single stateless-RPC request for the given service, as
 // used by the smart-HTTP transport. hooks apply only to git-receive-pack.
 func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.Reader, service string, gitProtocol string, hooks ReceivePackHooks) error {
+	switch service {
+	case GitUploadPack, GitReceivePack:
+	default:
+		return fmt.Errorf("unsupported service: %s", service)
+	}
+	if dir := r.gitDir(); dir != "" {
+		return r.serveGit(ctx, dir, service, gitProtocol, output, input, true, hooks, nil)
+	}
 	w := ioutil.WriteNopCloser(output)
 	in := io.NopCloser(input)
 	switch service {
@@ -159,6 +167,14 @@ func (r *Repository) serveUploadPackNegotiationRound(body io.Reader, output io.W
 // AdvertiseRefs writes the smart-HTTP /info/refs advertisement for the given
 // service (including the "# service=..." prefix when applicable).
 func (r *Repository) AdvertiseRefs(ctx context.Context, output io.Writer, service string, gitProtocol string) error {
+	switch service {
+	case GitUploadPack, GitReceivePack:
+	default:
+		return fmt.Errorf("unsupported service: %s", service)
+	}
+	if dir := r.gitDir(); dir != "" {
+		return advertiseRefsGit(ctx, output, dir, service, gitProtocol)
+	}
 	w := ioutil.WriteNopCloser(output)
 	input := io.NopCloser(strings.NewReader(""))
 	switch service {
@@ -184,6 +200,18 @@ func (r *Repository) AdvertiseRefs(ctx context.Context, output io.Writer, servic
 // value (e.g. "version=2") and selects the protocol version via
 // transport.ProtocolVersion. hooks apply only to git-receive-pack.
 func (r *Repository) Serve(ctx context.Context, rw io.ReadWriter, service string, gitProtocol string, hooks ReceivePackHooks) error {
+	switch service {
+	case GitUploadPack, GitReceivePack:
+	default:
+		return fmt.Errorf("unsupported service: %s", service)
+	}
+	if dir := r.gitDir(); dir != "" {
+		var stderr io.Writer
+		if c, ok := rw.(interface{ Stderr() io.ReadWriter }); ok {
+			stderr = c.Stderr()
+		}
+		return r.serveGit(ctx, dir, service, gitProtocol, rw, rw, false, hooks, stderr)
+	}
 	w := ioutil.WriteNopCloser(rw)
 	in := io.NopCloser(rw)
 	switch service {

@@ -163,13 +163,18 @@ func (r *Repository) PushMirrorRefs(ctx context.Context, destURL string, refs []
 		specs = append(specs, deletes...)
 	}
 
-	err := r.mirrorRemote(destURL).PushContext(ctx, &git.PushOptions{
-		RemoteName:    "mirror",
-		RemoteURL:     destURL,
-		RefSpecs:      specs,
-		Progress:      progress,
-		ClientOptions: mirrorClientOptions,
-	})
+	var err error
+	if dir := r.gitDir(); dir != "" {
+		err = r.pushGit(ctx, dir, destURL, specs, progress)
+	} else {
+		err = r.mirrorRemote(destURL).PushContext(ctx, &git.PushOptions{
+			RemoteName:    "mirror",
+			RemoteURL:     destURL,
+			RefSpecs:      specs,
+			Progress:      progress,
+			ClientOptions: mirrorClientOptions,
+		})
+	}
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("failed to push mirror refs to remote: %w", err)
 	}
@@ -234,20 +239,24 @@ func (r *Repository) PullMirrorRefs(ctx context.Context, sourceURL string, refs 
 		return nil
 	}
 
-	specs := make([]gitconfig.RefSpec, 0, len(refs))
-	for _, ref := range refs {
-		specs = append(specs, gitconfig.RefSpec("+"+ref+":"+ref))
+	var err error
+	if dir := r.gitDir(); dir != "" {
+		err = r.fetchGit(ctx, dir, sourceURL, refs, progress)
+	} else {
+		specs := make([]gitconfig.RefSpec, 0, len(refs))
+		for _, ref := range refs {
+			specs = append(specs, gitconfig.RefSpec("+"+ref+":"+ref))
+		}
+		err = r.mirrorRemote(sourceURL).FetchContext(ctx, &git.FetchOptions{
+			RemoteName:    "mirror",
+			RemoteURL:     sourceURL,
+			RefSpecs:      specs,
+			Tags:          plumbing.NoTags,
+			Force:         true,
+			Progress:      progress,
+			ClientOptions: mirrorClientOptions,
+		})
 	}
-
-	err := r.mirrorRemote(sourceURL).FetchContext(ctx, &git.FetchOptions{
-		RemoteName:    "mirror",
-		RemoteURL:     sourceURL,
-		RefSpecs:      specs,
-		Tags:          plumbing.NoTags,
-		Force:         true,
-		Progress:      progress,
-		ClientOptions: mirrorClientOptions,
-	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("failed to fetch repository refs: %w", err)
 	}

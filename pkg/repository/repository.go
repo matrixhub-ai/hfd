@@ -43,6 +43,7 @@ type Repository struct {
 	repo          *git.Repository
 	fs            billy.Filesystem
 	repoPath      string
+	localDir      string // host directory when fs is OS-backed, else ""
 	defaultBranch atomic.Pointer[string]
 }
 
@@ -166,6 +167,7 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 			repo:     r,
 			fs:       fs,
 			repoPath: repoPath,
+			localDir: localDir(fs, repoPath),
 		}, true
 
 	})
