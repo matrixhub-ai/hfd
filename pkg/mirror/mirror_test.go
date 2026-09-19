@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
@@ -62,6 +63,27 @@ func staticSource(path string) mirror.SourceFunc {
 func staticDestination(path string) mirror.DestinationFunc {
 	return func(ctx context.Context, repoName string) (string, bool, error) {
 		return path, true, nil
+	}
+}
+
+// goGitFS hides the OS filesystem type so repositories on it are handled by go-git.
+type goGitFS struct{ billy.Filesystem }
+
+func (f goGitFS) Chroot(path string) (billy.Filesystem, error) {
+	sub, err := f.Filesystem.Chroot(path)
+	if err != nil {
+		return nil, err
+	}
+	return goGitFS{sub}, nil
+}
+
+// forEachRepositoriesFS runs fn with the host filesystem, where an installed git transfers objects, and with a wrapper that forces go-git.
+func forEachRepositoriesFS(t *testing.T, fn func(t *testing.T, fs billy.Filesystem)) {
+	for _, m := range []struct {
+		name string
+		fs   billy.Filesystem
+	}{{"native", osfs.Default}, {"go-git", goGitFS{osfs.Default}}} {
+		t.Run(m.name, func(t *testing.T) { fn(t, m.fs) })
 	}
 }
 
@@ -135,87 +157,95 @@ func TestIsMirrorSourceAndDestinationUnset(t *testing.T) {
 }
 
 func TestPullFromRemoteInitializesMirror(t *testing.T) {
-	root := t.TempDir()
-	src, srcPath := initSourceRepo(t, root, "src")
-	addCommit(t, src, "feature", "feature.txt", "feature\n")
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		src, srcPath := initSourceRepo(t, root, "src")
+		addCommit(t, src, "feature", "feature.txt", "feature\n")
 
-	m := newMirror(t, "", mirror.WithMirrorSourceFunc(staticSource(srcPath)))
+		m := newMirror(t, "", mirror.WithRepositoriesFS(fs), mirror.WithMirrorSourceFunc(staticSource(srcPath)))
 
-	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("pull from remote: %v", err)
-	}
-
-	srcRefs, err := src.Refs()
-	if err != nil {
-		t.Fatalf("source refs: %v", err)
-	}
-	destRefs := refsAt(t, destPath)
-	for ref, want := range srcRefs {
-		if destRefs[ref] != want {
-			t.Fatalf("ref %s = %s, want %s (all: %v)", ref, destRefs[ref], want, destRefs)
+		destPath := filepath.Join(root, "dest.git")
+		if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+			t.Fatalf("pull from remote: %v", err)
 		}
-	}
-	if len(destRefs) != len(srcRefs) {
-		t.Fatalf("dest refs = %v, want same set as source %v", destRefs, srcRefs)
-	}
+
+		srcRefs, err := src.Refs()
+		if err != nil {
+			t.Fatalf("source refs: %v", err)
+		}
+		destRefs := refsAt(t, destPath)
+		for ref, want := range srcRefs {
+			if destRefs[ref] != want {
+				t.Fatalf("ref %s = %s, want %s (all: %v)", ref, destRefs[ref], want, destRefs)
+			}
+		}
+		if len(destRefs) != len(srcRefs) {
+			t.Fatalf("dest refs = %v, want same set as source %v", destRefs, srcRefs)
+		}
+	})
 }
 
 func TestPullFromRemoteSyncsNewCommitsAndFiresHooks(t *testing.T) {
-	root := t.TempDir()
-	src, srcPath := initSourceRepo(t, root, "src")
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		src, srcPath := initSourceRepo(t, root, "src")
 
-	var postUpdates []receive.RefUpdate
-	m := newMirror(t, "",
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-		mirror.WithPostReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
-			postUpdates = append(postUpdates, updates...)
-			return nil
-		}),
-	)
+		var postUpdates []receive.RefUpdate
+		m := newMirror(t, "",
+			mirror.WithRepositoriesFS(fs),
+			mirror.WithMirrorSourceFunc(staticSource(srcPath)),
+			mirror.WithPostReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+				postUpdates = append(postUpdates, updates...)
+				return nil
+			}),
+		)
 
-	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("initial pull: %v", err)
-	}
-	postUpdates = nil
+		destPath := filepath.Join(root, "dest.git")
+		if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+			t.Fatalf("initial pull: %v", err)
+		}
+		postUpdates = nil
 
-	newHash := addCommit(t, src, "main", "new.txt", "new\n")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("second pull: %v", err)
-	}
+		newHash := addCommit(t, src, "main", "new.txt", "new\n")
+		if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+			t.Fatalf("second pull: %v", err)
+		}
 
-	if got := refsAt(t, destPath)["refs/heads/main"]; got != newHash {
-		t.Fatalf("refs/heads/main = %s, want %s", got, newHash)
-	}
-	if len(postUpdates) != 1 {
-		t.Fatalf("post-receive updates = %d, want 1 (%v)", len(postUpdates), postUpdates)
-	}
-	if postUpdates[0].RefName() != "refs/heads/main" || postUpdates[0].NewRev() != newHash {
-		t.Fatalf("unexpected update: %s %s -> %s", postUpdates[0].RefName(), postUpdates[0].OldRev(), postUpdates[0].NewRev())
-	}
+		if got := refsAt(t, destPath)["refs/heads/main"]; got != newHash {
+			t.Fatalf("refs/heads/main = %s, want %s", got, newHash)
+		}
+		if len(postUpdates) != 1 {
+			t.Fatalf("post-receive updates = %d, want 1 (%v)", len(postUpdates), postUpdates)
+		}
+		if postUpdates[0].RefName() != "refs/heads/main" || postUpdates[0].NewRev() != newHash {
+			t.Fatalf("unexpected update: %s %s -> %s", postUpdates[0].RefName(), postUpdates[0].OldRev(), postUpdates[0].NewRev())
+		}
+	})
 }
 
 func TestPullFromRemotePreReceiveReject(t *testing.T) {
-	root := t.TempDir()
-	_, srcPath := initSourceRepo(t, root, "src")
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		_, srcPath := initSourceRepo(t, root, "src")
 
-	m := newMirror(t, "",
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-		mirror.WithPreReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
-			return false, nil
-		}),
-	)
+		m := newMirror(t, "",
+			mirror.WithRepositoriesFS(fs),
+			mirror.WithMirrorSourceFunc(staticSource(srcPath)),
+			mirror.WithPreReceiveHookFunc(func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
+				return false, nil
+			}),
+		)
 
-	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
-		t.Fatalf("pull from remote: %v", err)
-	}
+		destPath := filepath.Join(root, "dest.git")
+		if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+			t.Fatalf("pull from remote: %v", err)
+		}
 
-	// Rejected sync leaves the initialized mirror without any refs.
-	if refs := refsAt(t, destPath); len(refs) != 0 {
-		t.Fatalf("expected no refs after rejected sync, got %v", refs)
-	}
+		// Rejected sync leaves the initialized mirror without any refs.
+		if refs := refsAt(t, destPath); len(refs) != 0 {
+			t.Fatalf("expected no refs after rejected sync, got %v", refs)
+		}
+	})
 }
 
 func TestPullFromRemoteNotAMirror(t *testing.T) {
@@ -254,54 +284,64 @@ func TestPushToRemoteNotAPushMirrorIsNoop(t *testing.T) {
 }
 
 func TestPushToRemotePushesAllRefs(t *testing.T) {
-	root := t.TempDir()
-	local, localPath := initSourceRepo(t, root, "local")
-	addCommit(t, local, "dev", "dev.txt", "dev\n")
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		local, localPath := initSourceRepo(t, root, "local")
+		addCommit(t, local, "dev", "dev.txt", "dev\n")
 
-	destPath := filepath.Join(root, "dest.git")
-	if _, err := repository.Init(context.Background(), osfs.Default, destPath, "main"); err != nil {
-		t.Fatalf("init dest repo: %v", err)
-	}
-
-	m := newMirror(t, "", mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
-	if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
-		t.Fatalf("push to remote: %v", err)
-	}
-
-	localRefs, err := local.Refs()
-	if err != nil {
-		t.Fatalf("local refs: %v", err)
-	}
-	destRefs := refsAt(t, destPath)
-	for ref, want := range localRefs {
-		if destRefs[ref] != want {
-			t.Fatalf("ref %s = %s, want %s (all: %v)", ref, destRefs[ref], want, destRefs)
+		destPath := filepath.Join(root, "dest.git")
+		dest, err := repository.Init(context.Background(), osfs.Default, destPath, "main")
+		if err != nil {
+			t.Fatalf("init dest repo: %v", err)
 		}
-	}
+		// A destination-only branch must be pruned by the wildcard push.
+		addCommit(t, dest, "stale", "stale.txt", "stale\n")
+
+		m := newMirror(t, "", mirror.WithRepositoriesFS(fs), mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+		if err := m.PushToRemote(context.Background(), localPath, "org/repo", nil); err != nil {
+			t.Fatalf("push to remote: %v", err)
+		}
+
+		localRefs, err := local.Refs()
+		if err != nil {
+			t.Fatalf("local refs: %v", err)
+		}
+		destRefs := refsAt(t, destPath)
+		for ref, want := range localRefs {
+			if destRefs[ref] != want {
+				t.Fatalf("ref %s = %s, want %s (all: %v)", ref, destRefs[ref], want, destRefs)
+			}
+		}
+		if _, ok := destRefs["refs/heads/stale"]; ok {
+			t.Fatalf("refs/heads/stale must be pruned, got %v", destRefs)
+		}
+	})
 }
 
 func TestPushToRemoteSpecificRefsOnly(t *testing.T) {
-	root := t.TempDir()
-	local, localPath := initSourceRepo(t, root, "local")
-	addCommit(t, local, "dev", "dev.txt", "dev\n")
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		local, localPath := initSourceRepo(t, root, "local")
+		addCommit(t, local, "dev", "dev.txt", "dev\n")
 
-	destPath := filepath.Join(root, "dest.git")
-	if _, err := repository.Init(context.Background(), osfs.Default, destPath, "main"); err != nil {
-		t.Fatalf("init dest repo: %v", err)
-	}
+		destPath := filepath.Join(root, "dest.git")
+		if _, err := repository.Init(context.Background(), osfs.Default, destPath, "main"); err != nil {
+			t.Fatalf("init dest repo: %v", err)
+		}
 
-	m := newMirror(t, "", mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
-	err := m.PushToRemote(context.Background(), localPath, "org/repo",
-		&mirror.PushOptions{Refs: []string{"refs/heads/main"}})
-	if err != nil {
-		t.Fatalf("push to remote: %v", err)
-	}
+		m := newMirror(t, "", mirror.WithRepositoriesFS(fs), mirror.WithMirrorDestinationFunc(staticDestination(destPath)))
+		err := m.PushToRemote(context.Background(), localPath, "org/repo",
+			&mirror.PushOptions{Refs: []string{"refs/heads/main"}})
+		if err != nil {
+			t.Fatalf("push to remote: %v", err)
+		}
 
-	destRefs := refsAt(t, destPath)
-	if _, ok := destRefs["refs/heads/main"]; !ok {
-		t.Fatalf("expected refs/heads/main to be pushed, got %v", destRefs)
-	}
-	if _, ok := destRefs["refs/heads/dev"]; ok {
-		t.Fatalf("refs/heads/dev must not be pushed, got %v", destRefs)
-	}
+		destRefs := refsAt(t, destPath)
+		if _, ok := destRefs["refs/heads/main"]; !ok {
+			t.Fatalf("expected refs/heads/main to be pushed, got %v", destRefs)
+		}
+		if _, ok := destRefs["refs/heads/dev"]; ok {
+			t.Fatalf("refs/heads/dev must not be pushed, got %v", destRefs)
+		}
+	})
 }

@@ -2,6 +2,9 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,10 @@ import (
 )
 
 func TestPullMirrorRefs(t *testing.T) {
+	forEachGitMode(t, testPullMirrorRefs)
+}
+
+func testPullMirrorRefs(t *testing.T, native bool) {
 	ctx := context.Background()
 	root := t.TempDir()
 
@@ -22,6 +29,7 @@ func TestPullMirrorRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init mirror: %v", err)
 	}
+	requireGitMode(t, repo, native)
 
 	remoteRefs, err := GetRemoteRefs(ctx, upstream)
 	if err != nil {
@@ -82,6 +90,67 @@ func TestPullMirrorRefs(t *testing.T) {
 	}
 }
 
+func TestPullMirrorRefsInvalidRef(t *testing.T) {
+	forEachGitMode(t, func(t *testing.T, native bool) {
+		ctx := t.Context()
+		root := t.TempDir()
+		bare, _ := buildParityUpstream(t, root)
+		upstream := gitLocalRefs(t, bare)
+		newMirror := func(t *testing.T) (*Repository, string) {
+			t.Helper()
+			mirror := filepath.Join(t.TempDir(), "mirror.git")
+			repo, err := InitMirror(ctx, osfs.Default, mirror, bare)
+			if err != nil {
+				t.Fatalf("init mirror: %v", err)
+			}
+			requireGitMode(t, repo, native)
+			return repo, mirror
+		}
+
+		for _, tc := range []struct {
+			name, ref string
+		}{
+			{"Newline", "refs/tags/v1\nrefs/heads/topic/nested"},
+			{"NUL", "refs/heads/main\x00refs/heads/topic/nested"},
+			{"Colon", "refs/tags/v1:refs/heads/main"},
+			{"Control", "refs/heads/bad\x01"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				repo, mirror := newMirror(t)
+				retained := strings.TrimSpace(gitOut(t, mirror, "hash-object", "-w", os.DevNull))
+				runGit(t, mirror, "update-ref", "refs/tags/retained", retained)
+				before := gitLocalRefs(t, mirror)
+				for name, hash := range upstream {
+					if gitTry(t, mirror, "cat-file", "-e", hash) == nil {
+						t.Fatalf("fixture already contains %s object %s", name, hash)
+					}
+				}
+				if err := repo.PullMirrorRefs(ctx, bare, []string{"refs/heads/main", tc.ref}, nil); err == nil {
+					t.Error("PullMirrorRefs accepted a malformed ref")
+				}
+				requireSameRefs(t, "mirror refs after rejected pull", gitLocalRefs(t, mirror), before)
+				for name, hash := range upstream {
+					if gitTry(t, mirror, "cat-file", "-e", hash) == nil {
+						t.Errorf("%s object %s was fetched", name, hash)
+					}
+				}
+			})
+		}
+
+		// Control: the same call with well-formed nested and annotated-tag refs.
+		repo, mirror := newMirror(t)
+		refs := []string{"refs/heads/main", "refs/heads/topic/nested", "refs/tags/v2"}
+		if err := repo.PullMirrorRefs(ctx, bare, refs, nil); err != nil {
+			t.Fatalf("PullMirrorRefs: %v", err)
+		}
+		want := make(map[string]string, len(refs))
+		for _, ref := range refs {
+			want[ref] = upstream[ref]
+		}
+		requireSameRefs(t, "mirror refs after valid pull", gitLocalRefs(t, mirror), want)
+	})
+}
+
 func setupMirrorSyncUpstream(t *testing.T, root string) string {
 	t.Helper()
 
@@ -133,6 +202,10 @@ func setupMirrorSyncUpstream(t *testing.T, root string) string {
 }
 
 func TestPushMirrorRefs(t *testing.T) {
+	forEachGitMode(t, testPushMirrorRefs)
+}
+
+func testPushMirrorRefs(t *testing.T, native bool) {
 	ctx := context.Background()
 	root := t.TempDir()
 
@@ -162,6 +235,7 @@ func TestPushMirrorRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open local repo: %v", err)
 	}
+	requireGitMode(t, repo, native)
 
 	localRefs, err := repo.Refs()
 	if err != nil {
@@ -216,6 +290,10 @@ func TestPushMirrorRefs(t *testing.T) {
 }
 
 func TestPushMirrorRefsPrune(t *testing.T) {
+	forEachGitMode(t, testPushMirrorRefsPrune)
+}
+
+func testPushMirrorRefsPrune(t *testing.T, native bool) {
 	ctx := t.Context()
 	root := t.TempDir()
 
@@ -224,6 +302,7 @@ func TestPushMirrorRefsPrune(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open local repository: %v", err)
 	}
+	requireGitMode(t, repo, native)
 
 	wildcard := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 
@@ -297,6 +376,229 @@ func TestPushMirrorRefsPrune(t *testing.T) {
 		want := gitLocalRefs(t, local)
 		want["refs/keep/x"] = keepHash
 		requireSameRefs(t, "destination after pruning deleted refs", gitLocalRefs(t, destA), want)
+	})
+}
+
+// TestPushMirrorRefsNonFastForward pushes an unforced refspec whose
+// destination moved ahead; both modes must report the rejection.
+func TestPushMirrorRefsNonFastForward(t *testing.T) {
+	forEachGitMode(t, func(t *testing.T, native bool) {
+		ctx := t.Context()
+		root := t.TempDir()
+		local, work := buildParityUpstream(t, root)
+		repo, err := Open(osfs.Default, local)
+		if err != nil {
+			t.Fatalf("open local repository: %v", err)
+		}
+		requireGitMode(t, repo, native)
+		dest := filepath.Join(root, "dest.git")
+		runGit(t, "", "init", "--bare", "--initial-branch=main", dest)
+		if err := repo.PushMirrorRefs(ctx, dest, []string{"+refs/heads/main:refs/heads/main"}, false, nil); err != nil {
+			t.Fatalf("initial push: %v", err)
+		}
+		runGit(t, work, "reset", "--hard", "HEAD~1")
+		runGit(t, work, "push", "--force", "origin", "main")
+
+		before := gitLocalRefs(t, dest)
+		err = repo.PushMirrorRefs(ctx, dest, []string{"refs/heads/main:refs/heads/main"}, false, nil)
+		if err == nil || !strings.Contains(err.Error(), "non-fast-forward") {
+			t.Fatalf("PushMirrorRefs = %v, want non-fast-forward rejection", err)
+		}
+		requireSameRefs(t, "destination after rejected push", gitLocalRefs(t, dest), before)
+	})
+}
+
+// TestPushMirrorRefsEmptySource pushes wildcard refspecs that select no local
+// ref: an empty destination is a successful no-op in both modes, a populated
+// destination is still pruned, and remote or refspec errors still surface.
+func TestPushMirrorRefsEmptySource(t *testing.T) {
+	forEachGitMode(t, func(t *testing.T, native bool) {
+		ctx := t.Context()
+		root := t.TempDir()
+		local := filepath.Join(root, "local.git")
+		runGit(t, "", "init", "--bare", "--initial-branch=main", local)
+		repo, err := Open(osfs.Default, local)
+		if err != nil {
+			t.Fatalf("open local repository: %v", err)
+		}
+		requireGitMode(t, repo, native)
+		populated, _ := buildParityUpstream(t, root)
+		wildcard := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+		newDest := func(t *testing.T, name string) string {
+			t.Helper()
+			dest := filepath.Join(root, name)
+			runGit(t, "", "init", "--bare", "--initial-branch=main", dest)
+			runGit(t, dest, "config", "http.receivepack", "true")
+			return dest
+		}
+		const user, password = "alice", "s3cret"
+		backend := gitHTTPBackend(t, root)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if u, p, ok := r.BasicAuth(); !ok || u != user || p != password {
+				w.Header().Set("WWW-Authenticate", `Basic realm="mirror"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			backend.ServeHTTP(w, r)
+		}))
+		t.Cleanup(srv.Close)
+		httpURL := func(dest, userinfo string) string {
+			return strings.Replace(srv.URL, "http://", "http://"+userinfo, 1) + "/" + filepath.Base(dest)
+		}
+		transports := []struct {
+			name string
+			url  func(dest string) string
+		}{
+			{"file", func(dest string) string { return dest }},
+			{"http", func(dest string) string { return httpURL(dest, user+":"+password+"@") }},
+		}
+
+		t.Run("EmptyDestination", func(t *testing.T) {
+			for _, tr := range transports {
+				for _, prune := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/prune=%t", tr.name, prune), func(t *testing.T) {
+						dest := newDest(t, fmt.Sprintf("empty-%s-%t.git", tr.name, prune))
+						if err := repo.PushMirrorRefs(ctx, tr.url(dest), wildcard, prune, nil); err != nil {
+							t.Fatalf("PushMirrorRefs: %v", err)
+						}
+						if got := gitLocalRefs(t, dest); len(got) != 0 {
+							t.Fatalf("destination refs = %v, want none", got)
+						}
+					})
+				}
+			}
+		})
+
+		t.Run("UnmatchedWildcard", func(t *testing.T) {
+			// A populated source whose refs miss the pattern is the same commandless push.
+			src, err := Open(osfs.Default, populated)
+			if err != nil {
+				t.Fatalf("open populated repository: %v", err)
+			}
+			dest := newDest(t, "unmatched.git")
+			if err := src.PushMirrorRefs(ctx, dest, []string{"+refs/notes/*:refs/notes/*"}, false, nil); err != nil {
+				t.Fatalf("PushMirrorRefs: %v", err)
+			}
+			if got := gitLocalRefs(t, dest); len(got) != 0 {
+				t.Fatalf("destination refs = %v, want none", got)
+			}
+		})
+
+		t.Run("PopulatedDestination", func(t *testing.T) {
+			// The destination HEAD stays on unborn main, so deleting these refs is permitted.
+			dest := newDest(t, "populated.git")
+			runGit(t, populated, "push", dest, "refs/heads/topic/nested:refs/heads/side", "refs/tags/v1:refs/tags/v1")
+			before := gitLocalRefs(t, dest)
+			if len(before) != 2 {
+				t.Fatalf("fixture refs = %v, want side and v1", before)
+			}
+			if err := repo.PushMirrorRefs(ctx, dest, wildcard, false, nil); err != nil {
+				t.Fatalf("PushMirrorRefs without prune: %v", err)
+			}
+			requireSameRefs(t, "destination without prune", gitLocalRefs(t, dest), before)
+			if err := repo.PushMirrorRefs(ctx, dest, []string{":refs/tags/v1"}, false, nil); err != nil {
+				t.Fatalf("PushMirrorRefs explicit delete: %v", err)
+			}
+			requireSameRefs(t, "destination after explicit delete", gitLocalRefs(t, dest), map[string]string{"refs/heads/side": before["refs/heads/side"]})
+			if err := repo.PushMirrorRefs(ctx, dest, wildcard, true, nil); err != nil {
+				t.Fatalf("PushMirrorRefs with prune: %v", err)
+			}
+			if got := gitLocalRefs(t, dest); len(got) != 0 {
+				t.Fatalf("destination refs after prune = %v, want none", got)
+			}
+		})
+
+		t.Run("OptionLikeRefspec", func(t *testing.T) {
+			src, err := Open(osfs.Default, populated)
+			if err != nil {
+				t.Fatalf("open populated repository: %v", err)
+			}
+			dest := newDest(t, "option-like.git")
+			runGit(t, populated, "push", dest, "refs/tags/v1:refs/tags/v1")
+			before := gitLocalRefs(t, dest)
+			unpushed := gitLocalRefs(t, populated)["refs/tags/v2"]
+			for _, tc := range []struct {
+				name  string
+				src   *Repository
+				specs []string
+			}{
+				{"Delete", repo, []string{"--delete", "refs/tags/v1"}},
+				{"MixedWithValid", src, []string{"+refs/tags/v2:refs/tags/v2", "--force"}},
+			} {
+				for _, prune := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/prune=%t", tc.name, prune), func(t *testing.T) {
+						if gitTry(t, dest, "cat-file", "-e", unpushed) == nil {
+							t.Fatal("fixture already contains the unpushed tag object")
+						}
+						if err := tc.src.PushMirrorRefs(ctx, dest, tc.specs, prune, nil); err == nil {
+							t.Error("option-like refspecs succeeded")
+						}
+						requireSameRefs(t, "destination after invalid refspecs", gitLocalRefs(t, dest), before)
+						if gitTry(t, dest, "cat-file", "-e", unpushed) == nil {
+							t.Error("rejected push transferred the unpushed tag object")
+						}
+					})
+				}
+			}
+		})
+
+		// git refuses these before contacting the remote, whether or not a local ref matches.
+		t.Run("InvalidWildcard", func(t *testing.T) {
+			if !native {
+				t.Skip("TODO(go-git): reject invalid wildcard ref names even when no source ref matches")
+			}
+			dest := newDest(t, "invalid-wildcard.git")
+			for _, spec := range []string{
+				"+refs/notes/unmatched/*:refs/heads/bad..name/*",
+				"+refs/notes/bad..name/*:refs/heads/*",
+			} {
+				if err := repo.PushMirrorRefs(ctx, dest, []string{spec}, false, nil); err == nil {
+					t.Errorf("invalid wildcard %q succeeded", spec)
+				}
+			}
+		})
+		t.Run("ExplicitMissingSource", func(t *testing.T) {
+			if !native {
+				t.Skip("TODO(go-git): report an error for an explicitly requested missing source ref")
+			}
+			dest := newDest(t, "explicit.git")
+			err := repo.PushMirrorRefs(ctx, dest, []string{"+refs/heads/main:refs/heads/main"}, false, nil)
+			if err == nil || !strings.Contains(err.Error(), "does not match any") {
+				t.Fatalf("PushMirrorRefs = %v, want git's missing source error", err)
+			}
+		})
+
+		t.Run("RemoteErrors", func(t *testing.T) {
+			unauthorized := httpURL(newDest(t, "unauthorized.git"), "")
+			for _, prune := range []bool{false, true} {
+				for name, url := range map[string]string{"missing": filepath.Join(root, "missing.git"), "unauthorized": unauthorized} {
+					if err := repo.PushMirrorRefs(ctx, url, wildcard, prune, nil); err == nil {
+						t.Errorf("%s destination, prune=%t: push succeeded", name, prune)
+					}
+				}
+			}
+		})
+
+		t.Run("ReadOnlyDestination", func(t *testing.T) {
+			dest := newDest(t, "readonly.git")
+			readOnly := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Query().Get("service") == GitReceivePack || strings.HasSuffix(request.URL.Path, "/"+GitReceivePack) {
+					http.Error(w, "push denied", http.StatusForbidden)
+					return
+				}
+				backend.ServeHTTP(w, request)
+			}))
+			t.Cleanup(readOnly.Close)
+			destination := readOnly.URL + "/" + filepath.Base(dest)
+			if _, err := GetRemoteRefs(ctx, destination); err != nil {
+				t.Fatalf("read-only destination must allow fetch: %v", err)
+			}
+			for _, prune := range []bool{false, true} {
+				if err := repo.PushMirrorRefs(ctx, destination, wildcard, prune, nil); err == nil {
+					t.Errorf("prune=%t: push to read-only destination succeeded", prune)
+				}
+			}
+		})
 	})
 }
 
