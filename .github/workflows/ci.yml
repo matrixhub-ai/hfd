@@ -19,11 +19,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Format check
+        run: make fmt-check
+
       - name: Build
-        run: go build ./...
+        run: make build
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
 
       - uses: actions/setup-python@v5
         with:
@@ -38,4 +41,4 @@ jobs:
       # but this job installs them and sets CI, so missing tools fail the
       # client matrix here instead of skipping.
       - name: Test
-        run: go test -timeout 30m ./...
+        run: make test
