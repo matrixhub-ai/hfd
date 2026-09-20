@@ -32,6 +32,26 @@ jobs:
       - name: Install huggingface_hub
         run: pip install 'huggingface_hub'
 
+      # git-xet is pinned by release and checksum and installed under the
+      # runner temp dir; the tests configure it per command, so the runner's
+      # git config is never touched.
+      - name: Install git-lfs and git-xet
+        env:
+          GIT_XET_VERSION: v0.2.1
+          GIT_XET_SHA256: e6354d55704cc838d1feed79ee27b9b89da7752ae98bd83df5797c180700fdb1
+        run: |
+          set -euo pipefail
+          command -v git-lfs >/dev/null || (sudo apt-get update && sudo apt-get install -y git-lfs)
+          git lfs version
+          dir="$(mktemp -d "${RUNNER_TEMP}/git-xet.XXXXXX")"
+          curl -fsSL --retry 5 --retry-all-errors -o "${dir}/git-xet.zip" \
+            "https://github.com/huggingface/xet-core/releases/download/git-xet-${GIT_XET_VERSION}/git-xet-linux-x86_64.zip"
+          echo "${GIT_XET_SHA256}  ${dir}/git-xet.zip" | sha256sum -c -
+          unzip -q "${dir}/git-xet.zip" -d "${dir}/bin"
+          chmod +x "${dir}/bin/git-xet"
+          echo "${dir}/bin" >> "${GITHUB_PATH}"
+          "${dir}/bin/git-xet" --version | grep -Fx "git-xet ${GIT_XET_VERSION#v}"
+
       # Unit tests and e2e tests are run together.
       # E2e tests use httptest.NewServer with a local temp dir and require
       # no external credentials; they skip when client tools are absent,
