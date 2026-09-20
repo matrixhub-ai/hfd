@@ -56,6 +56,7 @@ type e2eConfig struct {
 	wraps        []func(http.Handler) http.Handler
 	authUser     string
 	authPass     string
+	basicUsers   map[string]string
 	apiHooks     bool
 	preReceive   receive.PreReceiveHookFunc
 	postReceive  receive.PostReceiveHookFunc
@@ -95,6 +96,12 @@ func withWrap(mw func(http.Handler) http.Handler) e2eOption {
 // Anonymous requests pass through; permission hooks enforce access.
 func withAuth(username, password string) e2eOption {
 	return func(c *e2eConfig) { c.authUser = username; c.authPass = password }
+}
+
+// withBasicUsers adds basic-auth identities (username to password) beside
+// withAuth's user, so one permission policy can be compared across principals.
+func withBasicUsers(users map[string]string) e2eOption {
+	return func(c *e2eConfig) { c.basicUsers = users }
 }
 
 // withHooks installs receive hooks on git HTTP and SSH; withAPIHooks also applies them to HF.
@@ -258,8 +265,18 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
 	authOpts := []authenticate.Option{authenticate.WithNext(handler)}
 	if signValidator != nil {
+		basic := authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)
+		if len(cfg.basicUsers) > 0 {
+			primary := basic
+			basic = authenticate.BasicAuthValidatorFunc(func(ctx context.Context, username, password string) (authenticate.Identity, error) {
+				if pass, ok := cfg.basicUsers[username]; ok && pass == password {
+					return authenticate.NewIdentity(username, ""), nil
+				}
+				return primary.Validate(ctx, username, password)
+			})
+		}
 		authOpts = append(authOpts,
-			authenticate.WithBasicAuthValidator(authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)),
+			authenticate.WithBasicAuthValidator(basic),
 			authenticate.WithTokenValidator(authenticate.NewSimpleTokenValidator(cfg.authUser, cfg.authPass)),
 			authenticate.WithTokenSignValidator(signValidator))
 	}
