@@ -533,7 +533,7 @@ func requireUpDownMatrixTools(t *testing.T) {
 	if err != nil {
 		missing("hf env failed: %v\n%s", err, out)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		key, val, ok := strings.Cut(line, ":")
 		if !ok || !strings.Contains(key, "hf_xet") {
 			continue

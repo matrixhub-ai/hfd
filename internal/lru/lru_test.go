@@ -6,7 +6,7 @@ import "testing"
 // inside Add/GetOrNew while the lock is held and must not self-deadlock.
 func TestEvictionPastCapacity(t *testing.T) {
 	c := New[int, int](2)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		c.Add(i, i)
 	}
 	if _, ok := c.Get(0); ok {
@@ -17,7 +17,7 @@ func TestEvictionPastCapacity(t *testing.T) {
 	}
 
 	c = New[int, int](2)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		c.GetOrNew(i, func() (int, bool) { return i, true })
 	}
 	if _, ok := c.Get(0); ok {

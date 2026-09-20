@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -55,8 +56,8 @@ type Options struct {
 type middleware func(next http.Handler) http.Handler
 
 func chain(tail http.Handler, middlewares ...middleware) http.Handler {
-	for index := len(middlewares) - 1; index >= 0; index-- {
-		tail = middlewares[index](tail)
+	for _, middleware := range slices.Backward(middlewares) {
+		tail = middleware(tail)
 	}
 	return tail
 }

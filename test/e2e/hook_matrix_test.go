@@ -261,8 +261,8 @@ func TestAPIHookMatrix(t *testing.T) {
 			if row.name == "HFDeleteRepo" {
 				payload = fmt.Sprintf(`{"type":"model","name":%q,"organization":"api-hook-org"}`, repoName)
 			}
-			if strings.HasPrefix(row.name, "LFSBatch") {
-				operation := strings.ToLower(strings.TrimPrefix(row.name, "LFSBatch"))
+			if after, ok := strings.CutPrefix(row.name, "LFSBatch"); ok {
+				operation := strings.ToLower(after)
 				payload = fmt.Sprintf(`{"operation":%q,"transfers":["basic"],"objects":[{"oid":%q,"size":64}]}`, operation, strings.Repeat("a", 64))
 			}
 			refsRoute := "/api/models/" + repoID + "/refs"

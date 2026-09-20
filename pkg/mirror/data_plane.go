@@ -242,9 +242,7 @@ func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string
 		t := targets[oid]
 		m.RegisterObject(oid, t.repoName, t.commit, t.path, t.size)
 	}
-	m.background.Add(1)
-	go func() {
-		defer m.background.Done()
+	m.background.Go(func() {
 		ctx := context.Background()
 		for _, oid := range oids {
 			target := targets[oid]
@@ -264,7 +262,7 @@ func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string
 			}
 			m.prefetching.Delete(oid)
 		}
-	}()
+	})
 }
 
 // stallIdleWindow aborts a transfer phase that moves no bytes for this long;

@@ -82,7 +82,7 @@ func (c *bandwidthConn) wait(limiter *rate.Limiter, n int) {
 		return
 	}
 	ctx := context.Background()
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := limiter.WaitN(ctx, 1); err != nil {
 			return
 		}
