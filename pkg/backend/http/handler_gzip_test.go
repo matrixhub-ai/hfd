@@ -2,7 +2,7 @@ package backend_test
 
 // Tests for gzip-compressed smart-HTTP request bodies: git clients compress
 // POST bodies larger than 1KiB (remote-curl.c post_rpc) and git http-backend
-// transparently inflates them, so the go-git handler must too.
+// transparently inflates them, so the handler must too in both serving modes.
 
 import (
 	"bytes"
@@ -17,13 +17,21 @@ import (
 	"testing"
 
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func TestHTTPGitGzipRequestBody(t *testing.T) {
+	forEachMode(t, func(t *testing.T, native bool) {
+		// v0 and v1 share this request shape; the v2 gzip path is exercised by TestHTTPServeGitParity/LargeNegotiationGzip.
+		for _, protoVer := range []int{0, 1} {
+			t.Run(fmt.Sprintf("ProtocolV%d", protoVer), func(t *testing.T) { testHTTPGitGzipRequestBody(t, native, protoVer) })
+		}
+	})
+}
+
+func testHTTPGitGzipRequestBody(t *testing.T, native bool, protoVer int) {
 	root := t.TempDir()
 
-	st := storage.NewStorage(storage.WithRootDir(root))
+	st := newStorage(root, native)
 	repoPath := filepath.Join(root, "repositories", "repo.git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -44,6 +52,7 @@ func TestHTTPGitGzipRequestBody(t *testing.T) {
 
 	srv := httptest.NewServer(backendhttp.NewHandler(backendhttp.WithStorage(st)))
 	t.Cleanup(srv.Close)
+	requireAgent(t, srv.URL+"/repo.git", native)
 
 	// A v0 upload-pack request equivalent to what git sends: want + done.
 	var plain bytes.Buffer
@@ -59,6 +68,9 @@ func TestHTTPGitGzipRequestBody(t *testing.T) {
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+		if protoVer > 0 {
+			req.Header.Set("Git-Protocol", fmt.Sprintf("version=%d", protoVer))
+		}
 		if encoding != "" {
 			req.Header.Set("Content-Encoding", encoding)
 		}

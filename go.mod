@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.35
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1
 	github.com/git-lfs/git-lfs/v3 v3.7.1
+	github.com/go-git/gcfg/v2 v2.0.2
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/gorilla/handlers v1.5.2
@@ -49,7 +50,6 @@ require (
 	github.com/git-lfs/go-netrc v0.0.0-20250218165306-ba0029b43d11 // indirect
 	github.com/git-lfs/pktline v0.0.0-20210330133718-06e9096e2825 // indirect
 	github.com/git-lfs/wildmatch/v2 v2.0.1 // indirect
-	github.com/go-git/gcfg/v2 v2.0.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/hashicorp/go-uuid v1.0.2 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect

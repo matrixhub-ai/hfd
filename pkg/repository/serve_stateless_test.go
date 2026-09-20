@@ -6,9 +6,9 @@ package repository
 
 import (
 	"bytes"
-	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -88,6 +88,7 @@ func TestUploadPackRequestHasDone(t *testing.T) {
 }
 
 func TestStatelessUploadPackRequestSizeLimit(t *testing.T) {
+	setGitBinary(t, "")
 	ctx := t.Context()
 	root := t.TempDir()
 
@@ -108,6 +109,58 @@ func TestStatelessUploadPackRequestSizeLimit(t *testing.T) {
 	}
 }
 
+func uploadPackRequest(t *testing.T, want, caps string, haves []string, done bool) []byte {
+	t.Helper()
+	if caps != "" {
+		want += " " + caps
+	}
+	lines := []string{"want " + want + "\n", ""}
+	for _, h := range haves {
+		lines = append(lines, "have "+h+"\n")
+	}
+	if done {
+		return pktLines(t, append(lines, "done\n")...)
+	}
+	return pktLines(t, append(lines, "")...)
+}
+
+// multi_ack_detailed permits optional ready hints for advertised haves.
+func withoutReadyACKs(t *testing.T, lines []string, detailed bool, haves []string) []string {
+	t.Helper()
+	var out []string
+	for _, line := range lines {
+		if hash, ok := strings.CutSuffix(strings.TrimPrefix(line, "ACK "), " ready"); ok && strings.HasPrefix(line, "ACK ") {
+			if !detailed || !slices.Contains(haves, hash) {
+				t.Fatalf("unexpected %q (multi_ack_detailed=%t, haves %v)", line, detailed, haves)
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// splitPack separates the pkt-lines answering "done" from the raw packfile.
+func splitPack(t *testing.T, resp []byte) (lines []string, pack []byte) {
+	t.Helper()
+	packStart := bytes.Index(resp, []byte("PACK"))
+	if packStart < 0 {
+		t.Fatalf("response %q carries no packfile", resp[:min(64, len(resp))])
+	}
+	return readPktLines(t, resp[:packStart]), resp[packStart:]
+}
+
+// requireUsablePack unpacks pack with the git binary and checks commit is readable from it.
+func requireUsablePack(t *testing.T, pack []byte, commit string) {
+	t.Helper()
+	scratch := filepath.Join(t.TempDir(), "scratch.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", scratch)
+	unpackGitPack(t, scratch, pack)
+	if typ := strings.TrimSpace(gitOut(t, scratch, "cat-file", "-t", commit)); typ != "commit" {
+		t.Fatalf("wanted commit not usable from pack, cat-file -t = %q", typ)
+	}
+}
+
 func TestStatelessUploadPackNegotiationRound(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
@@ -117,94 +170,62 @@ func TestStatelessUploadPackNegotiationRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
-	refs := gitLocalRefs(t, bare)
-	mainHash := refs["refs/heads/main"]
+	mainHash := gitLocalRefs(t, bare)["refs/heads/main"]
 
 	// A hash the server cannot have: a commit created only in the work repo
 	// after the last push.
 	commitFile(t, work, "file.txt", "local only\n", "local only")
 	localOnly := strings.TrimSpace(gitOut(t, work, "rev-parse", "HEAD"))
 
-	serve := func(t *testing.T, body []byte) []string {
-		t.Helper()
-		var out bytes.Buffer
-		if err := repo.Stateless(ctx, &out, bytes.NewReader(body), GitUploadPack, "", ReceivePackHooks{}); err != nil {
-			t.Fatalf("Stateless: %v", err)
-		}
-		return readPktLines(t, out.Bytes())
+	cases := []struct {
+		name  string
+		caps  string
+		haves []string
+		want  []string
+	}{
+		{"RoundWithUnknownHaves", "multi_ack_detailed", []string{localOnly}, []string{"NAK"}},
+		{"RoundWithCommonHaves", "multi_ack_detailed", []string{localOnly, mainHash}, []string{"ACK " + mainHash + " common", "NAK"}},
+		// Every have common: git adds an "ACK <hash> ready" hint here that go-git does not.
+		{"RoundWithOnlyCommonHaves", "multi_ack_detailed", []string{mainHash}, []string{"ACK " + mainHash + " common", "NAK"}},
+		{"MultiAckRound", "multi_ack", []string{mainHash}, []string{"ACK " + mainHash + " continue", "NAK"}},
+		{"SingleAckRound", "", []string{mainHash}, []string{"ACK " + mainHash}},
 	}
 
-	wantLine := fmt.Sprintf("want %s multi_ack_detailed\n", mainHash)
+	forEachGitMode(t, func(t *testing.T, native bool) {
+		requireGitMode(t, repo, native)
+		forEachProtocol(t, []string{"", "version=1"}, func(t *testing.T, proto string) {
+			serve := func(t *testing.T, body []byte) []byte {
+				t.Helper()
+				var out bytes.Buffer
+				if err := repo.Stateless(ctx, &out, bytes.NewReader(body), GitUploadPack, proto, ReceivePackHooks{}); err != nil {
+					t.Fatalf("Stateless: %v", err)
+				}
+				return out.Bytes()
+			}
 
-	t.Run("FlushOnlyProbe", func(t *testing.T) {
-		if got := serve(t, pktLines(t, "")); len(got) != 0 {
-			t.Fatalf("probe request should produce no output, got %q", got)
-		}
-	})
+			t.Run("FlushOnlyProbe", func(t *testing.T) {
+				if got := serve(t, pktLines(t, "")); len(got) != 0 {
+					t.Fatalf("probe request should produce no output, got %q", got)
+				}
+			})
 
-	t.Run("RoundWithUnknownHaves", func(t *testing.T) {
-		body := pktLines(t, wantLine, "",
-			fmt.Sprintf("have %s\n", localOnly), "")
-		got := serve(t, body)
-		want := []string{"NAK"}
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Fatalf("round response = %q, want %q", got, want)
-		}
-	})
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					lines := readPktLines(t, serve(t, uploadPackRequest(t, mainHash, tc.caps, tc.haves, false)))
+					if got := withoutReadyACKs(t, lines, tc.caps == "multi_ack_detailed", tc.haves); !slices.Equal(got, tc.want) {
+						t.Fatalf("round response = %q, want %q", got, tc.want)
+					}
+				})
+			}
 
-	t.Run("RoundWithCommonHaves", func(t *testing.T) {
-		body := pktLines(t, wantLine, "",
-			fmt.Sprintf("have %s\n", localOnly),
-			fmt.Sprintf("have %s\n", mainHash), "")
-		got := serve(t, body)
-		want := []string{
-			fmt.Sprintf("ACK %s common", mainHash),
-			"NAK",
-		}
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Fatalf("round response = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("MultiAckRound", func(t *testing.T) {
-		body := pktLines(t,
-			fmt.Sprintf("want %s multi_ack\n", mainHash), "",
-			fmt.Sprintf("have %s\n", mainHash), "")
-		got := serve(t, body)
-		want := []string{
-			fmt.Sprintf("ACK %s continue", mainHash),
-			"NAK",
-		}
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Fatalf("round response = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("SingleAckRound", func(t *testing.T) {
-		body := pktLines(t,
-			fmt.Sprintf("want %s\n", mainHash), "",
-			fmt.Sprintf("have %s\n", mainHash), "")
-		got := serve(t, body)
-		want := []string{fmt.Sprintf("ACK %s", mainHash)}
-		if strings.Join(got, "|") != strings.Join(want, "|") {
-			t.Fatalf("round response = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("FinalRoundWithDoneSendsPack", func(t *testing.T) {
-		var out bytes.Buffer
-		body := pktLines(t, wantLine, "", "done\n")
-		if err := repo.Stateless(ctx, &out, bytes.NewReader(body), GitUploadPack, "", ReceivePackHooks{}); err != nil {
-			t.Fatalf("Stateless final round: %v", err)
-		}
-		resp := out.Bytes()
-		lines := readPktLines(t, resp[:8]) // first pkt-line only: "0008NAK\n"
-		if len(lines) == 0 || lines[0] != "NAK" {
-			t.Fatalf("final round should start with NAK, got %q", resp[:min(16, len(resp))])
-		}
-		if !bytes.Contains(resp, []byte("PACK")) {
-			t.Fatalf("final round response should contain a packfile")
-		}
+			t.Run("FinalRoundWithDoneSendsPack", func(t *testing.T) {
+				lines, pack := splitPack(t, serve(t, uploadPackRequest(t, mainHash, "multi_ack_detailed", nil, true)))
+				if !slices.Equal(lines, []string{"NAK"}) {
+					t.Fatalf("final round without haves = %q, want [NAK]", lines)
+				}
+				requireUsablePack(t, pack, mainHash)
+			})
+		})
 	})
 }
 
@@ -212,6 +233,14 @@ func TestStatelessUploadPackNegotiationRound(t *testing.T) {
 // stateless negotiation the way a real smart-HTTP client does: rounds are
 // separate requests replaying the accumulated state, ending with done.
 func TestStatelessUploadPackFullNegotiation(t *testing.T) {
+	forEachGitMode(t, func(t *testing.T, native bool) {
+		forEachProtocol(t, []string{"", "version=1"}, func(t *testing.T, proto string) {
+			testStatelessUploadPackFullNegotiation(t, native, proto)
+		})
+	})
+}
+
+func testStatelessUploadPackFullNegotiation(t *testing.T, native bool, proto string) {
 	ctx := t.Context()
 	root := t.TempDir()
 
@@ -220,60 +249,41 @@ func TestStatelessUploadPackFullNegotiation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
+	requireGitMode(t, repo, native)
 
 	// The client has the old main plus local-only history the server lacks.
 	oldMain := gitLocalRefs(t, bare)["refs/heads/main"]
 	commitFile(t, work, "file.txt", "new upstream\n", "new upstream")
 	runGit(t, work, "push", "origin", "main")
 	newMain := gitLocalRefs(t, bare)["refs/heads/main"]
-
-	wantLine := fmt.Sprintf("want %s multi_ack_detailed\n", newMain)
 	unknown := strings.Repeat("ab", 20)
 
-	// Round 1: only haves the server does not know -> NAK, keep negotiating.
-	round1 := pktLines(t, wantLine, "", fmt.Sprintf("have %s\n", unknown), "")
-	var out1 bytes.Buffer
-	if err := repo.Stateless(ctx, &out1, bytes.NewReader(round1), GitUploadPack, "", ReceivePackHooks{}); err != nil {
-		t.Fatalf("round 1: %v", err)
+	serve := func(t *testing.T, haves []string, done bool) []byte {
+		t.Helper()
+		var out bytes.Buffer
+		if err := repo.Stateless(ctx, &out, bytes.NewReader(uploadPackRequest(t, newMain, "multi_ack_detailed", haves, done)), GitUploadPack, proto, ReceivePackHooks{}); err != nil {
+			t.Fatalf("Stateless(haves %v, done %t): %v", haves, done, err)
+		}
+		return out.Bytes()
 	}
-	if got := readPktLines(t, out1.Bytes()); len(got) != 1 || got[0] != "NAK" {
+
+	// Round 1: only haves the server does not know -> NAK, keep negotiating.
+	haves := []string{unknown}
+	if got := withoutReadyACKs(t, readPktLines(t, serve(t, haves, false)), true, haves); !slices.Equal(got, []string{"NAK"}) {
 		t.Fatalf("round 1 response = %q, want [NAK]", got)
 	}
 
 	// Round 2: replayed state plus a common have -> ACK common, NAK.
-	round2 := pktLines(t, wantLine, "",
-		fmt.Sprintf("have %s\n", unknown),
-		fmt.Sprintf("have %s\n", oldMain), "")
-	var out2 bytes.Buffer
-	if err := repo.Stateless(ctx, &out2, bytes.NewReader(round2), GitUploadPack, "", ReceivePackHooks{}); err != nil {
-		t.Fatalf("round 2: %v", err)
-	}
-	got2 := readPktLines(t, out2.Bytes())
-	want2 := []string{fmt.Sprintf("ACK %s common", oldMain), "NAK"}
-	if strings.Join(got2, "|") != strings.Join(want2, "|") {
-		t.Fatalf("round 2 response = %q, want %q", got2, want2)
+	haves = []string{unknown, oldMain}
+	if got, want := withoutReadyACKs(t, readPktLines(t, serve(t, haves, false)), true, haves), []string{"ACK " + oldMain + " common", "NAK"}; !slices.Equal(got, want) {
+		t.Fatalf("round 2 response = %q, want %q", got, want)
 	}
 
-	// Final round: full state plus done -> ACK/pack.
-	final := pktLines(t, wantLine, "",
-		fmt.Sprintf("have %s\n", oldMain),
-		"done\n")
-	var out3 bytes.Buffer
-	if err := repo.Stateless(ctx, &out3, bytes.NewReader(final), GitUploadPack, "", ReceivePackHooks{}); err != nil {
-		t.Fatalf("final round: %v", err)
+	// Final round: the acknowledged common have plus done -> ACK common, final ACK, pack.
+	haves = []string{oldMain}
+	lines, pack := splitPack(t, serve(t, haves, true))
+	if got, want := withoutReadyACKs(t, lines, true, haves), []string{"ACK " + oldMain + " common", "ACK " + oldMain}; !slices.Equal(got, want) {
+		t.Fatalf("final round response = %q, want %q", got, want)
 	}
-	if !bytes.Contains(out3.Bytes(), []byte("PACK")) {
-		t.Fatalf("final response should contain a packfile")
-	}
-
-	// The pack must be usable by the git binary: index it into a scratch
-	// repository and verify the wanted commit becomes readable.
-	resp := out3.Bytes()
-	packStart := bytes.Index(resp, []byte("PACK"))
-	scratch := filepath.Join(root, "scratch.git")
-	runGit(t, "", "init", "--bare", "--initial-branch=main", scratch)
-	unpackGitPack(t, scratch, resp[packStart:])
-	if typ := strings.TrimSpace(gitOut(t, scratch, "cat-file", "-t", newMain)); typ != "commit" {
-		t.Fatalf("wanted commit not usable from negotiated pack, cat-file -t = %q", typ)
-	}
+	requireUsablePack(t, pack, newMain)
 }
