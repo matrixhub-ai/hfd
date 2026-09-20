@@ -34,8 +34,8 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/models/{namespace}/{repo}/user-access-request/grant` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/user-access-request/grant) | Grant access |
 | ❌ | `POST` | `/api/models/{namespace}/{repo}/user-access-request/handle` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/user-access-request/handle) | Handle access request |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/user-access-request/{status}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/user-access-request/{status}) | List access requests |
-| ❌ | `GET` | `/api/models/{namespace}/{repo}/xet-read-token/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
-| ❌ | `GET` | `/api/models/{namespace}/{repo}/xet-write-token/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
+| ✅ | `GET` | `/api/models/{namespace}/{repo}/xet-read-token/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
+| ✅ | `GET` | `/api/models/{namespace}/{repo}/xet-write-token/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
 | ✅ | `GET` | `/api/resolve-cache/models/{namespace}/{repo}/{rev}/{path}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/resolve-cache/models/{namespace}/{repo}/{rev}/{path}) | Resolve a file |
 | ❌ | `GET` | `/api/trending` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/trending), [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/trending), [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/trending) | Get trending |
 | ❌ | `POST` | `/{namespace}/{repo}/ask-access` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/{namespace}/{repo}/ask-access) | Request access |
@@ -72,8 +72,8 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/datasets/{namespace}/{repo}/user-access-request/grant` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/user-access-request/grant) | Grant access |
 | ❌ | `POST` | `/api/datasets/{namespace}/{repo}/user-access-request/handle` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/user-access-request/handle) | Handle access request |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/user-access-request/{status}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/user-access-request/{status}) | List access requests |
-| ❌ | `GET` | `/api/datasets/{namespace}/{repo}/xet-read-token/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
-| ❌ | `GET` | `/api/datasets/{namespace}/{repo}/xet-write-token/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
+| ✅ | `GET` | `/api/datasets/{namespace}/{repo}/xet-read-token/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
+| ✅ | `GET` | `/api/datasets/{namespace}/{repo}/xet-write-token/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
 | ✅ | `GET` | `/api/resolve-cache/datasets/{namespace}/{repo}/{rev}/{path}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/resolve-cache/datasets/{namespace}/{repo}/{rev}/{path}) | Resolve a file |
 | ❌ | `POST` | `/datasets/{namespace}/{repo}/ask-access` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/datasets/{namespace}/{repo}/ask-access) | Request access |
 | ✅ | `GET` | `/datasets/{namespace}/{repo}/resolve/{rev}/{path}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/datasets/{namespace}/{repo}/resolve/{rev}/{path}) | Resolve a file |
@@ -123,23 +123,14 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `DELETE` | `/api/spaces/{namespace}/{repo}/variables` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/DELETE/api/spaces/{namespace}/{repo}/variables) | Delete variable |
 | ❌ | `PUT` | `/api/spaces/{namespace}/{repo}/volumes` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/PUT/api/spaces/{namespace}/{repo}/volumes) | Set Space volumes |
 | ❌ | `DELETE` | `/api/spaces/{namespace}/{repo}/volumes` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/DELETE/api/spaces/{namespace}/{repo}/volumes) | Delete Space volumes |
-| ❌ | `GET` | `/api/spaces/{namespace}/{repo}/xet-read-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
-| ❌ | `GET` | `/api/spaces/{namespace}/{repo}/xet-write-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
+| ✅ | `GET` | `/api/spaces/{namespace}/{repo}/xet-read-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
+| ✅ | `GET` | `/api/spaces/{namespace}/{repo}/xet-write-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
 | ✅ | `GET` | `/spaces/{namespace}/{repo}/resolve/{rev}/{path}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/spaces/{namespace}/{repo}/resolve/{rev}/{path}) | Resolve a file |
 | ✅ | `POST` | `/api/repos/create` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/create) | Create repository |
 | ✅ | `POST` | `/api/repos/move` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/move) | Move repo |
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
 | ❌ | `GET` | `/api/{repoType}/{namespace}/{repo}/duplicate/status` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/GET/api/{repoType}/{namespace}/{repo}/duplicate/status) | Duplication status |
 | ✅ | `GET` | `/api/agent-harnesses` | [agents](https://huggingface.co/spaces/huggingface/openapi#tag/agents/GET/api/agent-harnesses) | Get agent harnesses |
-| ❌ | `POST` | `/api/agentic/provisioning/account_requests` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/account_requests) | Create account request |
-| ❌ | `POST` | `/api/agentic/provisioning/deep_links` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/deep_links) | Create deep link |
-| ❌ | `GET` | `/api/agentic/provisioning/health` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/health) | Get health |
-| ❌ | `POST` | `/api/agentic/provisioning/resources` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources) | Provision a resource |
-| ❌ | `GET` | `/api/agentic/provisioning/resources/{id}` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/resources/{id}) | Resource by ID |
-| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/remove` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/remove) | Remove resource |
-| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/rotate_credentials` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/rotate_credentials) | Rotate resource credentials |
-| ❌ | `POST` | `/api/agentic/provisioning/resources/{id}/update_service` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/POST/api/agentic/provisioning/resources/{id}/update_service) | Update resource service |
-| ❌ | `GET` | `/api/agentic/provisioning/services` | [agentic-provisioning](https://huggingface.co/spaces/huggingface/openapi#tag/agentic-provisioning/GET/api/agentic/provisioning/services) | Get services |
 | ❌ | `GET` | `/api/avatars/{namespace}` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/avatars/{namespace}), [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/avatars/{namespace}) | Get avatar |
 | ❌ | `GET` | `/api/blog/zh` | [blogs](https://huggingface.co/spaces/huggingface/openapi#tag/blogs/GET/api/blog/zh) | List blogs |
 | ❌ | `POST` | `/api/blog/{namespace}/{slug}/comment` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/blog/{namespace}/{slug}/comment) | Create comment |
@@ -159,6 +150,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/buckets/{namespace}/{repo}` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/POST/api/buckets/{namespace}/{repo}) | Create bucket |
 | ❌ | `DELETE` | `/api/buckets/{namespace}/{repo}` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/DELETE/api/buckets/{namespace}/{repo}) | Delete bucket |
 | ❌ | `POST` | `/api/buckets/{namespace}/{repo}/batch` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/POST/api/buckets/{namespace}/{repo}/batch) | Batch file operations |
+| ❌ | `GET` | `/api/buckets/{namespace}/{repo}/events` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/GET/api/buckets/{namespace}/{repo}/events) | Follow changes |
 | ❌ | `POST` | `/api/buckets/{namespace}/{repo}/lfs-files/duplicate` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/POST/api/buckets/{namespace}/{repo}/lfs-files/duplicate) | Duplicate xet files |
 | ❌ | `POST` | `/api/buckets/{namespace}/{repo}/paths-info` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/POST/api/buckets/{namespace}/{repo}/paths-info) | List paths info |
 | ❌ | `GET` | `/api/buckets/{namespace}/{repo}/resource-group` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/GET/api/buckets/{namespace}/{repo}/resource-group) | Get resource group |
@@ -187,6 +179,16 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `DELETE` | `/api/collections/{namespace}/{slug}/items/{slug}` | [collections](https://huggingface.co/spaces/huggingface/openapi#tag/collections/DELETE/api/collections/{namespace}/{slug}/items/{slug}) | Delete item |
 | ❌ | `GET` | `/api/collections/{namespace}/{slug}/resource-group` | [collections](https://huggingface.co/spaces/huggingface/openapi#tag/collections/GET/api/collections/{namespace}/{slug}/resource-group) | Collection resource group |
 | ❌ | `POST` | `/api/collections/{namespace}/{slug}/resource-group` | [collections](https://huggingface.co/spaces/huggingface/openapi#tag/collections/POST/api/collections/{namespace}/{slug}/resource-group) | Collection resource group |
+| ❌ | `GET` | `/api/containers/{namespace}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/containers/{namespace}) | List namespace buckets |
+| ❌ | `GET` | `/api/containers/{namespace}/{repo}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/containers/{namespace}/{repo}) | Get bucket details |
+| ❌ | `POST` | `/api/containers/{namespace}/{repo}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/POST/api/containers/{namespace}/{repo}) | Create bucket |
+| ❌ | `DELETE` | `/api/containers/{namespace}/{repo}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/DELETE/api/containers/{namespace}/{repo}) | Delete bucket |
+| ❌ | `POST` | `/api/containers/{namespace}/{repo}/batch` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/POST/api/containers/{namespace}/{repo}/batch) | Batch file operations |
+| ❌ | `POST` | `/api/containers/{namespace}/{repo}/paths-info` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/POST/api/containers/{namespace}/{repo}/paths-info) | List paths info |
+| ❌ | `PUT` | `/api/containers/{namespace}/{repo}/settings` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/PUT/api/containers/{namespace}/{repo}/settings) | Update bucket settings |
+| ❌ | `GET` | `/api/containers/{namespace}/{repo}/tree/{path}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/containers/{namespace}/{repo}/tree/{path}) | List files |
+| ❌ | `GET` | `/api/containers/{namespace}/{repo}/xet-read-token` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/containers/{namespace}/{repo}/xet-read-token) | Xet read token |
+| ❌ | `GET` | `/api/containers/{namespace}/{repo}/xet-write-token` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/containers/{namespace}/{repo}/xet-write-token) | Xet write token |
 | ❌ | `POST` | `/api/credentials/revoke` | [tokens](https://huggingface.co/spaces/huggingface/openapi#tag/tokens/POST/api/credentials/revoke) | Revoke leaked tokens |
 | ❌ | `GET` | `/api/daily_papers` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/GET/api/daily_papers) | Get Daily Papers |
 | ❌ | `GET` | `/api/docs` | [docs](https://huggingface.co/spaces/huggingface/openapi#tag/docs/GET/api/docs) | List docs |
@@ -298,7 +300,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/posts/{username}/{postSlug}/comment/{commentId}/reply` | [discussions](https://huggingface.co/spaces/huggingface/openapi#tag/discussions/POST/api/posts/{username}/{postSlug}/comment/{commentId}/reply) | Create comment |
 | ❌ | `GET` | `/api/quicksearch` | [repo-search](https://huggingface.co/spaces/huggingface/openapi#tag/repo-search/GET/api/quicksearch) | Quick search |
 | ❌ | `POST` | `/api/quicksearch` | [repo-search](https://huggingface.co/spaces/huggingface/openapi#tag/repo-search/POST/api/quicksearch) | Quick search |
-| ❌ | `GET` | `/api/registry/token` | [container](https://huggingface.co/spaces/huggingface/openapi#tag/container/GET/api/registry/token) | Registry token |
+| ❌ | `GET` | `/api/registry/token` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/api/registry/token) | Registry token |
 | ❌ | `GET` | `/api/scheduled-jobs/{namespace}` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/scheduled-jobs/{namespace}) | List scheduled jobs |
 | ❌ | `POST` | `/api/scheduled-jobs/{namespace}` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/POST/api/scheduled-jobs/{namespace}) | Create scheduled job |
 | ❌ | `GET` | `/api/scheduled-jobs/{namespace}/{jobId}` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/scheduled-jobs/{namespace}/{jobId}) | Get scheduled job |
@@ -358,6 +360,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `PATCH` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/PATCH/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}) | Update embed |
 | ❌ | `DELETE` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/DELETE/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}) | Delete embed |
 | ❌ | `GET` | `/buckets/{namespace}/{repo}/resolve/{path}` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/GET/buckets/{namespace}/{repo}/resolve/{path}) | Get file metadata |
+| ❌ | `GET` | `/containers/{namespace}/{repo}/resolve/{path}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/containers/{namespace}/{repo}/resolve/{path}) | Get file metadata |
 | ❌ | `POST` | `/oauth/device` | [oauth](https://huggingface.co/spaces/huggingface/openapi#tag/oauth/POST/oauth/device) | Initiate device authorization |
 | ❌ | `POST` | `/oauth/register` | [oauth](https://huggingface.co/spaces/huggingface/openapi#tag/oauth/POST/oauth/register) | Register OAuth app |
 | ❌ | `GET` | `/oauth/userinfo` | [oauth](https://huggingface.co/spaces/huggingface/openapi#tag/oauth/GET/oauth/userinfo) | Get user info |
