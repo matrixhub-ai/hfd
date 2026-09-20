@@ -16,7 +16,6 @@ import (
 
 	xetstorage "github.com/wzshiming/xet/storage"
 
-	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -150,10 +149,7 @@ func TestGCLifecycle(t *testing.T) {
 	handler = backendhf.NewHandler(
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(proxyMirror),
-		backendhf.WithNext(backendcas.NewHandler(
-			backendcas.WithMirror(proxyMirror),
-			backendcas.WithNext(http.NotFoundHandler()),
-		)),
+		backendhf.WithNext(http.NotFoundHandler()),
 		backendhf.WithPreOpenHookFunc(preOpen),
 	)
 	handler = backendlfs.NewHandler(

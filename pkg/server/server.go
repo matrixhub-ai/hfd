@@ -14,7 +14,6 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -32,7 +31,7 @@ import (
 type Options struct {
 	Storage        *storage.Storage
 	XETStorage     xetstorage.Storage              // serves the xet CAS routes ahead of user authentication, so /v1/, /v2/, /shards, /reconstructions and /xet-bridge/ paths take precedence over hub and git routes; nil disables them
-	Mirror         *mirror.Mirror                  // data plane of the lfs/hf/cas backends; nil for a plain server
+	Mirror         *mirror.Mirror                  // data plane of the lfs/hf backends; nil for a plain server
 	Authenticators *authenticate.Authenticators    // validators for the default authentication layer and the SSH server; nil = anonymous HTTP, unauthenticated SSH
 	Authenticate   func(http.Handler) http.Handler // replaces the default authenticate.NewHandler layer when set; the xet CAS routes are answered before it
 	CASAuthorizer  auth.Authorizer                 // gates the xet CAS routes; nil rejects every gated route (xorb downloads and /xet-bridge stay anonymous)
@@ -49,7 +48,6 @@ type Options struct {
 	HFOptions   []backendhf.Option // appended after the defaults; likewise below
 	LFSOptions  []backendlfs.Option
 	GitOptions  []backendhttp.Option
-	CASOptions  []backendcas.Option
 	SSHOptions  []backendssh.Option
 }
 
@@ -142,17 +140,6 @@ func hfBackend(o Options) middleware {
 	}
 }
 
-func casBackend(o Options) middleware {
-	return func(next http.Handler) http.Handler {
-		opts := []backendcas.Option{
-			backendcas.WithMirror(o.Mirror),
-			backendcas.WithPermissionHookFunc(o.Permission),
-			backendcas.WithNext(next),
-		}
-		return backendcas.NewHandler(append(opts, o.CASOptions...)...)
-	}
-}
-
 func xetCASServer(o Options) middleware {
 	if o.XETStorage == nil {
 		return passthrough
@@ -170,7 +157,7 @@ func xetCASServer(o Options) middleware {
 	}
 }
 
-// NewHTTPHandler assembles the HTTP chain: access log, internal API, xet CAS server, authentication, git, lfs, hf, cas, Next.
+// NewHTTPHandler assembles the HTTP chain: access log, internal API, xet CAS server, authentication, git, lfs, hf, Next.
 func NewHTTPHandler(o Options) http.Handler {
 	if o.Storage == nil {
 		panic("server: Options.Storage is required")
@@ -190,7 +177,6 @@ func NewHTTPHandler(o Options) http.Handler {
 		gitHTTPBackend(o),
 		lfsBackend(o),
 		hfBackend(o),
-		casBackend(o),
 	)
 }
 

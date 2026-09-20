@@ -25,7 +25,6 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	backendcas "github.com/matrixhub-ai/hfd/pkg/backend/cas"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -167,7 +166,7 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 }
 
 // newE2EServer wires the handler chain in pkg/server's order (internal API →
-// xet CAS server → authentication → http → lfs → hf → cas); withMirrorSource
+// xet CAS server → authentication → http → lfs → hf); withMirrorSource
 // installs PullMirrorReadOnly on the git transports. The xet engine ingests
 // from the mirror source when one is set — like cmd/hfd does with
 // --pull-mirror-url — so mirrored LFS resolves stream through the engine
@@ -212,17 +211,10 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		preOpen = newMirrorPreOpenHook(sharedMirror)
 	}
 
-	casOpts := []backendcas.Option{
-		backendcas.WithMirror(sharedMirror),
-		backendcas.WithNext(http.NotFoundHandler()),
-	}
-	if cfg.apiHooks {
-		casOpts = append(casOpts, backendcas.WithPermissionHookFunc(cfg.permission))
-	}
 	hfOpts := []backendhf.Option{
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
-		backendhf.WithNext(backendcas.NewHandler(casOpts...)),
+		backendhf.WithNext(http.NotFoundHandler()),
 	}
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
