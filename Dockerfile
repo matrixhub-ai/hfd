@@ -24,7 +24,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM ${IMAGE_PREFIX}library/alpine:${ALPINE_VERSION} AS hfd
 
-RUN apk add --no-cache git
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add --no-cache ca-certificates git && \
+    apk upgrade --no-cache && \
+    update-ca-certificates
 
 COPY --from=builder /out/hfd /usr/local/bin/hfd
 
