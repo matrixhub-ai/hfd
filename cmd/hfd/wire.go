@@ -18,6 +18,8 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
+	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/internal/stallguard"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -91,25 +93,25 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 // buildXETStorage creates the xet content storage holding all LFS bytes: in
 // the S3 bucket when configured, under the data directory otherwise. In S3
 // mode xorb downloads presign straight to S3 — everything else is proxied.
-func buildXETStorage(ctx context.Context, cfg *config) (xetStore, error) {
-	var xs xetStore
+func buildXETStorage(ctx context.Context, cfg *config) (xetstorage.Storage, error) {
+	var xs xetstorage.Storage
 	var err error
 	if s3Configured(cfg) {
-		s3Opts := []xetstorage.S3Option{
-			xetstorage.WithS3Client(newS3Client(cfg)),
-			xetstorage.WithS3Bucket(cfg.S3Bucket),
-			xetstorage.WithS3Prefix("xet"),
+		s3Opts := []xets3.Option{
+			xets3.WithS3Client(newS3Client(cfg)),
+			xets3.WithBucket(cfg.S3Bucket),
+			xets3.WithPrefix("xet"),
 		}
 		if cfg.S3SignEndpoint != "" {
-			s3Opts = append(s3Opts, xetstorage.WithS3PresignEndpoint(cfg.S3SignEndpoint))
+			s3Opts = append(s3Opts, xets3.WithPresignEndpoint(cfg.S3SignEndpoint))
 		}
-		xs, err = xetstorage.NewS3Storage(ctx, s3Opts...)
+		xs, err = xets3.NewStorage(ctx, s3Opts...)
 		if err != nil {
 			return nil, fmt.Errorf("create xet S3 storage: %w", err)
 		}
 	} else {
-		xs, err = xetstorage.NewFileStorage(
-			xetstorage.WithBasePath(filepath.Join(cfg.DataDir, "xet", "storage")),
+		xs, err = xetlocal.NewStorage(
+			xetlocal.WithBasePath(filepath.Join(cfg.DataDir, "xet", "storage")),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("create xet storage: %w", err)
@@ -235,12 +237,6 @@ func buildAuthenticators(ctx context.Context, cfg *config) (*authenticate.Authen
 		auth.PublicKey = authenticate.NewSimplePublicKeyValidator(authorizedKeys)
 	}
 	return auth, nil
-}
-
-// xetStore is the xet storage together with the GC surface both xet backends implement.
-type xetStore interface {
-	xetstorage.Storage
-	xetstorage.GCStore
 }
 
 // loadOrGenerateHostKey loads the SSH host key from the configured path, or

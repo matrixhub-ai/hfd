@@ -9,7 +9,7 @@ import (
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
-	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -44,7 +44,7 @@ func TestPreOpenPullTTL(t *testing.T) {
 	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
 	srcRoot := t.TempDir()
 	dir := t.TempDir()
-	xs, err := xetstorage.NewFileStorage(xetstorage.WithBasePath(dir))
+	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(dir))
 	if err != nil {
 		t.Fatalf("build xet storage: %v", err)
 	}

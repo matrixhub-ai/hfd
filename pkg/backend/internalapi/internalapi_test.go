@@ -14,21 +14,22 @@ import (
 	"time"
 
 	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
-func newStorage(t *testing.T) *xetstorage.FileStorage {
+func newStorage(t *testing.T) *xetlocal.Storage {
 	t.Helper()
-	xs, err := xetstorage.NewFileStorage(xetstorage.WithBasePath(filepath.Join(t.TempDir(), "xet")))
+	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(filepath.Join(t.TempDir(), "xet")))
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
 	return xs
 }
 
-func newHandler(t *testing.T, store xetstorage.GCStore) *Handler {
+func newHandler(t *testing.T, store xetstorage.Storage) *Handler {
 	t.Helper()
 	repos := storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
@@ -107,20 +108,20 @@ func TestHandler(t *testing.T) {
 
 // blockingStore parks the first shard walk until released; later walks pass through.
 type blockingStore struct {
-	*xetstorage.FileStorage
+	*xetlocal.Storage
 	once           sync.Once
 	enter, release chan struct{}
 }
 
 func (b *blockingStore) WalkShards(ctx context.Context, fn func(string, int64, time.Time) error) error {
 	b.once.Do(func() { b.enter <- struct{}{}; <-b.release })
-	return b.FileStorage.WalkShards(ctx, fn)
+	return b.Storage.WalkShards(ctx, fn)
 }
 
 func TestHandlerBusy(t *testing.T) {
 	for _, endpoint := range []string{"prune", "sweep"} {
 		t.Run(endpoint, func(t *testing.T) {
-			store := &blockingStore{FileStorage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
+			store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
 			h := newHandler(t, store)
 			first := make(chan int, 1)
 			go func() { first <- do(h, http.MethodPost, "/internal/gc/"+endpoint).Code }()
@@ -143,7 +144,7 @@ func TestHandlerBusy(t *testing.T) {
 
 // partialStore accepts the first dead entry's unlink and fails the second.
 type partialStore struct {
-	*xetstorage.FileStorage
+	*xetlocal.Storage
 }
 
 const deadSHA = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -164,7 +165,7 @@ func (p *partialStore) DeleteSHA256IndexEntry(_ context.Context, oid string) (bo
 }
 
 func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
-	h := newHandler(t, &partialStore{FileStorage: newStorage(t)})
+	h := newHandler(t, &partialStore{Storage: newStorage(t)})
 	rec := do(h, http.MethodPost, "/internal/gc/prune")
 	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)

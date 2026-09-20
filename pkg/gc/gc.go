@@ -32,13 +32,13 @@ var ErrInvalidOID = errors.New("invalid oid")
 // only while pushes are quiescent.
 type Collector struct {
 	repos billy.Filesystem
-	store xetstorage.GCStore
+	store xetstorage.Storage
 	gc    *xetstorage.GC
 	mu    sync.Mutex // serializes Prune and SweepStep
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
-func NewCollector(repos billy.Filesystem, store xetstorage.GCStore) *Collector {
+func NewCollector(repos billy.Filesystem, store xetstorage.Storage) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
 }
 

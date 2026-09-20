@@ -13,7 +13,7 @@ import (
 
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
-	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
@@ -73,7 +73,7 @@ func TestNewHTTPHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xs, err := xetstorage.NewFileStorage(xetstorage.WithBasePath(t.TempDir()))
+	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}

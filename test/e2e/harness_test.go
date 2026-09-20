@@ -22,7 +22,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wzshiming/xet/auth"
-	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -275,12 +274,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	handler = authenticate.NewHandler(authOpts...)
 	handler = xet.casServer(handler)
 	if cfg.internalAPI {
-		gcs, ok := xet.xs.(xetstorage.GCStore)
-		if !ok {
-			t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
-		}
 		handler = backendinternalapi.NewHandler(
-			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
+			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
 			backendinternalapi.WithGCGrace(time.Hour),
 			backendinternalapi.WithNext(handler),
 		)

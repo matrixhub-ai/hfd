@@ -21,7 +21,7 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
-	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -43,8 +43,8 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
 	}
-	xs, err := xetstorage.NewFileStorage(
-		xetstorage.WithBasePath(filepath.Join(dataDir, "storage")),
+	xs, err := xetlocal.NewStorage(
+		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
 	)
 	if err != nil {
 		t.Fatalf("create xet storage: %v", err)
