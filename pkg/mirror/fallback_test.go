@@ -17,7 +17,7 @@ import (
 
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
-	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 )
 
 // TestPrefetchFallsBackToLFSBatch covers sources without the hub resolve API:
@@ -63,8 +63,8 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)
 	}
-	xs, err := xetstorage.NewFileStorage(
-		xetstorage.WithBasePath(filepath.Join(dataDir, "storage")),
+	xs, err := xetlocal.NewStorage(
+		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
 	)
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)

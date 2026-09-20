@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-billy/v6/util"
 	xetclient "github.com/wzshiming/xet/client"
 	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -28,7 +29,7 @@ const objectSize = 64 * 1024
 
 type fixture struct {
 	st    *storage.Storage
-	xs    *xetstorage.FileStorage
+	xs    *xetlocal.Storage
 	xsDir string
 	m     *mirror.Mirror
 }
@@ -41,7 +42,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("new xet client: %v", err)
 	}
 	xsDir := filepath.Join(dataDir, "storage")
-	xs, err := xetstorage.NewFileStorage(xetstorage.WithBasePath(xsDir))
+	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(xsDir))
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
@@ -116,7 +117,7 @@ func (f *fixture) counts(t *testing.T) (shards, xorbs int) {
 	}); err != nil {
 		t.Fatalf("walk shards: %v", err)
 	}
-	if err := f.xs.WalkXorbs(context.Background(), func(string, int64, time.Time) error {
+	if err := f.xs.WalkXorbs(context.Background(), "default", func(string, int64, time.Time) error {
 		xorbs++
 		return nil
 	}); err != nil {

@@ -21,6 +21,8 @@ import (
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
+	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -151,14 +153,14 @@ func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gi
 	}
 	var xs xetstorage.Storage
 	if s3Storage {
-		xs, err = xetstorage.NewS3Storage(t.Context(),
-			xetstorage.WithS3Client(testS3Client),
-			xetstorage.WithS3Bucket(testS3Bucket),
-			xetstorage.WithS3Prefix(filepath.Base(dataDir)+"/xet"),
+		xs, err = xets3.NewStorage(t.Context(),
+			xets3.WithS3Client(testS3Client),
+			xets3.WithBucket(testS3Bucket),
+			xets3.WithPrefix(filepath.Base(dataDir)+"/xet"),
 		)
 	} else {
-		xs, err = xetstorage.NewFileStorage(
-			xetstorage.WithBasePath(filepath.Join(xetDir, "storage")),
+		xs, err = xetlocal.NewStorage(
+			xetlocal.WithBasePath(filepath.Join(xetDir, "storage")),
 		)
 	}
 	if err != nil {

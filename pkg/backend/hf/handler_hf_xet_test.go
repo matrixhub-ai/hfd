@@ -16,7 +16,7 @@ import (
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
-	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -41,8 +41,8 @@ func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)
 	}
-	xs, err := xetstorage.NewFileStorage(
-		xetstorage.WithBasePath(filepath.Join(dataDir, "storage")),
+	xs, err := xetlocal.NewStorage(
+		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
 	)
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)

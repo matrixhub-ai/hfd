@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	xetstorage "github.com/wzshiming/xet/storage"
-
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -120,8 +118,7 @@ func postPrune(t *testing.T, baseURL, query string) gcPruneResult {
 // the repo and re-ingesting from upstream. The internal API wraps the chain
 // outermost with the same options as cmd/hfd's internalAPI. Library-level
 // GC semantics stay covered upstream in xet; this test pins the hfd wiring.
-// TestMain runs it under local and S3 storage; both xet storages implement
-// GCStore, so the GC endpoints never answer 501.
+// TestMain runs it under local and S3 storage.
 func TestGCLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("git-lfs"); err != nil {
 		t.Skip("git-lfs not available, skipping GC lifecycle test")
@@ -166,12 +163,8 @@ func TestGCLifecycle(t *testing.T) {
 	handler = xet.casServer(handler)
 	// The wiring under test: the internal management API wraps the whole
 	// chain outermost, the way cmd/hfd's internalAPI does.
-	gcs, ok := xet.xs.(xetstorage.GCStore)
-	if !ok {
-		t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
-	}
 	handler = backendinternalapi.NewHandler(
-		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), gcs)),
+		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
 		backendinternalapi.WithGCGrace(time.Hour),
 		backendinternalapi.WithNext(handler),
 	)
@@ -220,14 +213,10 @@ func TestGCLifecycle(t *testing.T) {
 
 	countStored := func(t *testing.T) (shards, xorbs int) {
 		t.Helper()
-		gcs, ok := xet.xs.(xetstorage.GCStore)
-		if !ok {
-			t.Fatalf("xet storage %T does not implement GCStore", xet.xs)
-		}
-		if err := gcs.WalkShards(t.Context(), func(string, int64, time.Time) error { shards++; return nil }); err != nil {
+		if err := xet.xs.WalkShards(t.Context(), func(string, int64, time.Time) error { shards++; return nil }); err != nil {
 			t.Fatalf("walk shards: %v", err)
 		}
-		if err := gcs.WalkXorbs(t.Context(), func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
+		if err := xet.xs.WalkXorbs(t.Context(), "default", func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
 			t.Fatalf("walk xorbs: %v", err)
 		}
 		return shards, xorbs
