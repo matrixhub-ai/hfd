@@ -1,44 +1,45 @@
 # hfd
 
-Self-hostable Hugging Face style hub written in Go: a git server that speaks the
-Hugging Face Hub API, git smart HTTP / SSH protocols, Git LFS, and the XET
-content-addressable storage protocol.
+Privately Headless HuggingFace Daemon
 
-This project tracks:
+hfd is a Go daemon that serves Hugging Face Hub protocols from your own
+infrastructure. Point `HF_ENDPOINT` at it or add it as a Git remote, and the
+Hub API, Git, Git LFS, and Xet clients work against repositories you host for
+supported operations.
 
-- [Hugging Face Hub OpenAPI](https://huggingface.co/.well-known/openapi.json)
-  ([interactive viewer](https://huggingface.co/spaces/huggingface/openapi)),
-  per-endpoint coverage is documented in [hf-api-status.md](hf-api-status.md)
+## Why Headless
 
-## Current Scope
+Deployment and storage stay under your control. Repositories are
+operator-managed bare Git repositories, and large files are chunk-deduplicated
+Xet content, kept in a local data directory or in S3-compatible object
+storage, optionally with pull-through or push mirroring of another hub.
 
-Implemented in this repository:
+There is no web UI, and no external database service is required. Identity
+comes from HTTP basic auth, bearer or signed tokens, and SSH keys;
+authorization and push handling go through pluggable permission and receive
+hooks.
 
-- Git smart protocol over HTTP and SSH (clone / fetch / push), with HTTP basic
-  auth, bearer / signed tokens, SSH public key and password authentication
-- Git LFS server backed by XET CAS storage (chunk-level deduplication,
-  xorb / shard reconstruction)
-- Hugging Face Hub API for models, datasets, and spaces: repo management,
-  branches, tags, commits, refs, tree / treesize, compare, preupload, commit,
-  super-squash, settings, `resolve` downloads, and xet write tokens
-- Compatible with real clients: `git`, `git-lfs`, the `hf` CLI, and the Python
-  `huggingface_hub` library (upload / download / snapshot, xet-enabled transfers)
-- Mirror modes: pull-through cache of an upstream hub (e.g. huggingface.co)
-  and push mirror to a remote hub, with TTL cache and per-file concurrency control
-- Storage backends: local filesystem or S3-compatible object stores (MinIO
-  etc.), with optional presigned download URLs
-- Permission and receive hooks for customizable access control
-- End-to-end test matrix covering git / LFS / hf CLI / Python clients over
-  both filesystem and S3 backends
+## Protocols and Clients
 
-## Compatibility Notes
+| Protocol             | Clients                     |
+| -------------------- | --------------------------- |
+| Hugging Face Hub API | `hf` CLI, `huggingface_hub` |
+| Git smart HTTP       | `git`                       |
+| Git over SSH         | `git`                       |
+| Git LFS              | `git-lfs`                   |
+| Xet CAS              | `git-xet`, `hf_xet`         |
 
-- This project aims to be a drop-in `HF_ENDPOINT` replacement for the
-  supported subset of the Hub API; endpoint-by-endpoint status is tracked in
-  [hf-api-status.md](hf-api-status.md).
-- Behavior is validated end-to-end against official clients (`git`,
-  `git-lfs`, `hf` CLI, `huggingface_hub`) in [test/e2e](test/e2e).
-- Coverage is evolving with upstream API and client changes.
+## Compatibility
+
+- hfd implements a subset of the Hub API. Coverage is tracked per endpoint in
+  [hf-api-status.md](hf-api-status.md) against the
+  [Hugging Face Hub OpenAPI](https://huggingface.co/.well-known/openapi.json)
+  ([interactive viewer](https://huggingface.co/spaces/huggingface/openapi)).
+- [test/e2e](test/e2e) exercises `git`, `git-lfs`, `hf`, `huggingface_hub`, and
+  `hf_xet` against local and S3 backends.
+- Filesystem-backed repositories use the system `git` binary when one is
+  available; otherwise, and for S3, hfd falls back to go-git.
+- Coverage evolves with upstream API and client changes.
 
 ## License
 
