@@ -183,8 +183,6 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		}
 	}
 
-	slog.InfoContext(ctx, "gc prune", "repositories", res.Repositories, "live", res.LiveObjects,
-		"unlinked", len(res.Unlinked), "skipped_in_grace", res.SkippedInGrace, "dry_run", res.DryRun)
 	return res, nil
 }
 
