@@ -366,6 +366,13 @@ func mirrorRemoteConfig(url string) (name string, config []string) {
 	return name, []string{"remote." + name + ".url=" + url}
 }
 
+// gitDirCmd binds git to dir itself instead of discovering from cwd; cwd stays dir so relative remote paths keep resolving there.
+func gitDirCmd(ctx context.Context, dir string, config []string, args ...string) *exec.Cmd {
+	cmd := gitCmd(ctx, "", config, append([]string{"--git-dir", dir, "--bare"}, args...)...)
+	cmd.Dir = dir
+	return cmd
+}
+
 // fetchGit fetches refs from url into dir with native git, streaming stderr to progress.
 func (r *Repository) fetchGit(ctx context.Context, dir, url string, refs []string, progress io.Writer) error {
 	var specs strings.Builder
@@ -377,7 +384,7 @@ func (r *Repository) fetchGit(ctx context.Context, dir, url string, refs []strin
 		fmt.Fprintf(&specs, "+%s:%s\n", ref, ref)
 	}
 	remote, config := mirrorRemoteConfig(url)
-	cmd := gitCmd(ctx, "", config, "-C", dir, "fetch", "--no-tags", "--progress", "--no-write-fetch-head", "--stdin", remote)
+	cmd := gitDirCmd(ctx, dir, config, "fetch", "--no-tags", "--progress", "--no-write-fetch-head", "--stdin", remote)
 	cmd.Stdin = strings.NewReader(specs.String())
 	cmd.Stderr = &tailBuffer{sink: progress}
 	err := runGitCmd(cmd)
@@ -387,11 +394,11 @@ func (r *Repository) fetchGit(ctx context.Context, dir, url string, refs []strin
 
 func (r *Repository) pushGit(ctx context.Context, dir, url string, refs []string, deletes []gitconfig.RefSpec, progress io.Writer) error {
 	remote, config := mirrorRemoteConfig(url)
-	args := append([]string{"-C", dir, "push", "--progress", "--", remote}, refs...)
+	args := append([]string{"push", "--progress", "--", remote}, refs...)
 	for _, spec := range deletes {
 		args = append(args, spec.String())
 	}
-	cmd := gitCmd(ctx, "", append(config, "push.followTags=false"), args...)
+	cmd := gitDirCmd(ctx, dir, append(config, "push.followTags=false"), args...)
 	cmd.Stderr = &tailBuffer{sink: progress}
 	return runGitCmd(cmd)
 }
@@ -402,7 +409,7 @@ func gcGit(ctx context.Context, dir string, cutoff time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	err := runGitCmd(gitCmd(context.WithoutCancel(ctx), "", nil, "-C", dir, "gc", "--quiet", "--prune="+gitExpiry(cutoff)))
+	err := runGitCmd(gitDirCmd(context.WithoutCancel(ctx), dir, nil, "gc", "--quiet", "--prune="+gitExpiry(cutoff)))
 	return joinCtx(ctx, err)
 }
 
@@ -420,7 +427,7 @@ const previewBlockingConfigPattern = `^(remote\..*\.promisor|extensions\.partial
 
 // previewBlockedGit reports whether dir's effective configuration, includes and all, sets a previewBlockingConfigPattern key; a present key counts even when set to false.
 func previewBlockedGit(ctx context.Context, dir string) (bool, error) {
-	err := runGitCmd(gitCmd(ctx, "", nil, "-C", dir, "config", "--get-regexp", previewBlockingConfigPattern))
+	err := runGitCmd(gitDirCmd(ctx, dir, nil, "config", "--get-regexp", previewBlockingConfigPattern))
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		// git config exits 1 only for "no matching key"; other failures keep their error.
@@ -436,7 +443,7 @@ func revListGit(ctx context.Context, dir string, roots []plumbing.Hash) ([]plumb
 		stdin.WriteString(h.String())
 		stdin.WriteByte('\n')
 	}
-	cmd := gitCmd(ctx, "", nil, "-C", dir, "rev-list", "--objects", "--no-object-names", "--all", "--reflog", "--indexed-objects", "--stdin")
+	cmd := gitDirCmd(ctx, dir, nil, "rev-list", "--objects", "--no-object-names", "--all", "--reflog", "--indexed-objects", "--stdin")
 	cmd.Stdin = strings.NewReader(stdin.String())
 	var out bytes.Buffer
 	cmd.Stdout = &out

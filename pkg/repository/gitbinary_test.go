@@ -136,6 +136,22 @@ func appendConfig(t *testing.T, bare, lines string) {
 	}
 }
 
+// malformedChildRepo nests a HEAD-and-objects/ child.git inside a checkout: hfd opens it, git rejects it, discovery finds the checkout.
+func malformedChildRepo(t *testing.T) (ancestor, child string) {
+	t.Helper()
+	ancestor = filepath.Join(t.TempDir(), "ancestor")
+	initParityWork(t, ancestor)
+	commitFile(t, ancestor, "file.txt", "one\n", "c1")
+	child = filepath.Join(ancestor, "child.git")
+	if err := os.MkdirAll(filepath.Join(child, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return ancestor, child
+}
+
 // flushOnlyRW is a stateful client that sends a lone flush packet after the advertisement.
 type flushOnlyRW struct {
 	io.Reader
@@ -1607,8 +1623,8 @@ func TestMirrorGitBinarySelection(t *testing.T) {
 		requireSameRefs(t, "push must not follow tags", gitLocalRefs(t, mainOnly), map[string]string{"refs/heads/main": want["refs/heads/main"]})
 		calls := recordedCalls(t, log)
 		for _, call := range []string{
-			"-C " + mirror + " fetch --no-tags --progress --no-write-fetch-head --stdin ",
-			"-C " + mirror + " push --progress ",
+			"--git-dir " + mirror + " --bare fetch --no-tags --progress --no-write-fetch-head --stdin ",
+			"--git-dir " + mirror + " --bare push --progress ",
 			" " + strings.Join(wildcard, " ") + "\n",
 		} {
 			if !strings.Contains(calls, call) {
@@ -1656,6 +1672,78 @@ func TestMirrorGitBinarySelection(t *testing.T) {
 		}
 		requireSameRefs(t, "memfs pushed refs", gitLocalRefs(t, dest), want)
 	})
+}
+
+// Mirror transfers on a repository git rejects must not fetch into, or push from, the checkout enclosing it.
+func TestMirrorMalformedRepositoryFailsClosed(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git binary required: %v", err)
+	}
+	setGitBinary(t, gitPath)
+	ctx := t.Context()
+	root := t.TempDir()
+	upstream, _ := buildParityUpstream(t, root)
+	ancestor, child := malformedChildRepo(t)
+	// packed-refs gives go-git a push source while refs/ stays missing, so git still rejects the directory.
+	packedRefs := fmt.Sprintf("# pack-refs with: peeled fully-peeled sorted \n%s refs/heads/main\n", revParse(t, ancestor, "HEAD"))
+	if err := os.WriteFile(filepath.Join(child, "packed-refs"), []byte(packedRefs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(osfs.Default, child)
+	if err != nil {
+		t.Fatalf("open repository: %v", err)
+	}
+	requireGitMode(t, repo, true)
+	dest := filepath.Join(root, "dest.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", dest)
+	before := snapshotFiles(t, osfs.Default, ancestor)
+
+	if err := repo.PushMirrorRefs(ctx, dest, []string{"+refs/heads/main:refs/heads/main"}, false, nil); err == nil {
+		t.Error("PushMirrorRefs from a repository git rejects succeeded")
+	}
+	if got := gitLocalRefs(t, dest); len(got) != 0 {
+		t.Errorf("push sent the enclosing repository's refs %v", got)
+	}
+	// The ancestor has topic/nested neither checked out nor present, so a fetch reaching it would succeed.
+	if err := repo.PullMirrorRefs(ctx, upstream, []string{"refs/heads/topic/nested"}, nil); err == nil {
+		t.Error("PullMirrorRefs into a repository git rejects succeeded")
+	}
+	if !maps.Equal(before, snapshotFiles(t, osfs.Default, ancestor)) {
+		t.Fatal("mirror transfer changed the enclosing repository or the malformed one")
+	}
+}
+
+// Relative remote paths resolve from the repository directory, as they did when git ran with -C.
+func TestMirrorGitBinaryRelativeURL(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git binary required: %v", err)
+	}
+	setGitBinary(t, gitPath)
+	ctx := t.Context()
+	root := t.TempDir()
+	bare, _ := buildParityUpstream(t, root)
+	want := map[string]string{"refs/heads/main": gitLocalRefs(t, bare)["refs/heads/main"]}
+	repo, err := InitMirror(ctx, osfs.Default, filepath.Join(root, "mirror.git"), bare)
+	if err != nil {
+		t.Fatalf("init mirror: %v", err)
+	}
+	requireGitMode(t, repo, true)
+	if err := repo.PullMirrorRefs(ctx, "../upstream.git", []string{"refs/heads/main"}, nil); err != nil {
+		t.Fatalf("PullMirrorRefs from a relative path: %v", err)
+	}
+	got, err := repo.Refs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireSameRefs(t, "pulled refs", got, want)
+	dest := filepath.Join(root, "dest.git")
+	runGit(t, "", "init", "--bare", "--initial-branch=main", dest)
+	if err := repo.PushMirrorRefs(ctx, "../dest.git", []string{"+refs/heads/main:refs/heads/main"}, false, nil); err != nil {
+		t.Fatalf("PushMirrorRefs to a relative path: %v", err)
+	}
+	requireSameRefs(t, "pushed refs", gitLocalRefs(t, dest), want)
 }
 
 func TestPullMirrorRefsGitBinaryReindex(t *testing.T) {

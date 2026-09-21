@@ -378,8 +378,8 @@ func TestGCDryRunNativeCommands(t *testing.T) {
 				t.Fatalf("dry-run GC: %v", err)
 			}
 			want := []string{
-				"-C " + f.bare + " config --get-regexp " + previewBlockingConfigPattern,
-				"-C " + f.bare + " rev-list --objects --no-object-names --all --reflog --indexed-objects --stdin",
+				"--git-dir " + f.bare + " --bare config --get-regexp " + previewBlockingConfigPattern,
+				"--git-dir " + f.bare + " --bare rev-list --objects --no-object-names --all --reflog --indexed-objects --stdin",
 			}
 			if calls := strings.Split(strings.TrimSuffix(recordedCalls(t, log), "\n"), "\n"); !slices.Equal(calls, want) {
 				t.Fatalf("git calls = %q, want %q", calls, want)
@@ -435,6 +435,37 @@ func TestGCDryRunPromisorRepository(t *testing.T) {
 	}
 	if !maps.Equal(remoteBefore, snapshotFiles(t, osfs.Default, remote)) {
 		t.Fatal("dry-run GC changed the promisor remote")
+	}
+}
+
+// GC on a repository git rejects must fail closed instead of collecting the checkout enclosing it.
+func TestGCMalformedRepositoryFailsClosed(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git binary required: %v", err)
+	}
+	setGitBinary(t, gitPath)
+	for _, dry := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dryRun=%t", dry), func(t *testing.T) {
+			ancestor, child := malformedChildRepo(t)
+			garbage := filepath.Join(t.TempDir(), "garbage.bin")
+			if err := os.WriteFile(garbage, randomBytes(t, 8<<10), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, ancestor, "hash-object", "-w", garbage)
+			repo, err := Open(osfs.Default, child)
+			if err != nil {
+				t.Fatalf("open repository: %v", err)
+			}
+			requireGitMode(t, repo, true)
+			before := snapshotFiles(t, osfs.Default, ancestor)
+			if _, err := repo.GC(t.Context(), time.Time{}, dry); err == nil {
+				t.Errorf("GC(dryRun=%t) on a repository git rejects succeeded", dry)
+			}
+			if !maps.Equal(before, snapshotFiles(t, osfs.Default, ancestor)) {
+				t.Fatal("GC changed the enclosing repository or the malformed one")
+			}
+		})
 	}
 }
 
@@ -529,7 +560,7 @@ func TestGCDryRunNativeRevListOutput(t *testing.T) {
 	}
 	f := buildGCFixture(t)
 	bin := filepath.Join(t.TempDir(), "git")
-	script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" = rev-list ]; then\n  echo 'not an object'\n  exit 0\nfi\nexec %q \"$@\"\n", gitPath)
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$4\" = rev-list ]; then\n  echo 'not an object'\n  exit 0\nfi\nexec %q \"$@\"\n", gitPath)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1065,7 +1096,7 @@ func TestGCCancelled(t *testing.T) {
 		dir := t.TempDir()
 		started := filepath.Join(dir, "started")
 		bin := filepath.Join(dir, "git")
-		script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" = rev-list ]; then\n  touch %q\n  exec sleep 60\nfi\nexec %q \"$@\"\n", started, gitPath)
+		script := fmt.Sprintf("#!/bin/sh\nif [ \"$4\" = rev-list ]; then\n  touch %q\n  exec sleep 60\nfi\nexec %q \"$@\"\n", started, gitPath)
 		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -1103,7 +1134,7 @@ func TestGCCancelled(t *testing.T) {
 			dir := t.TempDir()
 			started, gate, finished := filepath.Join(dir, "started"), filepath.Join(dir, "gate"), filepath.Join(dir, "finished")
 			// The gated child stands in for gc's repack: detached from git's pipes so a kill cannot be masked by them, it writes only once released.
-			script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" != gc ]; then exec %q \"$@\"; fi\n(while [ ! -e %q ]; do sleep 0.01; done; %s; rc=$?; touch %q; exit $rc) >/dev/null 2>&1 </dev/null &\ntouch %q\nwait $!\n",
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$4\" != gc ]; then exec %q \"$@\"; fi\n(while [ ! -e %q ]; do sleep 0.01; done; %s; rc=$?; touch %q; exit $rc) >/dev/null 2>&1 </dev/null &\ntouch %q\nwait $!\n",
 				gitPath, gate, tc.run, finished, started)
 			bin := filepath.Join(dir, "git")
 			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
