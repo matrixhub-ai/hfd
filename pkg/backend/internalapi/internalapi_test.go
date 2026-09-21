@@ -17,6 +17,7 @@ import (
 	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -61,6 +62,8 @@ func TestHandler(t *testing.T) {
 		{http.MethodPost, "/internal/gc", http.StatusTeapot},
 		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusTeapot},
 		{http.MethodGet, "/internal/objects", http.StatusOK},
+		{http.MethodPost, "/internal/usage", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/internal/usage", http.StatusOK},
 		{http.MethodGet, "/other", http.StatusTeapot},
 	} {
 		if rec := do(h, tc.method, tc.target); rec.Code != tc.want {
@@ -176,5 +179,81 @@ func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
 	}
 	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "index delete failed") {
 		t.Fatalf("failure body must list the applied unlinks and the error: %+v", res)
+	}
+}
+
+// usageStore answers Usage with fixed values and records the contexts it was asked with.
+type usageStore struct {
+	*xetlocal.Storage
+	usage xetstorage.Usage
+	err   error
+	ctxs  []context.Context
+}
+
+func (s *usageStore) Usage(ctx context.Context) (xetstorage.Usage, error) {
+	s.ctxs = append(s.ctxs, ctx)
+	return s.usage, s.err
+}
+
+func TestHandlerUsage(t *testing.T) {
+	ctx := context.Background()
+	const empty = `{"Objects":{"Count":0,"Bytes":0},"Other":{"Count":0,"Bytes":0},"Xet":{"Xorbs":{"Count":0,"Bytes":0},"Shards":{"Count":0,"Bytes":0},"FileIndex":{"Count":0,"Bytes":0},"ChunkIndex":{"Count":0,"Bytes":0},"SHA256Index":{"Count":0,"Bytes":0}}}`
+	rec := do(newHandler(t, newStorage(t)), http.MethodGet, "/internal/usage")
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || strings.TrimSpace(rec.Body.String()) != empty {
+		t.Fatalf("empty usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+
+	repos := storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
+	if _, err := repository.Init(ctx, repos, "/org/repo.git", "main"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	store := &usageStore{Storage: newStorage(t), usage: xetstorage.Usage{
+		Xorbs:       xetstorage.ObjectUsage{Count: 1, Bytes: 10},
+		Shards:      xetstorage.ObjectUsage{Count: 2, Bytes: 20},
+		FileIndex:   xetstorage.ObjectUsage{Count: 3, Bytes: 30},
+		ChunkIndex:  xetstorage.ObjectUsage{Count: 4, Bytes: 40},
+		SHA256Index: xetstorage.ObjectUsage{Count: 5, Bytes: 50},
+	}}
+	collector := gc.NewCollector(repos, store)
+	want, err := collector.Usage(ctx)
+	if err != nil || want.Other.Count == 0 || want.Xet != store.usage {
+		t.Fatalf("fixture usage = %+v, %v; want git metadata plus the stubbed xet usage", want, err)
+	}
+	h := NewHandler(WithCollector(collector))
+	get := func(ctx context.Context) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(ctx))
+		return rec
+	}
+
+	store.ctxs = nil
+	reqCtx, cancel := context.WithCancel(ctx)
+	rec = get(reqCtx)
+	cancel()
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	var got gc.Usage
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got != want {
+		t.Fatalf("usage body %s: err=%v, want %+v", rec.Body, err, want)
+	}
+	if len(store.ctxs) != 1 || store.ctxs[0].Err() == nil {
+		t.Fatalf("store saw %d Usage calls, want exactly one carrying the request context", len(store.ctxs))
+	}
+	if after, err := collector.Usage(ctx); err != nil || after != want {
+		t.Fatalf("usage after request = %+v, %v; want unchanged %+v", after, err, want)
+	}
+
+	store.err = errors.New("disk on fire")
+	rec = get(ctx)
+	if rec.Code != http.StatusInternalServerError || !strings.HasPrefix(rec.Body.String(), "Usage failed: ") || !strings.Contains(rec.Body.String(), "disk on fire") {
+		t.Fatalf("store failure: status %d, body %q", rec.Code, rec.Body)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	rec = get(canceled)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), context.Canceled.Error()) {
+		t.Fatalf("canceled request: status %d, body %q", rec.Code, rec.Body)
 	}
 }

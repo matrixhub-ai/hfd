@@ -17,6 +17,7 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
@@ -106,6 +107,8 @@ func TestNewHTTPHandler(t *testing.T) {
 		{name: "nil XET storage delegates", path: "/v1/reconstructions/" + fileHash.String(), status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal disabled", path: "/internal/objects", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal default tail", path: "/internal/objects", status: http.StatusNotFound, defaultNext: true},
+		{name: "internal usage disabled", path: "/internal/usage", status: http.StatusTeapot, identity: authenticate.Anonymous},
+		{name: "internal usage enabled", options: Options{InternalGC: gc.NewCollector(storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS(), xs)}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "permission denied", options: Options{Permission: func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
 			return false, nil
