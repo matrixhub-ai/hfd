@@ -20,6 +20,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/hash"
 	"github.com/go-git/go-git/v6/plumbing/revlist"
 	"github.com/go-git/go-git/v6/plumbing/storer"
+	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
@@ -391,10 +392,7 @@ func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time) error 
 	if err != nil {
 		return err
 	}
-	s, ok := repo.Storer.(interface {
-		storer.LooseObjectStorer
-		storer.PackedObjectStorer
-	})
+	s, ok := repo.Storer.(repackable)
 	if !ok {
 		return git.ErrPackedObjectsNotSupported
 	}
@@ -428,5 +426,37 @@ func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return repo.RepackObjects(&git.RepackConfig{OnlyDeletePacksOlderThan: cutoff})
+	// go-git deletes the loose objects it packed before the new pack is published, so a failed publication would lose them.
+	rs := &repackStorer{repackable: s}
+	repack := *repo
+	repack.Storer = rs
+	if err := repack.RepackObjects(&git.RepackConfig{OnlyDeletePacksOlderThan: cutoff}); err != nil {
+		return err
+	}
+	for _, h := range rs.pending {
+		if err := s.DeleteLooseObject(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// repackable is everything git.Repository.RepackObjects asks of a storer; DeltaObjectStorer keeps its encoder reusing existing deltas.
+type repackable interface {
+	storage.Storer
+	storer.LooseObjectStorer
+	storer.PackedObjectStorer
+	storer.PackfileWriter
+	storer.DeltaObjectStorer
+}
+
+// repackStorer holds back the loose deletions of a repack until its pack exists.
+type repackStorer struct {
+	repackable
+	pending []plumbing.Hash
+}
+
+func (s *repackStorer) DeleteLooseObject(h plumbing.Hash) error {
+	s.pending = append(s.pending, h)
+	return nil
 }

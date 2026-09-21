@@ -1177,6 +1177,117 @@ func TestGCCancelledDuringRepack(t *testing.T) {
 	}
 }
 
+// failingFS fails creating, or renaming to, a name fail accepts and counts the hits.
+type failingFS struct {
+	billy.Filesystem
+	fail func(name string) bool
+	hits int
+}
+
+var errInjected = errors.New("injected storage failure")
+
+func (f *failingFS) Create(name string) (billy.File, error) {
+	if f.fail != nil && f.fail(name) {
+		f.hits++
+		return nil, errInjected
+	}
+	return f.Filesystem.Create(name)
+}
+
+func (f *failingFS) Rename(from, to string) error {
+	if f.fail != nil && f.fail(to) {
+		f.hits++
+		return errInjected
+	}
+	return f.Filesystem.Rename(from, to)
+}
+
+// go-git deletes the loose objects it has just packed before it publishes the new pack's index and file; when publishing fails those objects must still be there, the old pack and refs untouched.
+func TestGCRepackPublicationFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ext  string // pack file the repack fails to publish
+	}{{"IndexCreate", ".idx"}, {"PackRename", ".pack"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			setGitBinary(t, "")
+			ctx := t.Context()
+			ffs := &failingFS{Filesystem: memfs.New()}
+			repo, live, _ := memfsGCRepo(t, ffs)
+			// One GC packs the fixture; the commit that follows is then the only copy of its objects, all loose.
+			if _, err := repo.GC(ctx, time.Time{}, false); err != nil {
+				t.Fatalf("GC: %v", err)
+			}
+			packs := packFiles(t, ffs, "/repo.git")
+			if len(packs) != 1 {
+				t.Fatalf("packs after GC = %v, want one", packs)
+			}
+			commit, err := repo.CreateCommit(ctx, "main", "two", "Test", "test@example.com",
+				[]CommitOperation{{Type: CommitOperationAdd, Path: "two.txt", Content: []byte("two\n")}}, live)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := repo.repo.CommitObject(plumbing.NewHash(commit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree, err := c.Tree()
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := tree.File("two.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			unique := []plumbing.Hash{c.Hash, tree.Hash, file.Hash}
+			st := newStorer(ffs, "/repo.git", cache.NewObjectLRUDefault())
+			for _, h := range unique {
+				if _, err := st.LooseObjectTime(h); err != nil {
+					t.Fatalf("fixture: %s is not loose: %v", h, err)
+				}
+			}
+			refs, err := repo.Refs()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ffs.fail = func(name string) bool { return strings.HasSuffix(name, tc.ext) }
+			_, err = repo.GC(ctx, time.Time{}, false)
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("GC = %v, want %v", err, errInjected)
+			}
+			if ffs.hits == 0 {
+				t.Fatalf("repack never wrote a %s file", tc.ext)
+			}
+			ffs.fail = nil
+			for _, h := range unique {
+				if !hasObject(t, ffs, "/repo.git", h.String()) {
+					t.Errorf("live loose object %s lost by the failed repack", h)
+				}
+			}
+			if !hasObject(t, ffs, "/repo.git", live) {
+				t.Errorf("packed commit %s lost by the failed repack", live)
+			}
+			if got := packFiles(t, ffs, "/repo.git"); !slices.Equal(got, packs) {
+				t.Errorf("packs after the failed repack = %v, want %v", got, packs)
+			}
+			got, err := repo.Refs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireSameRefs(t, "refs after the failed repack", got, refs)
+			requireBlob(t, repo, "main", "two.txt", []byte("two\n"))
+			// Once storage recovers the same handle collects the repository.
+			if _, err := repo.GC(ctx, time.Time{}, false); err != nil {
+				t.Fatalf("GC after the failure: %v", err)
+			}
+			if got := packFiles(t, ffs, "/repo.git"); len(got) != 1 || got[0] == packs[0] {
+				t.Errorf("packs after recovery = %v, want one new pack", got)
+			}
+			requireBlob(t, repo, "main", "two.txt", []byte("two\n"))
+		})
+	}
+}
+
 // go-git's object walker has no blob case, so a tag on a blob or a symlink entry fails GC closed; native git handles both.
 func TestGCTagToBlobAndSymlink(t *testing.T) {
 	for _, tc := range []struct {
