@@ -17,7 +17,7 @@ import (
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
 // GET /internal/objects lists stored objects,
-// POST /internal/gc/prune (?dry_run=&grace=) unlinks sha256 index entries no repository LFS pointer names; data stays,
+// POST /internal/gc/prune (?dry_run=&grace=) runs Git GC in every repository, then unlinks sha256 index entries no surviving LFS pointer names; data stays,
 // POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data.
 // Neither step runs the other; both use one gc.Collector, so the store has a single sweeper.
 type Handler struct {
@@ -164,7 +164,7 @@ func (h *Handler) handlePrune(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Prune failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Unlinks already happened: report them alongside the failure.
+		// Git GC or unlinks already happened: report the partial result alongside the failure.
 		res.Error = err.Error()
 		writeJSON(w, http.StatusInternalServerError, res)
 		return

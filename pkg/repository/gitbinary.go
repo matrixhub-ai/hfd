@@ -395,3 +395,57 @@ func (r *Repository) pushGit(ctx context.Context, dir, url string, refs []string
 	cmd.Stderr = &tailBuffer{sink: progress}
 	return runGitCmd(cmd)
 }
+
+// gcGit repacks dir with native git, expiring unreachable objects older than cutoff; zero expires them all.
+func gcGit(ctx context.Context, dir string, cutoff time.Time) error {
+	return runGitCmd(gitCmd(ctx, "", nil, "-C", dir, "gc", "--quiet", "--prune="+gitExpiry(cutoff)))
+}
+
+// gitExpiry renders cutoff for git's --prune and --expire options; zero expires everything.
+func gitExpiry(cutoff time.Time) string {
+	if cutoff.IsZero() {
+		return "now"
+	}
+	// Git's "@<unix> <zone>" object-header form is parsed exactly, without approxidate guessing.
+	return fmt.Sprintf("@%d +0000", cutoff.Unix())
+}
+
+// These settings change object retention or allow a read-only walk to fetch objects.
+const previewBlockingConfigPattern = `^(remote\..*\.promisor|extensions\.partialclone|gc\.(recentobjectshook|bigpackthreshold))$`
+
+// previewBlockedGit reports whether dir's effective configuration, includes and all, sets a previewBlockingConfigPattern key; a present key counts even when set to false.
+func previewBlockedGit(ctx context.Context, dir string) (bool, error) {
+	err := runGitCmd(gitCmd(ctx, "", nil, "-C", dir, "config", "--get-regexp", previewBlockingConfigPattern))
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		// git config exits 1 only for "no matching key"; other failures keep their error.
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// revListGit lists every object that dir's refs, HEAD, reflogs and index reach plus everything roots reach, the set native gc's repack and prune keep.
+func revListGit(ctx context.Context, dir string, roots []plumbing.Hash) ([]plumbing.Hash, error) {
+	var stdin strings.Builder
+	for _, h := range roots {
+		stdin.WriteString(h.String())
+		stdin.WriteByte('\n')
+	}
+	cmd := gitCmd(ctx, "", nil, "-C", dir, "rev-list", "--objects", "--no-object-names", "--all", "--reflog", "--indexed-objects", "--stdin")
+	cmd.Stdin = strings.NewReader(stdin.String())
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := runGitCmd(cmd); err != nil {
+		return nil, err
+	}
+	var hashes []plumbing.Hash
+	for line := range strings.Lines(out.String()) {
+		hex := strings.TrimSuffix(line, "\n")
+		h, ok := plumbing.FromHex(hex)
+		if !ok || len(hex) != h.HexSize() {
+			return nil, fmt.Errorf("git rev-list: unexpected line %q", hex)
+		}
+		hashes = append(hashes, h)
+	}
+	return hashes, nil
+}

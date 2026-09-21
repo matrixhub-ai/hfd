@@ -2,8 +2,10 @@ package internalapi
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,10 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/util"
 	xetstorage "github.com/wzshiming/xet/storage"
 	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -29,11 +34,45 @@ func newStorage(t *testing.T) *xetlocal.Storage {
 	return xs
 }
 
-func newHandler(t *testing.T, store xetstorage.Storage) *Handler {
+func newRepos(t *testing.T) billy.Filesystem {
 	t.Helper()
-	repos := storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
+	return storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
+}
+
+func newHandler(t *testing.T, repos billy.Filesystem, store xetstorage.Storage) *Handler {
+	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	return NewHandler(WithCollector(gc.NewCollector(repos, store)), WithGCGrace(-1), WithNext(next))
+}
+
+// orphanPointer creates name with a live pointer on main and an orphaned pointer commit of four objects: commit, tree, pointer blob and 64 KiB filler.
+func orphanPointer(t *testing.T, repos billy.Filesystem, name string) {
+	t.Helper()
+	ctx := context.Background()
+	repo, err := repository.Init(ctx, repos, name, "main")
+	if err != nil {
+		t.Fatalf("init %s: %v", name, err)
+	}
+	pointer := func(oid string) []byte {
+		return fmt.Appendf(nil, "version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize 1\n", oid)
+	}
+	filler := make([]byte, 64<<10)
+	if _, err := rand.Read(filler); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateCommit(ctx, "main", "live", "Test", "test@test.com",
+		[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "model.bin", Content: pointer(strings.Repeat("a", 64))}}, ""); err != nil {
+		t.Fatalf("commit %s: %v", name, err)
+	}
+	if _, err := repo.CreateCommit(ctx, "orphan", "orphan", "Test", "test@test.com", []repository.CommitOperation{
+		{Type: repository.CommitOperationAdd, Path: "dead.bin", Content: pointer(deadSHA)},
+		{Type: repository.CommitOperationAdd, Path: "filler.bin", Content: filler},
+	}, ""); err != nil {
+		t.Fatalf("commit orphan in %s: %v", name, err)
+	}
+	if err := repo.DeleteBranch("orphan"); err != nil {
+		t.Fatalf("delete orphan branch in %s: %v", name, err)
+	}
 }
 
 func do(h http.Handler, method, target string) *httptest.ResponseRecorder {
@@ -43,7 +82,7 @@ func do(h http.Handler, method, target string) *httptest.ResponseRecorder {
 }
 
 func TestHandler(t *testing.T) {
-	h := newHandler(t, newStorage(t))
+	h := newHandler(t, newRepos(t), newStorage(t))
 	for _, tc := range []struct {
 		method, target string
 		want           int
@@ -122,7 +161,7 @@ func TestHandlerBusy(t *testing.T) {
 	for _, endpoint := range []string{"prune", "sweep"} {
 		t.Run(endpoint, func(t *testing.T) {
 			store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
-			h := newHandler(t, store)
+			h := newHandler(t, newRepos(t), store)
 			first := make(chan int, 1)
 			go func() { first <- do(h, http.MethodPost, "/internal/gc/"+endpoint).Code }()
 			<-store.enter
@@ -165,7 +204,7 @@ func (p *partialStore) DeleteSHA256IndexEntry(_ context.Context, oid string) (bo
 }
 
 func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
-	h := newHandler(t, &partialStore{Storage: newStorage(t)})
+	h := newHandler(t, newRepos(t), &partialStore{Storage: newStorage(t)})
 	rec := do(h, http.MethodPost, "/internal/gc/prune")
 	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
@@ -176,5 +215,59 @@ func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
 	}
 	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "index delete failed") {
 		t.Fatalf("failure body must list the applied unlinks and the error: %+v", res)
+	}
+}
+
+// decodePrune decodes a prune response body, requiring the status and JSON content type.
+func decodePrune(t *testing.T, rec *httptest.ResponseRecorder, status int) gc.PruneResult {
+	t.Helper()
+	if rec.Code != status || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("status %d, content-type %q, body %s; want %d JSON", rec.Code, rec.Header().Get("Content-Type"), rec.Body, status)
+	}
+	var res gc.PruneResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	return res
+}
+
+// A prune preview reports the Git objects and bytes the run then deletes, with no disk saving measured, and deletes nothing itself.
+func TestHandlerPruneGitGC(t *testing.T) {
+	repos := newRepos(t)
+	orphanPointer(t, repos, "/org/repo.git")
+	h := newHandler(t, repos, newStorage(t))
+	var preview gc.PruneResult
+	// A second identical preview proves the first deleted nothing.
+	for i := 0; i < 2; i++ {
+		rec := do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0")
+		preview = decodePrune(t, rec, http.StatusOK)
+		if !preview.DryRun || preview.Repositories != 1 || preview.DeletedGitObjects != 4 || preview.DeletedGitBytes <= 64<<10 || preview.ReclaimedBytes != 0 {
+			t.Fatalf("preview %d: %+v; want 4 objects, more than the 64 KiB filler and no reclaimed bytes", i, preview)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, `"deleted_git_objects":4`) || !strings.Contains(body, `"deleted_git_bytes":`) || !strings.Contains(body, `"reclaimed_bytes":`) || strings.Contains(body, `"failed"`) {
+			t.Fatalf("preview body %s: want the Git fields and no failed map", body)
+		}
+	}
+	res := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?grace=0"), http.StatusOK)
+	if res.DryRun || res.DeletedGitObjects != preview.DeletedGitObjects || res.DeletedGitBytes != preview.DeletedGitBytes || res.ReclaimedBytes <= 0 {
+		t.Fatalf("prune %+v, want the preview's %d objects and %d bytes", res, preview.DeletedGitObjects, preview.DeletedGitBytes)
+	}
+	if after := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0"), http.StatusOK); after.DeletedGitObjects != 0 || after.DeletedGitBytes != 0 {
+		t.Fatalf("preview after prune %+v, want nothing left to delete", after)
+	}
+}
+
+// A repository whose GC fails answers 500 with the partial result: the failure, the other repositories' stats and the error.
+func TestHandlerReportsGitGCFailure(t *testing.T) {
+	repos := newRepos(t)
+	orphanPointer(t, repos, "/org/repo.git")
+	orphanPointer(t, repos, "/org/broken.git")
+	if err := util.WriteFile(repos, "/org/broken.git/refs/heads/dangling", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(t, repos, newStorage(t))
+	res := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0"), http.StatusInternalServerError)
+	if res.Failed["/org/broken.git"] == "" || len(res.Failed) != 1 || res.Repositories != 2 || res.DeletedGitObjects != 4 || res.DeletedGitBytes <= 0 || !strings.Contains(res.Error, "git gc failed in 1 repositories") {
+		t.Fatalf("failure body must carry the failed repository, the healthy repository's stats and the error: %+v", res)
 	}
 }

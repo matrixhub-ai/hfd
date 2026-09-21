@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 
@@ -13,6 +14,18 @@ import (
 // ScanLFSPointers scans all branches in the repository for LFS pointer files
 // and returns a list of unique LFS pointers
 func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
+	return r.ScanLFSPointersExcept(context.Background(), nil)
+}
+
+// ScanLFSPointersExcept is ScanLFSPointers skipping the blobs in ignored, e.g. those a GC preview would delete.
+func (r *Repository) ScanLFSPointersExcept(ctx context.Context, ignored []plumbing.Hash) ([]*lfs.Pointer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	skip := make(map[plumbing.Hash]struct{}, len(ignored))
+	for _, h := range ignored {
+		skip[h] = struct{}{}
+	}
 	blobIter, err := r.repo.BlobObjects()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get blob objects: %w", err)
@@ -20,7 +33,10 @@ func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
 
 	result := []*lfs.Pointer{}
 	err = blobIter.ForEach(func(obj *object.Blob) error {
-		if obj.Size > lfs.MaxLFSPointerSize {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := skip[obj.Hash]; ok || obj.Size > lfs.MaxLFSPointerSize {
 			return nil
 		}
 
@@ -46,7 +62,7 @@ func (r *Repository) ScanLFSPointers() ([]*lfs.Pointer, error) {
 		return nil, err
 	}
 
-	return result, nil
+	return result, ctx.Err()
 }
 
 // LFSFile pairs an LFS pointer with the file path it occupies at a revision.
