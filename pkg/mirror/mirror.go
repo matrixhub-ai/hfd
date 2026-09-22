@@ -35,6 +35,9 @@ type DestinationFunc func(ctx context.Context, repoName string) (string, bool, e
 // "refs/tags/v1.0") and returns the filtered list of refs to sync.
 type RefFilterFunc func(ctx context.Context, repoName string, refs []string) ([]string, error)
 
+// LFSIngestFilterFunc filters eager reads at a commit SHA without disabling lazy reads.
+type LFSIngestFilterFunc func(ctx context.Context, repoName, revision, path string, size int64) bool
+
 // GitOutputFunc defines a function type for providing an io.Writer to capture git command output for a given repository.
 type GitOutputFunc func(ctx context.Context, repoName string) io.Writer
 
@@ -50,6 +53,7 @@ type Mirror struct {
 	mirrorSourceFunc      SourceFunc
 	mirrorDestinationFunc DestinationFunc
 	mirrorRefFilterFunc   RefFilterFunc
+	lfsIngestFilterFunc   LFSIngestFilterFunc
 	preReceiveHookFunc    receive.PreReceiveHookFunc
 	postReceiveHookFunc   receive.PostReceiveHookFunc
 	syncUserInfoFunc      SyncUserInfoFunc
@@ -93,6 +97,13 @@ func WithMirrorDestinationFunc(fn DestinationFunc) Option {
 func WithMirrorRefFilterFunc(fn RefFilterFunc) Option {
 	return func(m *Mirror) {
 		m.mirrorRefFilterFunc = fn
+	}
+}
+
+// WithLFSIngestFilterFunc sets the eager LFS prefetch filter for pull syncs; nil prefetches every scanned pointer.
+func WithLFSIngestFilterFunc(fn LFSIngestFilterFunc) Option {
+	return func(m *Mirror) {
+		m.lfsIngestFilterFunc = fn
 	}
 }
 

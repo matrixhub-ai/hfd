@@ -10,8 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,15 +52,24 @@ func TestMintXETToken(t *testing.T) {
 	}
 }
 
-// fakeHub answers hub-style resolve requests for a single LFS object with the
-// metadata headers the xet mirror probes for.
-func fakeHub(t *testing.T, filename string, data []byte, oid string) *httptest.Server {
+// fakeHub answers hub-style resolve requests for LFS files by name with the
+// metadata headers the xet mirror probes for, and reports the file names
+// requested so far.
+func fakeHub(t *testing.T, files map[string][]byte) (*httptest.Server, func() []string) {
 	t.Helper()
+	var mu sync.Mutex
+	var requested []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/resolve/") || !strings.HasSuffix(r.URL.Path, "/"+filename) {
+		name := path.Base(r.URL.Path)
+		data, ok := files[name]
+		if !strings.Contains(r.URL.Path, "/resolve/") || !ok {
 			http.NotFound(w, r)
 			return
 		}
+		mu.Lock()
+		requested = append(requested, name)
+		mu.Unlock()
+		oid := oidOf(data)
 		w.Header().Set("ETag", `"`+oid+`"`)
 		w.Header().Set("X-Linked-Etag", `"`+oid+`"`)
 		w.Header().Set("X-Linked-Size", fmt.Sprint(len(data)))
@@ -68,7 +80,16 @@ func fakeHub(t *testing.T, filename string, data []byte, oid string) *httptest.S
 		_, _ = w.Write(data)
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(requested)
+	}
+}
+
+func oidOf(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func lfsPointerText(oid string, size int) string {
@@ -84,7 +105,7 @@ func TestPullMirrorLFSDataPlane(t *testing.T) {
 	oid := hex.EncodeToString(sum[:])
 	addCommit(t, src, "main", "model.bin", lfsPointerText(oid, len(data)))
 
-	hub := fakeHub(t, "model.bin", data, oid)
+	hub, _ := fakeHub(t, map[string][]byte{"model.bin": data})
 
 	m := newMirror(t, hub.URL,
 		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
@@ -122,5 +143,87 @@ func TestPullMirrorLFSDataPlane(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("object bytes mismatch")
+	}
+}
+
+// TestPullMirrorLFSIngestFilter pins the eager prefetch filter: it sees every
+// scanned pointer with its ref tip commit, a rejected pointer stays registered
+// and is not fetched until it is read, and reads are not filtered.
+func TestPullMirrorLFSIngestFilter(t *testing.T) {
+	root := t.TempDir()
+	src, srcPath := initSourceRepo(t, root, "src")
+	keep := bytes.Repeat([]byte("kept by the ingest filter. "), 2048)
+	skip := bytes.Repeat([]byte("skipped by the ingest filter. "), 2048)
+	addCommit(t, src, "main", "keep.bin", lfsPointerText(oidOf(keep), len(keep)))
+	tip := addCommit(t, src, "main", "skip.bin", lfsPointerText(oidOf(skip), len(skip)))
+	hub, requested := fakeHub(t, map[string][]byte{"keep.bin": keep, "skip.bin": skip})
+
+	var calls []string
+	m := newMirror(t, hub.URL,
+		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
+		mirror.WithLFSIngestFilterFunc(func(ctx context.Context, repoName, revision, name string, size int64) bool {
+			calls = append(calls, fmt.Sprintf("%s %s %s %d", repoName, revision, name, size))
+			return name != "skip.bin"
+		}),
+	)
+	if err := m.PullFromRemote(context.Background(), filepath.Join(root, "dest.git"), "org/repo", nil); err != nil {
+		t.Fatalf("pull from remote: %v", err)
+	}
+	want := []string{
+		fmt.Sprintf("org/repo %s keep.bin %d", tip, len(keep)),
+		fmt.Sprintf("org/repo %s skip.bin %d", tip, len(skip)),
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("filter calls = %q, want %q", calls, want)
+	}
+
+	ctx := context.Background()
+	if !m.KnowsObject(ctx, oidOf(skip)) {
+		t.Fatal("rejected object must stay registered for lazy reads")
+	}
+	m.Wait()
+	if !m.HasObject(ctx, oidOf(keep)) {
+		t.Fatal("accepted object was not prefetched")
+	}
+	if m.HasObject(ctx, oidOf(skip)) || slices.Contains(requested(), "skip.bin") {
+		t.Fatalf("rejected object was prefetched; upstream requests %q", requested())
+	}
+
+	rec := httptest.NewRecorder()
+	if !m.ServeOID(rec, httptest.NewRequest(http.MethodGet, "/", nil), oidOf(skip)) {
+		t.Fatal("ServeOID of the rejected object failed")
+	}
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), skip) {
+		t.Fatalf("ServeOID status = %d, body %d bytes, want 200 with %d bytes", rec.Code, rec.Body.Len(), len(skip))
+	}
+}
+
+// TestPullMirrorLFSIngestFilterSharedOID scans a rejected path before an
+// admitted one holding the same object: the object is still prefetched, through
+// the admitted path.
+func TestPullMirrorLFSIngestFilterSharedOID(t *testing.T) {
+	root := t.TempDir()
+	src, srcPath := initSourceRepo(t, root, "src")
+	data := bytes.Repeat([]byte("shared between two paths. "), 2048)
+	pointer := lfsPointerText(oidOf(data), len(data))
+	addCommit(t, src, "main", "excluded.bin", pointer)
+	addCommit(t, src, "main", "included.bin", pointer)
+	hub, requested := fakeHub(t, map[string][]byte{"excluded.bin": data, "included.bin": data})
+
+	m := newMirror(t, hub.URL,
+		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
+		mirror.WithLFSIngestFilterFunc(func(ctx context.Context, repoName, revision, name string, size int64) bool {
+			return name != "excluded.bin"
+		}),
+	)
+	if err := m.PullFromRemote(context.Background(), filepath.Join(root, "dest.git"), "org/repo", nil); err != nil {
+		t.Fatalf("pull from remote: %v", err)
+	}
+	m.Wait()
+	if !m.HasObject(context.Background(), oidOf(data)) {
+		t.Fatal("object admitted through included.bin was not prefetched")
+	}
+	if got := requested(); slices.Contains(got, "excluded.bin") || !slices.Contains(got, "included.bin") {
+		t.Fatalf("upstream requests = %q, want only included.bin", got)
 	}
 }
