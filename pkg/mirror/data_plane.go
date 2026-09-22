@@ -14,11 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wzshiming/httpseek"
+
 	"github.com/wzshiming/xet/auth"
 	xetmirror "github.com/wzshiming/xet/mirror"
 
-	"github.com/matrixhub-ai/hfd/internal/stallguard"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
@@ -265,30 +264,6 @@ func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string
 	})
 }
 
-// stallIdleWindow aborts a transfer phase that moves no bytes for this long;
-// the stall guard sits below httpseek so aborted downloads resume with
-// ranged retries instead of restarting.
-const stallIdleWindow = 15 * time.Second
-
-// newDownloadClient returns the client for object content downloads; it
-// resumes interrupted response streams with ranged retries.
-func newDownloadClient() *http.Client {
-	return &http.Client{
-		Transport: httpseek.NewMustReaderTransport(stallguard.NewTransport(http.DefaultTransport, stallIdleWindow), func(r *http.Request, retry int, err error) error {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
-			if retry >= 8 {
-				return fmt.Errorf("max retries reached for %s: %w", r.URL.String(), err)
-			}
-			backoff := 100 * time.Millisecond << retry
-			slog.WarnContext(r.Context(), "Retrying interrupted download", "url", r.URL.String(), "retry", retry+1, "backoff", backoff, "error", err)
-			time.Sleep(backoff)
-			return nil
-		}),
-	}
-}
-
 // fallbackDownload fetches an object through the source's git-lfs batch API
 // and ingests it into the xet storage, covering upstreams that do not expose
 // the hub resolve API the xet mirror ingests through.
@@ -315,7 +290,7 @@ func (m *Mirror) fallbackDownload(ctx context.Context, sourceURL, oid string, si
 	if err != nil {
 		return fmt.Errorf("build download request: %w", err)
 	}
-	resp, err := m.downloadClient.Do(req)
+	resp, err := m.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download object: %w", err)
 	}

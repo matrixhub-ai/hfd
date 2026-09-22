@@ -67,7 +67,6 @@ type Mirror struct {
 	concurrency    int
 	dataDir        string
 	httpClient     *http.Client // LFS batch/upload/verify; no timeout, uploads may run long
-	downloadClient *http.Client // object content downloads, resuming interrupted streams
 
 	oidIndex    sync.Map // oid -> resolveTarget, populated by pull syncs
 	prefetching sync.Map // oid -> struct{}, in-flight prefetch dedupe
@@ -198,7 +197,6 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 	// The batch/upload client has no overall timeout because uploads may run
 	// long; the stall guard bounds no-progress phases instead.
 	m.httpClient = http.DefaultClient
-	m.downloadClient = newDownloadClient()
 	if m.xetStorage == nil || m.xetClient == nil {
 		return nil, fmt.Errorf("mirror requires the xet pieces: WithXETStorage, WithXETClient")
 	}

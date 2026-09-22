@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	xetlocal "github.com/wzshiming/xet/storage/local"
 	xets3 "github.com/wzshiming/xet/storage/s3"
 
-	"github.com/matrixhub-ai/hfd/internal/stallguard"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/server"
@@ -129,9 +127,6 @@ func buildXETClient(cfg *config) (*xetclient.Client, error) {
 	}
 	clientOpts := []xetclient.Options{
 		xetclient.WithCacheDir(chunksDir),
-		// The xet client wraps this transport with its own httpseek layer, so
-		// stalled chunk downloads abort and resume instead of hanging.
-		xetclient.WithHTTPClient(&http.Client{Transport: stallguard.NewTransport(http.DefaultTransport, 15*time.Second)}),
 	}
 	if cfg.ProxyConcurrencyPerFile > 0 {
 		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyConcurrencyPerFile))
