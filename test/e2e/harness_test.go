@@ -201,7 +201,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.authPass != "" {
 		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
 	}
-	sharedMirror, xet := newTestMirror(t, dataDir, engineUpstream, testS3Client != nil, mirrorOpts...)
+	sharedMirror, xet := newTestMirror(t, st, engineUpstream, mirrorOpts...)
 
 	perm := cfg.permission
 	var preOpen func(context.Context, string, bool) error

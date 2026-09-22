@@ -1,24 +1,29 @@
 package storage
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/helper/chroot"
 	"github.com/go-git/go-billy/v6/osfs"
+	xetstorage "github.com/wzshiming/xet/storage"
+	xetlocal "github.com/wzshiming/xet/storage/local"
 )
 
-// Storage manages the filesystem for git repositories, carved out of one
-// backing filesystem. LFS content lives in the xet storage, not here.
+// Storage owns repository filesystems, xet content storage, and local caches.
 type Storage struct {
 	rootDir        string
 	fs             billy.Filesystem
 	repositoriesFS billy.Filesystem
+	xetStorage     xetstorage.Storage
 }
 
 // Option defines a functional option for configuring the Storage.
 type Option func(*Storage)
 
-// WithRootDir sets the host root directory for storage. The default is
-// "./data". It roots the default filesystem.
+// WithRootDir roots local storage and caches; the default is "./data".
 func WithRootDir(rootDir string) Option {
 	return func(h *Storage) {
 		h.rootDir = rootDir
@@ -33,8 +38,15 @@ func WithFilesystem(fs billy.Filesystem) Option {
 	}
 }
 
+// WithXETStorage overrides the default local xet content store.
+func WithXETStorage(xs xetstorage.Storage) Option {
+	return func(h *Storage) {
+		h.xetStorage = xs
+	}
+}
+
 // NewStorage creates a new Storage with the given options.
-func NewStorage(opts ...Option) *Storage {
+func NewStorage(opts ...Option) (*Storage, error) {
 	h := &Storage{
 		rootDir: "./data",
 	}
@@ -49,7 +61,23 @@ func NewStorage(opts ...Option) *Storage {
 
 	h.repositoriesFS = chrootFS(h.fs, "/repositories")
 
-	return h
+	if h.xetStorage == nil {
+		xs, err := xetlocal.NewStorage(
+			xetlocal.WithBasePath(filepath.Join(h.XETDir(), "storage")),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create xet storage: %w", err)
+		}
+		h.xetStorage = xs
+	}
+
+	for _, dir := range []string{"chunks", "mirror"} {
+		if err := os.MkdirAll(filepath.Join(h.XETDir(), dir), 0755); err != nil {
+			return nil, fmt.Errorf("create xet cache dir: %w", err)
+		}
+	}
+
+	return h, nil
 }
 
 // chrootFS scopes fs to dir, preferring the filesystem's own Chroot.
@@ -69,4 +97,14 @@ func (s *Storage) FS() billy.Filesystem {
 // RepositoriesFS returns the filesystem holding git repositories.
 func (s *Storage) RepositoriesFS() billy.Filesystem {
 	return s.repositoriesFS
+}
+
+// XETStorage returns the xet content storage holding LFS bytes.
+func (s *Storage) XETStorage() xetstorage.Storage {
+	return s.xetStorage
+}
+
+// XETDir is the local xet directory, even when content is stored remotely.
+func (s *Storage) XETDir() string {
+	return filepath.Join(s.rootDir, "xet")
 }

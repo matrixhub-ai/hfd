@@ -295,7 +295,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 
 	// Data-plane-only mirror: no pull upstream, no push destination; it
 	// provides the CAS server, token issuer, and xet storage for LFS content.
-	destMirror, destXET := newTestMirror(t, filepath.Join(root, "dest-xet"), "", false,
+	destMirror, destXET := newTestMirror(t, destStorage, "",
 		mirror.WithRepositoriesFS(destStorage.RepositoriesFS()),
 	)
 
@@ -341,7 +341,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// ------------------------------------------------------------------ //
 	sourceStorage := newTestStorage(t, newDataDir(t, "xet-mirror-source"))
 
-	sharedMirror, srcXET := newTestMirror(t, filepath.Join(root, "xet-cache"), "", false,
+	sharedMirror, srcXET := newTestMirror(t, sourceStorage, "",
 		mirror.WithMirrorDestinationFunc(func(_ context.Context, name string) (string, bool, error) {
 			return destServer.URL + "/" + name, true, nil
 		}),

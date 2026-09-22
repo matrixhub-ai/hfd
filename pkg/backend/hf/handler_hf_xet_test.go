@@ -16,7 +16,6 @@ import (
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -36,17 +35,12 @@ type hookCall struct {
 
 func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "xet")
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
+	st := newStorage(t, t.TempDir())
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)
 	}
-	xs, err := xetlocal.NewStorage(
-		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
-	)
-	if err != nil {
-		t.Fatalf("new xet storage: %v", err)
-	}
+	xs := st.XETStorage()
 	m, err := mirror.NewMirror(append([]mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),

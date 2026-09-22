@@ -31,7 +31,7 @@ func TestHTTPGitGzipRequestBody(t *testing.T) {
 func testHTTPGitGzipRequestBody(t *testing.T, native bool, protoVer int) {
 	root := t.TempDir()
 
-	st := newStorage(root, native)
+	st := newStorage(t, root, native)
 	repoPath := filepath.Join(root, "repositories", "repo.git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)

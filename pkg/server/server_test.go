@@ -13,7 +13,6 @@ import (
 
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
@@ -22,6 +21,15 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
+
+func newStorage(t *testing.T, opts ...storage.Option) *storage.Storage {
+	t.Helper()
+	st, err := storage.NewStorage(append([]storage.Option{storage.WithRootDir(t.TempDir())}, opts...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
 
 func TestChainOrder(t *testing.T) {
 	var got []string
@@ -74,12 +82,10 @@ func TestNewHTTPHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	xsStorage := newStorage(t)
+	xs := xsStorage.XETStorage()
 	casOptions := Options{
-		XETStorage:     xs,
+		Storage:        newStorage(t, storage.WithXETStorage(xs)),
 		CASAuthorizer:  issuer,
 		Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")},
 	}
@@ -102,13 +108,12 @@ func TestNewHTTPHandler(t *testing.T) {
 		{name: "token before hf", options: Options{Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")}}, path: "/api/whoami-v2", token: "t0k", status: http.StatusOK},
 		{name: "CAS before user authentication", options: casOptions, path: "/v1/reconstructions/" + fileHash.String(), token: casToken, status: http.StatusNotFound},
 		{name: "CAS token is not a user", options: casOptions, path: "/api/whoami-v2", token: casToken, status: http.StatusUnauthorized},
-		{name: "nil CAS authorizer denies read", options: Options{XETStorage: xs}, path: "/v1/reconstructions/" + fileHash.String(), status: http.StatusUnauthorized},
-		{name: "nil CAS authorizer denies write", options: Options{XETStorage: xs}, method: http.MethodPost, path: "/v1/xorbs/default/" + fileHash.String(), status: http.StatusUnauthorized},
-		{name: "nil XET storage delegates", path: "/v1/reconstructions/" + fileHash.String(), status: http.StatusTeapot, identity: authenticate.Anonymous},
+		{name: "nil CAS authorizer denies read", path: "/v1/reconstructions/" + fileHash.String(), status: http.StatusUnauthorized},
+		{name: "nil CAS authorizer denies write", method: http.MethodPost, path: "/v1/xorbs/default/" + fileHash.String(), status: http.StatusUnauthorized},
 		{name: "internal disabled", path: "/internal/objects", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal default tail", path: "/internal/objects", status: http.StatusNotFound, defaultNext: true},
 		{name: "internal usage disabled", path: "/internal/usage", status: http.StatusTeapot, identity: authenticate.Anonymous},
-		{name: "internal usage enabled", options: Options{InternalGC: gc.NewCollector(storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS(), xs)}, path: "/internal/usage", status: http.StatusOK},
+		{name: "internal usage enabled", options: Options{InternalGC: gc.NewCollector(xsStorage.RepositoriesFS(), xs)}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "permission denied", options: Options{Permission: func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
 			return false, nil
@@ -117,7 +122,9 @@ func TestNewHTTPHandler(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			options := test.options
-			options.Storage = storage.NewStorage(storage.WithRootDir(t.TempDir()))
+			if options.Storage == nil {
+				options.Storage = newStorage(t)
+			}
 			var gotIdentity authenticate.Identity
 			if !test.defaultNext {
 				options.Next = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -158,7 +165,7 @@ func TestNewSSHServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := NewSSHServer(Options{
-		Storage:    storage.NewStorage(storage.WithRootDir(t.TempDir())),
+		Storage:    newStorage(t),
 		SSHOptions: []backendssh.Option{backendssh.WithLFSURL("https://example.com")},
 	}, hostKey); got == nil {
 		t.Fatal("SSH server is nil")

@@ -9,11 +9,9 @@ import (
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func addCommit(t *testing.T, repo *repository.Repository, file string) string {
@@ -41,21 +39,16 @@ func mainRef(t *testing.T, fs billy.Filesystem, path string) string {
 
 func TestPreOpenPullTTL(t *testing.T) {
 	ctx := context.Background()
-	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	st := newStorage(t)
 	srcRoot := t.TempDir()
-	dir := t.TempDir()
-	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(dir))
-	if err != nil {
-		t.Fatalf("build xet storage: %v", err)
-	}
-	xetC, err := xetclient.NewClient(xetclient.WithCacheDir(dir))
+	xetC, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("build xet client: %v", err)
 	}
 	hooks := &Hooks{PullTTL: time.Hour}
 	m, err := mirror.NewMirror(
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
-		mirror.WithXETStorage(xs),
+		mirror.WithXETStorage(st.XETStorage()),
 		mirror.WithXETClient(xetC),
 		mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
 			return srcRoot + "/" + repoName, true, nil

@@ -41,7 +41,7 @@ func testHTTPHandlerPullMirrorReadOnly(t *testing.T, native bool) {
 	}
 	runGitCmd(t, "", "init", "--bare", repoPath)
 	handler := backendhttp.NewHandler(
-		backendhttp.WithStorage(newStorage(dataDir, native)),
+		backendhttp.WithStorage(newStorage(t, dataDir, native)),
 		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(pullOnlyMirrorRoles{})),
 	)
 	for _, test := range []struct {
@@ -104,7 +104,7 @@ func testHTTPHandler(t *testing.T, native bool) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	upstreamStorage := newStorage(upstreamDir, native)
+	upstreamStorage := newStorage(t, upstreamDir, native)
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
@@ -188,7 +188,7 @@ func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	upstreamStorage := newStorage(upstreamDir, native)
+	upstreamStorage := newStorage(t, upstreamDir, native)
 
 	// Create a bare repository on the upstream
 	repoName := "test-repo"
@@ -312,7 +312,7 @@ func TestHTTPHandlerPreOpenHook(t *testing.T) {
 
 func testHTTPHandlerPreOpenHook(t *testing.T, native bool) {
 	dataDir := t.TempDir()
-	st := newStorage(dataDir, native)
+	st := newStorage(t, dataDir, native)
 	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "test-repo.git"))
 
 	type call struct {

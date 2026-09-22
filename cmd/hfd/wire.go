@@ -16,8 +16,6 @@ import (
 	xetauth "github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
-	xetstorage "github.com/wzshiming/xet/storage"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -67,8 +65,7 @@ func newS3Filesystem(cfg *config) *s3fs.S3FS {
 	)
 }
 
-// buildStorage resolves the data directory and creates the storage layout,
-// backed by S3 when configured and by the local data directory otherwise.
+// buildStorage keeps xet caches local even when content and repositories use S3.
 func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 	if (cfg.S3Endpoint != "") != (cfg.S3Bucket != "") {
 		return nil, fmt.Errorf("S3 storage requires both --s3-endpoint and --s3-bucket (endpoint %q, bucket %q)", cfg.S3Endpoint, cfg.S3Bucket)
@@ -84,17 +81,6 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 	if s3Configured(cfg) {
 		slog.InfoContext(ctx, "Using S3-backed storage filesystem", "bucket", cfg.S3Bucket)
 		opts = append(opts, storage.WithFilesystem(newS3Filesystem(cfg)))
-	}
-	return storage.NewStorage(opts...), nil
-}
-
-// buildXETStorage creates the xet content storage holding all LFS bytes: in
-// the S3 bucket when configured, under the data directory otherwise. In S3
-// mode xorb downloads presign straight to S3 — everything else is proxied.
-func buildXETStorage(ctx context.Context, cfg *config) (xetstorage.Storage, error) {
-	var xs xetstorage.Storage
-	var err error
-	if s3Configured(cfg) {
 		s3Opts := []xets3.Option{
 			xets3.WithS3Client(newS3Client(cfg)),
 			xets3.WithBucket(cfg.S3Bucket),
@@ -103,30 +89,19 @@ func buildXETStorage(ctx context.Context, cfg *config) (xetstorage.Storage, erro
 		if cfg.S3SignEndpoint != "" {
 			s3Opts = append(s3Opts, xets3.WithPresignEndpoint(cfg.S3SignEndpoint))
 		}
-		xs, err = xets3.NewStorage(ctx, s3Opts...)
+		xs, err := xets3.NewStorage(ctx, s3Opts...)
 		if err != nil {
 			return nil, fmt.Errorf("create xet S3 storage: %w", err)
 		}
-	} else {
-		xs, err = xetlocal.NewStorage(
-			xetlocal.WithBasePath(filepath.Join(cfg.DataDir, "xet", "storage")),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create xet storage: %w", err)
-		}
+		opts = append(opts, storage.WithXETStorage(xs))
 	}
-	return xs, nil
+	return storage.NewStorage(opts...)
 }
 
-// buildXETClient creates the xet client with its chunk cache under the data
-// directory.
-func buildXETClient(cfg *config) (*xetclient.Client, error) {
-	chunksDir := filepath.Join(cfg.DataDir, "xet", "chunks")
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		return nil, fmt.Errorf("create xet chunk cache dir: %w", err)
-	}
+// buildXETClient applies proxy tuning to the storage-rooted chunk cache.
+func buildXETClient(cfg *config, st *storage.Storage) (*xetclient.Client, error) {
 	clientOpts := []xetclient.Options{
-		xetclient.WithCacheDir(chunksDir),
+		xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")),
 	}
 	if cfg.ProxyConcurrencyPerFile > 0 {
 		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyConcurrencyPerFile))
@@ -143,15 +118,15 @@ func buildXETClient(cfg *config) (*xetclient.Client, error) {
 
 // buildXETMirror creates the upstream ingest engine when a pull upstream is
 // configured; nil otherwise.
-func buildXETMirror(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client) (*xetmirror.Mirror, error) {
+func buildXETMirror(cfg *config, st *storage.Storage, xetC *xetclient.Client) (*xetmirror.Mirror, error) {
 	if cfg.PullMirrorURL == "" {
 		return nil, nil
 	}
 	engine, err := xetmirror.NewMirror(
-		xetmirror.WithStorage(xs),
+		xetmirror.WithStorage(st.XETStorage()),
 		xetmirror.WithUpstream(strings.TrimSuffix(cfg.PullMirrorURL, "/")),
 		xetmirror.WithUpstreamToken(cfg.ProxyToken),
-		xetmirror.WithCacheDir(filepath.Join(cfg.DataDir, "xet", "mirror")),
+		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 		xetmirror.WithClient(xetC),
 	)
 	if err != nil {
@@ -164,14 +139,14 @@ func buildXETMirror(cfg *config, xs xetstorage.Storage, xetC *xetclient.Client) 
 // mirror carries the data plane (token mint, external URL) and serves OID
 // resolves straight off the ingest engine. Pull and push mirroring activate
 // when their URLs are configured.
-func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, xs xetstorage.Storage, hooks *server.Hooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
+func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *server.Hooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
-		mirror.WithXETStorage(xs),
+		mirror.WithXETStorage(st.XETStorage()),
 		mirror.WithXETClient(xetC),
 		mirror.WithXETMirror(engine),
 		mirror.WithMintToken(mint),
 		mirror.WithExternalURL(cfg.HostURL),
-		mirror.WithDataDir(filepath.Join(cfg.DataDir, "xet")),
+		mirror.WithDataDir(st.XETDir()),
 		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
 		mirror.WithPreReceiveHookFunc(hooks.PreReceive),
 		mirror.WithPostReceiveHookFunc(hooks.PostReceive),

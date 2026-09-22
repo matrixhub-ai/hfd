@@ -38,10 +38,6 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return fmt.Errorf("prepare storage: %w", err)
 	}
-	xs, err := buildXETStorage(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("prepare XET storage: %w", err)
-	}
 
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
@@ -57,16 +53,16 @@ func run(ctx context.Context, cfg *config) error {
 	}
 
 	// Phase 3: xet/mirror layer.
-	xetC, err := buildXETClient(cfg)
+	xetC, err := buildXETClient(cfg, st)
 	if err != nil {
 		return fmt.Errorf("prepare XET client: %w", err)
 	}
-	engine, err := buildXETMirror(cfg, xs, xetC)
+	engine, err := buildXETMirror(cfg, st, xetC)
 	if err != nil {
 		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
 	// The mirror is built with the hooks and the hooks call back into the mirror.
-	sharedMirror, err := buildMirror(ctx, cfg, st, xs, hooks, xetC, engine, issuer.Sign)
+	sharedMirror, err := buildMirror(ctx, cfg, st, hooks, xetC, engine, issuer.Sign)
 	if err != nil {
 		return fmt.Errorf("prepare mirror: %w", err)
 	}
@@ -77,7 +73,6 @@ func run(ctx context.Context, cfg *config) error {
 	// Phase 4: frontends.
 	opts := server.Options{
 		Storage:        st,
-		XETStorage:     xs,
 		Mirror:         sharedMirror,
 		Authenticators: auth,
 		CASAuthorizer:  issuer,
@@ -90,7 +85,7 @@ func run(ctx context.Context, cfg *config) error {
 	}
 	if cfg.Internal {
 		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
-		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), xs)
+		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), st.XETStorage())
 		opts.GCGrace = time.Hour
 	}
 	handler := server.NewHTTPHandler(opts)
