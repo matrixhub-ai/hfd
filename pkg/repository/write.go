@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -53,7 +54,7 @@ func (r *Repository) CreateCommit(ctx context.Context, rev string, message strin
 		parents = append(parents, oldRef.Hash())
 	}
 	if parentCommit != "" && currentTip != parentCommit {
-		return "", fmt.Errorf("expected parent commit %s but branch tip is %s", parentCommit, currentTip)
+		return "", fmt.Errorf("%w: expected parent commit %s but branch tip is %s", ErrParentMismatch, parentCommit, currentTip)
 	}
 
 	if err := r.applyCommitOperations(entries, ops); err != nil {
@@ -80,8 +81,11 @@ func (r *Repository) loadBranchTip(refName plumbing.ReferenceName) (map[string]o
 	entries := make(map[string]object.TreeEntry)
 
 	ref, err := r.repo.Storer.Reference(refName)
-	if err != nil || ref.Hash().IsZero() {
+	if errors.Is(err, plumbing.ErrReferenceNotFound) || (err == nil && ref.Hash().IsZero()) {
 		return entries, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read branch ref: %w", err)
 	}
 
 	commit, err := r.repo.CommitObject(ref.Hash())

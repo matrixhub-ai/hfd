@@ -2,11 +2,15 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
 )
 
 func initTestRepo(t *testing.T) *Repository {
@@ -117,8 +121,11 @@ func TestCreateCommitParentCheck(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for stale parent commit, got nil")
 	}
-	if !strings.Contains(err.Error(), "expected parent commit") {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrParentMismatch) {
+		t.Fatalf("error = %v, want ErrParentMismatch", err)
+	}
+	if !strings.Contains(err.Error(), hash1) || !strings.Contains(err.Error(), hash2) {
+		t.Fatalf("error %q must name expected %s and actual %s", err, hash1, hash2)
 	}
 
 	// Tip must be unchanged after the failed commit.
@@ -126,6 +133,34 @@ func TestCreateCommitParentCheck(t *testing.T) {
 		t.Fatalf("resolve main: %v", err)
 	} else if got != hash2 {
 		t.Fatalf("branch tip = %s, want %s", got, hash2)
+	}
+}
+
+func TestCreateCommitUnreadableRefIsNotParentMismatch(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := Init(context.Background(), osfs.Default, dir, "main")
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	hash := mustCommit(t, repo, "main", "",
+		CommitOperation{Type: CommitOperationAdd, Path: "file.txt", Content: []byte("v1\n")})
+
+	// go-git only consults packed-refs once the loose ref is gone.
+	loose := filepath.Join(dir, "refs", "heads", "main")
+	if err := os.Remove(loose); err != nil {
+		t.Fatalf("remove loose ref: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "packed-refs"), []byte("# pack-refs with: peeled fully-peeled sorted \n"+hash+"\n"), 0o644); err != nil {
+		t.Fatalf("write packed-refs: %v", err)
+	}
+
+	_, err = repo.CreateCommit(context.Background(), "main", "update", "Test", "test@test.com",
+		[]CommitOperation{{Type: CommitOperationAdd, Path: "file.txt", Content: []byte("v2\n")}}, hash)
+	if !errors.Is(err, dotgit.ErrPackedRefsBadFormat) || errors.Is(err, ErrParentMismatch) {
+		t.Fatalf("error = %v, want ErrPackedRefsBadFormat and not ErrParentMismatch", err)
+	}
+	if _, err := os.Stat(loose); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refs/heads/main after failed commit: %v, want absent", err)
 	}
 }
 

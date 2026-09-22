@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -319,6 +320,10 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	commitHash, err := repo.CreateCommit(r.Context(), rev, message, name, email, ops, header.ParentCommit)
 	if err != nil {
+		if errors.Is(err, repository.ErrParentMismatch) {
+			responseJSON(w, fmt.Errorf("a commit has happened since on %q: %v", rev, err), http.StatusPreconditionFailed)
+			return
+		}
 		responseJSON(w, fmt.Errorf("failed to create commit in repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
