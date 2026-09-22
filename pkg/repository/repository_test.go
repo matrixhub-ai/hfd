@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -282,4 +285,112 @@ func (h *headFaultFS) Stat(name string) (os.FileInfo, error) {
 		return nil, &os.PathError{Op: "stat", Path: name, Err: h.err}
 	}
 	return h.Filesystem.Stat(name)
+}
+
+// TestTreeDirectoryLastCommitFollowsTreeChanges pins that a directory's
+// LastCommit is the newest commit touching anything beneath it: deleting a
+// child, adding a nested child, but not a later root-file change, and
+// independent of the author date.
+func TestTreeDirectoryLastCommitFollowsTreeChanges(t *testing.T) {
+	ctx := context.Background()
+	repo := initTestRepo(t)
+	add := func(p string) CommitOperation {
+		return CommitOperation{Type: CommitOperationAdd, Path: p, Content: []byte(p + "\n")}
+	}
+	c1 := mustCommit(t, repo, "main", "", add("README.md"), add("keep.txt"))
+	c2 := mustCommit(t, repo, "main", "", add("sub/keep"), add("sub/drop"), add("other/f"))
+	if _, err := repo.CreateCommit(ctx, "main", "Delete sub/drop", "Test", "test@test.com",
+		[]CommitOperation{{Type: CommitOperationDelete, Path: "sub/drop"}}, ""); err != nil {
+		t.Fatalf("delete commit: %v", err)
+	}
+	// The deletion is newer in history yet carries an older author date than the addition.
+	backdated := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	ref, err := repo.repo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := repo.repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.Author.When, obj.Committer.When = backdated, backdated
+	enc := repo.repo.Storer.NewEncodedObject()
+	if err := obj.Encode(enc); err != nil {
+		t.Fatal(err)
+	}
+	c3h, err := repo.repo.Storer.SetEncodedObject(enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.repo.Storer.SetReference(plumbing.NewHashReference(ref.Name(), c3h)); err != nil {
+		t.Fatal(err)
+	}
+	c3 := c3h.String()
+	c4 := mustCommit(t, repo, "main", "", add("other/deep/x"))
+	c5 := mustCommit(t, repo, "main", "", CommitOperation{Type: CommitOperationAdd, Path: "README.md", Content: []byte("v2\n")})
+
+	entries, err := repo.Tree("main", "", &TreeOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	want := []struct {
+		path   string
+		typ    EntryType
+		commit string
+	}{
+		{"README.md", EntryTypeFile, c5},
+		{"keep.txt", EntryTypeFile, c1},
+		{"other", EntryTypeDirectory, c4},
+		{"other/deep", EntryTypeDirectory, c4},
+		{"other/deep/x", EntryTypeFile, c4},
+		{"other/f", EntryTypeFile, c2},
+		{"sub", EntryTypeDirectory, c3},
+		{"sub/keep", EntryTypeFile, c2},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("got %d entries, want %d", len(entries), len(want))
+	}
+	for i, w := range want {
+		e := entries[i]
+		if e.Path() != w.path || e.Type() != w.typ {
+			t.Errorf("entry %d = %s %s, want %s %s", i, e.Type(), e.Path(), w.typ, w.path)
+		}
+		if got := e.LastCommit().Hash().String(); got != w.commit {
+			t.Errorf("%s lastCommit = %s, want %s", w.path, got, w.commit)
+		}
+	}
+	sub := entries[6]
+	tip, err := repo.repo.CommitObject(plumbing.NewHash(c5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := tip.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subEntry, err := tree.FindEntry("sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub.Hash() != subEntry.Hash {
+		t.Errorf("sub hash = %s, want tree entry %s", sub.Hash(), subEntry.Hash)
+	}
+	if lc := sub.LastCommit(); lc.Title() != "Delete sub/drop" || !lc.Author().When().Equal(backdated) {
+		t.Errorf("sub lastCommit = %q at %s, want \"Delete sub/drop\" at %s", lc.Title(), lc.Author().When(), backdated)
+	}
+
+	root, err := repo.Tree("main", "", nil)
+	if err != nil {
+		t.Fatalf("Tree root: %v", err)
+	}
+	var got []string
+	for _, e := range root {
+		got = append(got, e.Path()+"@"+e.LastCommit().Hash().String())
+	}
+	if wantRoot := []string{"README.md@" + c5, "keep.txt@" + c1, "other@" + c4, "sub@" + c3}; !slices.Equal(got, wantRoot) {
+		t.Errorf("root entries %v, want %v", got, wantRoot)
+	}
+	if _, err := repo.Tree("main", "README.md", nil); !errors.Is(err, object.ErrDirectoryNotFound) {
+		t.Errorf("Tree on a file: %v, want ErrDirectoryNotFound", err)
+	}
 }

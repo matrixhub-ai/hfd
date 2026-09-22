@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strings"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -98,7 +99,7 @@ func (r *Repository) Tree(rev string, path string, opts *TreeOptions) ([]*TreeEn
 		}
 
 		if entry.Mode.IsFile() {
-			return nil, fmt.Errorf("path is not a directory")
+			return nil, fmt.Errorf("path is not a directory: %w", object.ErrDirectoryNotFound)
 		}
 
 		tree, err = r.repo.TreeObject(entry.Hash)
@@ -150,9 +151,14 @@ func (r *Repository) walkTree(commit *object.Commit, tree *object.Tree, basePath
 
 		// Get the file-specific commit history to find the last commit that modified this entry
 		var entryLastCommit *Commit
+		matches := func(p string) bool { return p == entryPath }
+		if !entry.Mode.IsFile() {
+			// Diffs list changed files, so a directory changes when any path beneath it does.
+			matches = func(p string) bool { return strings.HasPrefix(p, entryPath+"/") }
+		}
 		commitIter, err := r.repo.Log(&git.LogOptions{
 			From:       commit.Hash,
-			PathFilter: func(p string) bool { return p == entryPath },
+			PathFilter: matches,
 		})
 		if err == nil {
 			var lastCommit *object.Commit
