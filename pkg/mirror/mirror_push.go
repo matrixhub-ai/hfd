@@ -120,7 +120,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 
 	ctx := context.Background()
 
-	lfsPointers, err := repo.ScanLFSPointers()
+	lfsPointers, err := repo.ScanLFSPointers(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to scan LFS pointers: %w", err)
 	}

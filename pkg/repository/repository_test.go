@@ -27,7 +27,7 @@ func TestDiskUsage(t *testing.T) {
 		t.Fatalf("Failed to init repo: %v", err)
 	}
 
-	usage, err := repo.DiskUsage()
+	usage, err := repo.DiskUsage(context.Background())
 	if err != nil {
 		t.Fatalf("DiskUsage returned error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestDiskUsage(t *testing.T) {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	usage2, err := repo.DiskUsage()
+	usage2, err := repo.DiskUsage(context.Background())
 	if err != nil {
 		t.Fatalf("DiskUsage returned error after adding file: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 		t.Fatalf("Failed to create initial commit: %v", err)
 	}
 
-	usageBefore, err := repo.DiskUsage()
+	usageBefore, err := repo.DiskUsage(context.Background())
 	if err != nil {
 		t.Fatalf("DiskUsage returned error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 		t.Fatalf("Failed to commit LFS pointer: %v", err)
 	}
 
-	usageAfter, err := repo.DiskUsage()
+	usageAfter, err := repo.DiskUsage(context.Background())
 	if err != nil {
 		t.Fatalf("DiskUsage returned error after LFS commit: %v", err)
 	}

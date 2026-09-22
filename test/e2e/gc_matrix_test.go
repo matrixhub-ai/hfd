@@ -6,13 +6,26 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-billy/v6"
+	"github.com/go-git/go-billy/v6/helper/chroot"
+	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-billy/v6/util"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/storage/filesystem"
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -21,6 +34,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // gcObject carries the gc.Object fields the test asserts on.
@@ -41,11 +55,15 @@ type gcSweepResult struct {
 
 // gcPruneResult carries the gc.PruneResult fields the test asserts on.
 type gcPruneResult struct {
-	DryRun         bool     `json:"dry_run"`
-	Repositories   int      `json:"repositories"`
-	LiveObjects    int      `json:"live_objects"`
-	Unlinked       []string `json:"unlinked"`
-	SkippedInGrace int      `json:"skipped_in_grace"`
+	DryRun            bool              `json:"dry_run"`
+	Repositories      int               `json:"repositories"`
+	DeletedGitObjects int               `json:"deleted_git_objects"`
+	DeletedGitBytes   int64             `json:"deleted_git_bytes"`
+	ReclaimedBytes    int64             `json:"reclaimed_bytes"`
+	Failed            map[string]string `json:"failed"`
+	LiveObjects       int               `json:"live_objects"`
+	Unlinked          []string          `json:"unlinked"`
+	SkippedInGrace    int               `json:"skipped_in_grace"`
 }
 
 // mustGet follows redirects and returns the 200 body, failing the test otherwise.
@@ -651,4 +669,275 @@ func TestGCPrune(t *testing.T) {
 			t.Fatalf("legacy GC status = %d, want 404 (body %q)", resp.StatusCode, body)
 		}
 	})
+}
+
+// TestGCGitObjects force-pushes main back two commits, leaving them, their LFS pointer and a 128 KiB blob unreachable, then drives
+// POST /internal/gc/prune over the assembled chain: the dry run reports exactly those objects and bytes without touching storage,
+// the live prune removes them and unlinks the orphaned pointer's LFS object for the sweep. The expected objects come from the
+// clone's own object graph sized by native git, never from the server.
+func TestGCGitObjects(t *testing.T) {
+	const repoID = "gc-org/git-objects"
+	s := newE2EServer(t, withInternalAPI())
+	s.createRepo(t, "gc-org", "git-objects")
+	repos, repoPath := s.storage.RepositoriesFS(), repository.ResolvePath(repoID)
+	keepData, dropData := randomData(t, 64<<10, 61), randomData(t, 64<<10, 62)
+	keepSum, dropSum := sha256.Sum256(keepData), sha256.Sum256(dropData)
+	keepOID, dropOID := hex.EncodeToString(keepSum[:]), hex.EncodeToString(dropSum[:])
+	keepObject, dropObject := gcObject{OID: keepOID, Size: uint64(len(keepData))}, gcObject{OID: dropOID, Size: uint64(len(dropData))}
+	remote, env := s.httpRemote(repoID)
+	env = append(env, "GIT_LFS_SKIP_SMUDGE=1")
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		if !t.Run(name, fn) {
+			t.FailNow()
+		}
+	}
+
+	// all is every object the clone pushed, kept what main still reaches after the force push; the difference is the expected garbage.
+	var all, kept map[string]int64
+	var wantDeleted int
+	var wantBytes int64
+	step("ForcePush", func(t *testing.T) {
+		pushViaXetBatch(t, s, repoID, keepData)
+		pushViaXetBatch(t, s, repoID, dropData)
+		dir := filepath.Join(t.TempDir(), "history")
+		runGit(t, "", env, "clone", remote, dir)
+		runGit(t, dir, env, "config", "user.email", "matrix@test.com")
+		runGit(t, dir, env, "config", "user.name", "Matrix Test")
+		if err := os.WriteFile(filepath.Join(dir, "orphan.raw"), randomData(t, 128<<10, 63), 0o644); err != nil {
+			t.Fatalf("write orphan blob: %v", err)
+		}
+		runGit(t, dir, env, "add", ".")
+		runGit(t, dir, env, "commit", "-m", "add orphan blob")
+		runGit(t, dir, env, "push", "origin", "main")
+		all, kept = gitObjects(t, dir, "HEAD"), gitObjects(t, dir, "HEAD~2")
+		dropPointer := strings.TrimSpace(runGit(t, dir, env, "rev-parse", "HEAD~1:"+transferMatrixFile))
+		orphan := strings.TrimSpace(runGit(t, dir, env, "rev-parse", "HEAD:orphan.raw"))
+		garbage := maps.Clone(all)
+		maps.DeleteFunc(garbage, func(hash string, _ int64) bool { _, ok := kept[hash]; return ok })
+		for _, size := range garbage {
+			wantBytes += size
+		}
+		wantDeleted = len(garbage)
+		if _, ok := garbage[dropPointer]; !ok || garbage[orphan] != 128<<10 || len(garbage) != 6 || len(kept) != 6 {
+			t.Fatalf("garbage = %v, kept = %v; want 6 objects each, garbage holding pointer %s and the 128 KiB blob %s", garbage, kept, dropPointer, orphan)
+		}
+		runGit(t, dir, env, "reset", "--hard", "HEAD~2")
+		runGit(t, dir, env, "push", "--force", "origin", "main")
+		if got := mustGet(t, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
+			t.Fatalf("main resolve after force push: got %d bytes, want the retained %d bytes", len(got), len(keepData))
+		}
+		assertGCNotFound(t, s.httpURL+"/"+repoID+"/resolve/main/orphan.raw")
+		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, all) {
+			t.Fatalf("server stores %v, want every pushed object %v", stored, all)
+		}
+		// go-git repacks only around loose objects or several packs; native git always does.
+		if loose, packs := gitObjectFiles(t, repos, repoPath); loose == 0 && packs <= 1 {
+			t.Fatalf("objects/ holds %d loose objects and %d packs, want a layout the go-git repack acts on", loose, packs)
+		}
+		assertGCObjects(t, s.httpURL, keepObject, dropObject)
+	})
+
+	requirePrune := func(t *testing.T, label string, res gcPruneResult, dryRun bool) {
+		t.Helper()
+		// A preview measures no disk saving; the run must shrink objects/ by at least the 128 KiB orphan blob's worth.
+		reclaimedOK := res.ReclaimedBytes == 0
+		if !dryRun {
+			reclaimedOK = res.ReclaimedBytes >= 100<<10
+		}
+		if res.DryRun != dryRun || res.Repositories != 1 || res.LiveObjects != 1 || res.SkippedInGrace != 0 || len(res.Failed) != 0 ||
+			res.DeletedGitObjects != wantDeleted || res.DeletedGitBytes != wantBytes || !reclaimedOK || !slices.Equal(res.Unlinked, []string{dropOID}) {
+			t.Fatalf("%s = %+v, want dry_run=%t, 1 repository, 1 live object, %d Git objects (%d bytes) deleted, at least 100 KiB reclaimed unless dry run (then 0), [%s] unlinked, nothing failed or skipped",
+				label, res, dryRun, wantDeleted, wantBytes, dropOID)
+		}
+	}
+
+	step("DryRun", func(t *testing.T) {
+		before := snapshotRepository(t, repos, repoPath)
+		first := postPrune(t, s.httpURL, "?dry_run=true&grace=0")
+		second := postPrune(t, s.httpURL, "?dry_run=true&grace=0")
+		requirePrune(t, "dry run", first, true)
+		requirePrune(t, "repeated dry run", second, true)
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("repeated dry run = %+v, want %+v", second, first)
+		}
+		if !maps.Equal(before, snapshotRepository(t, repos, repoPath)) {
+			t.Fatal("dry run changed the repository files")
+		}
+		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, all) {
+			t.Fatalf("server stores %v after dry run, want every pushed object %v", stored, all)
+		}
+		assertGCObjects(t, s.httpURL, keepObject, dropObject)
+		for oid, data := range map[string][]byte{keepOID: keepData, dropOID: dropData} {
+			if got := mustGet(t, s.httpURL+"/objects/"+oid); !bytes.Equal(got, data) {
+				t.Fatalf("object %s after dry run: got %d bytes, want %d", oid, len(got), len(data))
+			}
+		}
+	})
+
+	step("Prune", func(t *testing.T) {
+		res := postPrune(t, s.httpURL, "?grace=0")
+		requirePrune(t, "prune", res, false)
+		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {
+			t.Fatalf("server stores %v after prune, want exactly what main reaches %v", stored, kept)
+		}
+		if loose, packs := gitObjectFiles(t, repos, repoPath); loose != 0 || packs != 1 {
+			t.Fatalf("objects/ holds %d loose objects and %d packs after prune, want one pack", loose, packs)
+		}
+		assertGCObjects(t, s.httpURL, keepObject)
+		if got := mustGet(t, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
+			t.Fatalf("main resolve after prune: got %d bytes, want %d", len(got), len(keepData))
+		}
+	})
+
+	step("CloneAfterPrune", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "after")
+		runGit(t, "", env, "clone", remote, dir)
+		runGit(t, dir, env, "fsck", "--strict")
+		if got := gitObjects(t, dir, "HEAD"); !maps.Equal(got, kept) {
+			t.Fatalf("fresh clone reaches %v, want %v", got, kept)
+		}
+		pointer, err := os.ReadFile(filepath.Join(dir, transferMatrixFile))
+		if err != nil || !strings.Contains(string(pointer), "oid sha256:"+keepOID) {
+			t.Fatalf("fresh clone %s = %q, %v; want the pointer to %s", transferMatrixFile, pointer, err, keepOID)
+		}
+	})
+
+	step("Sweep", func(t *testing.T) {
+		res := postSweep(t, s.httpURL)
+		if !res.Done || res.SweptShards <= 0 || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
+			t.Fatalf("sweep = %+v, want done with shards, xorbs and bytes reclaimed, nothing remaining", res)
+		}
+		assertGCNotFound(t, s.httpURL+"/objects/"+dropOID)
+		if got := mustGet(t, s.httpURL+"/objects/"+keepOID); !bytes.Equal(got, keepData) {
+			t.Fatalf("retained object after sweep: got %d bytes, want %d", len(got), len(keepData))
+		}
+		assertGCObjects(t, s.httpURL, keepObject)
+	})
+
+	step("Idempotent", func(t *testing.T) {
+		for _, query := range []string{"?dry_run=true&grace=0", "?grace=0"} {
+			res := postPrune(t, s.httpURL, query)
+			if res.Repositories != 1 || res.LiveObjects != 1 || res.DeletedGitObjects != 0 || res.DeletedGitBytes != 0 || res.ReclaimedBytes != 0 ||
+				len(res.Failed) != 0 || len(res.Unlinked) != 0 || res.SkippedInGrace != 0 {
+				t.Fatalf("prune%s after GC = %+v, want 1 repository, 1 live object and nothing deleted, reclaimed or unlinked", query, res)
+			}
+		}
+		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {
+			t.Fatalf("server stores %v after repeated prune, want %v", stored, kept)
+		}
+	})
+}
+
+// gitObjects maps every object rev reaches in the clone at dir to its payload size, by native git.
+func gitObjects(t *testing.T, dir, rev string) map[string]int64 {
+	t.Helper()
+	list, _, err := gitCmd(t, dir, nil, "rev-list", "--objects", rev)
+	if err != nil {
+		t.Fatalf("rev-list --objects %s: %v", rev, err)
+	}
+	objects := map[string]int64{}
+	for line := range strings.SplitSeq(strings.TrimSpace(list), "\n") {
+		hash, _, _ := strings.Cut(line, " ")
+		out, _, err := gitCmd(t, dir, nil, "cat-file", "-s", hash)
+		if err != nil {
+			t.Fatalf("cat-file -s %s: %v", hash, err)
+		}
+		size, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+		if err != nil {
+			t.Fatalf("cat-file -s %s = %q: %v", hash, out, err)
+		}
+		objects[hash] = size
+	}
+	return objects
+}
+
+// storedGitObjects maps the objects the bare repository at repoPath on fs holds to their payload sizes through a fresh go-git storer;
+// on the host filesystem native git must list the same.
+func storedGitObjects(t *testing.T, fs billy.Filesystem, repoPath string) map[string]int64 {
+	t.Helper()
+	st := filesystem.NewStorage(chroot.New(fs, repoPath), cache.NewObjectLRUDefault())
+	defer st.Close()
+	iter, err := st.IterEncodedObjects(plumbing.AnyObject)
+	if err != nil {
+		t.Fatalf("iterate objects of %s: %v", repoPath, err)
+	}
+	objects := map[string]int64{}
+	err = iter.ForEach(func(o plumbing.EncodedObject) error {
+		objects[o.Hash().String()] = o.Size()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("iterate objects of %s: %v", repoPath, err)
+	}
+	host, ok := fs.(*osfs.BoundOS)
+	if !ok {
+		return objects
+	}
+	out, _, err := gitCmd(t, filepath.Join(host.Root(), repoPath), nil, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objectsize)")
+	if err != nil {
+		t.Fatalf("cat-file --batch-all-objects: %v", err)
+	}
+	native := map[string]int64{}
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		hash, size, _ := strings.Cut(line, " ")
+		n, err := strconv.ParseInt(size, 10, 64)
+		if err != nil {
+			t.Fatalf("cat-file --batch-all-objects line %q: %v", line, err)
+		}
+		native[hash] = n
+	}
+	if !maps.Equal(objects, native) {
+		t.Fatalf("go-git lists %v, native git lists %v", objects, native)
+	}
+	return objects
+}
+
+// gitObjectFiles counts the loose objects and packfiles under objects/ of the bare repository at repoPath on fs.
+func gitObjectFiles(t *testing.T, fs billy.Filesystem, repoPath string) (loose, packs int) {
+	t.Helper()
+	err := util.Walk(fs, filepath.Join(repoPath, "objects"), func(name string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		switch {
+		case strings.HasSuffix(name, ".pack"):
+			packs++
+		case len(filepath.Base(filepath.Dir(name))) == 2 && len(info.Name()) == 38:
+			loose++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk objects of %s: %v", repoPath, err)
+	}
+	return loose, packs
+}
+
+// gitFileState pins one repository file for byte-for-byte comparisons across a preview.
+type gitFileState struct {
+	size     int64
+	modified int64
+	digest   [sha256.Size]byte
+}
+
+// snapshotRepository records every file under repoPath on fs.
+func snapshotRepository(t *testing.T, fs billy.Filesystem, repoPath string) map[string]gitFileState {
+	t.Helper()
+	files := map[string]gitFileState{}
+	err := util.Walk(fs, repoPath, func(name string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		content, err := util.ReadFile(fs, name)
+		if err != nil {
+			return err
+		}
+		files[name] = gitFileState{size: info.Size(), modified: info.ModTime().UnixNano(), digest: sha256.Sum256(content)}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", repoPath, err)
+	}
+	return files
 }
