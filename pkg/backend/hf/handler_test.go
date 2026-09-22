@@ -8,12 +8,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
+
+	"github.com/go-git/go-billy/v6/util"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -966,4 +971,166 @@ func TestCommitAuthorFromIdentity(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHuggingFaceCommitParentPrecondition pins the parentCommit contract of
+// the commit route: a matching parent commits and reaches the hooks, a stale
+// parent is 412 naming both commits with no ref, content, or post-receive
+// change, other CreateCommit failures stay 500, and a body read error is 400
+// before any commit.
+func TestHuggingFaceCommitParentPrecondition(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	repoPath := repository.ResolvePath("org/repo")
+	repo, err := repository.Init(ctx, st.RepositoriesFS(), repoPath, "main")
+	if err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	first, err := repo.CreateCommit(ctx, "main", "init", "Test", "test@test.com",
+		[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "file.txt", Content: []byte("v1\n")}}, "")
+	if err != nil {
+		t.Fatalf("create commit: %v", err)
+	}
+
+	var pres, posts []receive.RefUpdate
+	h := NewHandler(WithStorage(st),
+		WithPreReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) (bool, error) {
+			pres = append(pres, updates...)
+			return true, nil
+		}),
+		WithPostReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) error {
+			posts = append(posts, updates...)
+			return nil
+		}))
+	commit := func(t *testing.T, body io.Reader, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/models/org/repo/commit/main", body))
+		if rec.Code != want {
+			t.Fatalf("commit status = %d, want %d: %s", rec.Code, want, rec.Body)
+		}
+		return rec
+	}
+	ndjson := func(parent, content string) string {
+		return `{"key":"header","value":{"summary":"update","parentCommit":` + strconv.Quote(parent) + "}}\n" +
+			`{"key":"file","value":{"path":"file.txt","content":` + strconv.Quote(content) + "}}\n"
+	}
+	tip := func(t *testing.T) string {
+		t.Helper()
+		hash, err := repo.ResolveRevision("main")
+		if err != nil {
+			t.Fatalf("resolve main: %v", err)
+		}
+		return hash
+	}
+	content := func(t *testing.T) string {
+		t.Helper()
+		blob, err := repo.Blob("main", "file.txt")
+		if err != nil {
+			t.Fatalf("blob: %v", err)
+		}
+		r, err := blob.NewReader()
+		if err != nil {
+			t.Fatalf("blob reader: %v", err)
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("read blob: %v", err)
+		}
+		return string(data)
+	}
+
+	var second string
+	t.Run("MatchingParent", func(t *testing.T) {
+		rec := commit(t, strings.NewReader(ndjson(first, "v2\n")), http.StatusOK)
+		var resp commitResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode commit response: %v", err)
+		}
+		second = resp.CommitOid
+		if second == "" || second == first || tip(t) != second {
+			t.Fatalf("commitOid = %q, tip = %q, want a new tip after parent %s", second, tip(t), first)
+		}
+		if got := content(t); got != "v2\n" {
+			t.Fatalf("file.txt = %q, want %q", got, "v2\n")
+		}
+		if len(pres) != 1 || pres[0].OldRev() != first || pres[0].RefName() != "refs/heads/main" {
+			t.Fatalf("pre-receive updates = %v, want one refs/heads/main update from %s", pres, first)
+		}
+		if len(posts) != 1 || posts[0].OldRev() != first || posts[0].NewRev() != second {
+			t.Fatalf("post-receive updates = %v, want one %s -> %s", posts, first, second)
+		}
+	})
+
+	t.Run("StaleParent", func(t *testing.T) {
+		rec := commit(t, strings.NewReader(ndjson(first, "v3\n")), http.StatusPreconditionFailed)
+		if body := rec.Body.String(); !strings.Contains(body, first) || !strings.Contains(body, second) {
+			t.Fatalf("412 body %s must name expected %s and tip %s", body, first, second)
+		}
+		if got := tip(t); got != second {
+			t.Fatalf("tip = %s, want unchanged %s", got, second)
+		}
+		if got := content(t); got != "v2\n" {
+			t.Fatalf("file.txt = %q, want unchanged %q", got, "v2\n")
+		}
+		if len(posts) != 1 {
+			t.Fatalf("post-receive updates = %v, want none after the rejected commit", posts[1:])
+		}
+	})
+
+	t.Run("BodyReadError", func(t *testing.T) {
+		body := io.MultiReader(strings.NewReader(ndjson(second, "v4\n")), iotest.ErrReader(errors.New("connection reset")))
+		commit(t, body, http.StatusBadRequest)
+		if got := tip(t); got != second {
+			t.Fatalf("tip = %s, want unchanged %s", got, second)
+		}
+		if len(posts) != 1 {
+			t.Fatalf("post-receive updates = %v, want none after the failed read", posts[1:])
+		}
+	})
+
+	t.Run("UnreadableRefStays500", func(t *testing.T) {
+		fs := st.RepositoriesFS()
+		loose := repoPath + "/refs/heads/main"
+		if err := fs.Remove(loose); err != nil {
+			t.Fatalf("remove loose ref: %v", err)
+		}
+		// A truncated packed-refs line fails the ref read; go-git only reads it once the loose ref is gone.
+		if err := util.WriteFile(fs, repoPath+"/packed-refs", []byte(second+"\n"), 0o644); err != nil {
+			t.Fatalf("write packed-refs: %v", err)
+		}
+		rec := commit(t, strings.NewReader(ndjson(second, "v5\n")), http.StatusInternalServerError)
+		if body := rec.Body.String(); !strings.Contains(body, "packed-ref") {
+			t.Fatalf("500 body %s must report the packed-refs read failure", body)
+		}
+		if _, err := fs.Stat(loose); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("refs/heads/main after failed commit: %v, want absent", err)
+		}
+		if len(posts) != 1 {
+			t.Fatalf("post-receive updates = %v, want none after the failed commit", posts[1:])
+		}
+		if err := fs.Remove(repoPath + "/packed-refs"); err != nil {
+			t.Fatalf("remove packed-refs: %v", err)
+		}
+		if err := util.WriteFile(fs, loose, []byte(second+"\n"), 0o644); err != nil {
+			t.Fatalf("restore loose ref: %v", err)
+		}
+		if got := tip(t); got != second {
+			t.Fatalf("tip = %s, want unchanged %s", got, second)
+		}
+		if got := content(t); got != "v2\n" {
+			t.Fatalf("file.txt = %q, want unchanged %q", got, "v2\n")
+		}
+	})
+
+	t.Run("UnreadableTipStays500", func(t *testing.T) {
+		if err := util.WriteFile(st.RepositoriesFS(), repoPath+"/refs/heads/main", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+			t.Fatalf("write dangling ref: %v", err)
+		}
+		commit(t, strings.NewReader(ndjson("", "v5\n")), http.StatusInternalServerError)
+		if len(posts) != 1 {
+			t.Fatalf("post-receive updates = %v, want none after the failed commit", posts[1:])
+		}
+	})
 }

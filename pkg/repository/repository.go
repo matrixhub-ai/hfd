@@ -25,6 +25,8 @@ import (
 var (
 	ErrRepositoryNotExists = git.ErrRepositoryNotExists
 	ErrRevisionNotFound    = plumbing.ErrReferenceNotFound
+	// ErrParentMismatch reports that CreateCommit's expected parent is not the branch tip.
+	ErrParentMismatch = errors.New("parent commit mismatch")
 )
 
 const (

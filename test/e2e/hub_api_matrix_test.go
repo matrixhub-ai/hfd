@@ -146,6 +146,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "DeleteFile", supported: cliModelOnly, run: runHubDeleteFile},
 		{name: "RepoInfo", supported: pyOnly, run: runHubRepoInfo},
 		{name: "Commits", supported: pyOnly, run: runHubCommits},
+		{name: "CommitParent", supported: pyOnly, run: runHubCommitParent},
 		{name: "Compare", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubCompare},
 		{name: "Refs", supported: pyOnly, run: runHubRefs},
 		{name: "Squash", supported: pyOnly, run: runHubSquash},
@@ -628,6 +629,33 @@ assert "Add first file" in titles, f"'Add first file' not in {titles}"
 assert "Add second file" in titles, f"'Add second file' not in {titles}"
 `, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg)
 	runPyScript(t, s.httpURL, script)
+}
+
+// runHubCommitParent (py only): create_commit with the seeded upload's oid as
+// parent_commit succeeds; reusing that now-stale oid raises HfHubHTTPError 412
+// and leaves main and the file untouched.
+func runHubCommitParent(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/commit-parent-" + rt.arg
+	script := hubPyAPI + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`from huggingface_hub.utils import HfHubHTTPError
+repo_id, repo_type = %q, %q
+first = api.upload_file(path_or_fileobj=b"v1\n", path_in_repo="file.txt", repo_id=repo_id, repo_type=repo_type).oid
+def commit(content, parent):
+    return api.create_commit(repo_id=repo_id, repo_type=repo_type, commit_message="update file.txt", parent_commit=parent,
+        operations=[huggingface_hub.CommitOperationAdd(path_in_repo="file.txt", path_or_fileobj=content)]).oid
+second = commit(b"v2\n", first)
+assert second != first, f"matching parent_commit produced no new commit: {second}"
+try:
+    commit(b"v3\n", first)
+except HfHubHTTPError as error:
+    assert error.response.status_code == 412, f"stale parent_commit status={error.response.status_code}, want 412: {error}"
+else:
+    raise AssertionError("stale parent_commit was committed")
+refs = api.list_repo_refs(repo_id=repo_id, repo_type=repo_type)
+main = {b.name: b.target_commit for b in refs.branches}["main"]
+assert main == second, f"main {main} != second commit {second}"
+`, repoID, rt.arg)
+	runPyScript(t, s.httpURL, script)
+	assertResolveContent(t, s, rt, repoID, "main", "file.txt", "v2\n")
 }
 
 // runHubListRepos (py only): author/search filters and pagination preserve
