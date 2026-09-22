@@ -62,23 +62,11 @@ type treeSize struct {
 	Size int64  `json:"size"`
 }
 
-// repoListItem represents a repository item in the list response for models, datasets, and spaces.
-type repoListItem struct {
-	RepoID        string   `json:"id"`
-	Likes         int      `json:"likes"`
-	TrendingScore int      `json:"trendingScore"`
-	Private       bool     `json:"private"`
-	Downloads     int      `json:"downloads"`
-	Tags          []string `json:"tags,omitempty"`
-	PipelineTag   string   `json:"pipeline_tag,omitempty"`
-	LibraryName   string   `json:"library_name,omitempty"`
-	ModelID       string   `json:"modelId,omitempty"`
-}
-
 // repoInfo represents the info response for HuggingFace API
 type repoInfo struct {
 	ID           string    `json:"id"`
 	ModelID      string    `json:"modelId,omitempty"`
+	Author       string    `json:"author,omitempty"`
 	SHA          string    `json:"sha"`
 	Private      bool      `json:"private"`
 	Disabled     bool      `json:"disabled"`
@@ -86,6 +74,8 @@ type repoInfo struct {
 	Downloads    int       `json:"downloads"`
 	Likes        int       `json:"likes"`
 	Tags         []string  `json:"tags"` // This is not git tags, but the tags in HuggingFace card metadata
+	PipelineTag  string    `json:"pipeline_tag,omitempty"`
+	LibraryName  string    `json:"library_name,omitempty"`
 	CardData     any       `json:"cardData,omitempty"`
 	Siblings     []sibling `json:"siblings"`
 	CreatedAt    string    `json:"createdAt,omitempty"`

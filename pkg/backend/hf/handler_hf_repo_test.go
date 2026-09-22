@@ -1,11 +1,15 @@
 package hf
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // createRepoAndCommit creates a repo and commits a file, returning the commit SHA.
@@ -601,6 +605,64 @@ func TestHuggingFaceRepoInfoUsedStorage(t *testing.T) {
 
 	if info.UsedStorage <= 0 {
 		t.Errorf("Expected usedStorage > 0, got %d", info.UsedStorage)
+	}
+}
+
+func TestHuggingFaceRepoInfoMetadataAndDates(t *testing.T) {
+	h, st := newListHandler(t)
+	seedRepo(t, st, "alice/m1", map[string]string{"README.md": modelCard}, day1)
+	tip := seedRepo(t, st, "alice/m1", map[string]string{"x.txt": "x\n"}, day3)
+	seedRepo(t, st, "datasets/alice/d1", map[string]string{"README.md": dataCard}, day2)
+	seedRepo(t, st, "alice/nan", map[string]string{"README.md": "---\nscore: .nan\nlicense: mit\n---\n# NaN\n"}, day1)
+	if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("alice/empty"), "main"); err != nil {
+		t.Fatal(err)
+	}
+	info := func(target string) map[string]any {
+		rec := listDo(t, h, target)
+		var body map[string]any
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil {
+			t.Fatalf("%s: %d %s", target, rec.Code, rec.Body)
+		}
+		return body
+	}
+
+	m := info("/api/models/alice/m1")
+	if m["id"] != "alice/m1" || m["modelId"] != "alice/m1" || m["author"] != "alice" || m["sha"] != tip || m["createdAt"] != "2024-01-01T12:00:00.000Z" || m["lastModified"] != "2024-03-01T12:00:00.000Z" {
+		t.Errorf("model identity and dates %v", m)
+	}
+	if m["pipeline_tag"] != "text-generation" || m["library_name"] != "transformers" || m["private"] != false || m["gated"] != false || m["disabled"] != false || m["usedStorage"].(float64) <= 0 {
+		t.Errorf("model metadata %v", m)
+	}
+	if tags := m["tags"].([]any); !slices.Contains(tags, any("dataset:alice/d1")) || !slices.Contains(tags, any("license:mit")) {
+		t.Errorf("model tags %v", tags)
+	}
+	if card, ok := m["cardData"].(map[string]any); !ok || card["pipeline_tag"] != "text-generation" {
+		t.Errorf("model cardData %v", m["cardData"])
+	}
+	if files := m["siblings"].([]any); len(files) != 2 {
+		t.Errorf("model siblings %v", files)
+	}
+	if rev := info("/api/models/alice/m1/revision/main"); rev["sha"] != tip || rev["createdAt"] != m["createdAt"] {
+		t.Errorf("revision info %v", rev)
+	}
+
+	d := info("/api/datasets/alice/d1")
+	if _, has := d["modelId"]; has || d["author"] != "alice" || d["createdAt"] != "2024-02-01T12:00:00.000Z" || d["lastModified"] != "2024-02-01T12:00:00.000Z" {
+		t.Errorf("dataset identity and dates %v", d)
+	}
+	if _, has := d["pipeline_tag"]; has || d["library_name"] != nil || !slices.Contains(d["tags"].([]any), any("task_categories:text-classification")) {
+		t.Errorf("dataset metadata %v", d)
+	}
+
+	// A card the Hub cannot serialize is left out rather than producing an unreadable response.
+	n := info("/api/models/alice/nan")
+	if _, has := n["cardData"]; has || !slices.Equal(n["tags"].([]any), []any{"license:mit"}) {
+		t.Errorf("NaN card info %v", n)
+	}
+
+	e := info("/api/models/alice/empty")
+	if e["sha"] != "" || e["createdAt"] != nil || e["lastModified"] != nil || len(e["tags"].([]any)) != 0 {
+		t.Errorf("empty repository info %v", e)
 	}
 }
 

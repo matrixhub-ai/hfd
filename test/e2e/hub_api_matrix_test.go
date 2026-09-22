@@ -631,7 +631,8 @@ assert "Add second file" in titles, f"'Add second file' not in {titles}"
 }
 
 // runHubListRepos (py only): author/search filters and pagination preserve
-// exact repo IDs without leaking repositories from other types.
+// exact repo IDs without leaking repositories from other types; a date sort
+// with full=True carries sha and dates that match the repo's info.
 func runHubListRepos(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	namespace := "list-" + rt.arg + "-org"
 	script := hubPyAPI + hubPyCreateLine(namespace+"/alpha", rt, false) +
@@ -654,7 +655,23 @@ repos = list(list_repos(author=namespace, limit=1))
 assert [repo.id for repo in repos] == want[:1], f"limited listing: {repos!r}, want {want[:1]!r}"
 repos = list(paginate(os.environ["HF_ENDPOINT"] + "/api/%s", params={"author": namespace, "limit": 1}, headers={}))
 assert [repo["id"] for repo in repos] == want, f"Link pagination: {repos!r}, want {want!r}"
-`, namespace, rt.apiPrefix, rt.apiPrefix)
+api.upload_file(path_or_fileobj=b"newer\n", path_in_repo="newer.txt", repo_id=namespace + "/alpha", repo_type=%q)
+repos = list(list_repos(author=namespace, sort="lastModified", full=True))
+assert [repo.id for repo in repos] == want, f"lastModified listing: {repos!r}, want {want!r}"
+for repo in repos:
+    assert repo.sha and repo.created_at is not None and repo.last_modified is not None, f"missing dates: {repo!r}"
+    assert repo.created_at <= repo.last_modified, f"created after modified: {repo!r}"
+assert repos[0].last_modified >= repos[1].last_modified, f"not newest first: {repos!r}"
+# huggingface_hub 1.x dropped the direction kwarg, so both directions go over plain HTTP.
+url = os.environ["HF_ENDPOINT"] + "/api/%s"
+desc = list(paginate(url, params={"author": namespace, "sort": "lastModified", "direction": -1, "full": "true"}, headers={}))
+assert [repo["id"] for repo in desc] == want and desc[0]["sha"] == repos[0].sha, f"direction=-1 listing: {desc!r}"
+asc = list(paginate(url, params={"author": namespace, "sort": "lastModified", "direction": 1}, headers={}))
+want_asc = want if desc[0]["lastModified"] == desc[1]["lastModified"] else list(reversed(want))
+assert [repo["id"] for repo in asc] == want_asc, f"direction=1 listing: {asc!r}, want {want_asc!r}"
+info = api.%s(repo_id=namespace + "/alpha")
+assert info.sha == repos[0].sha and info.last_modified == repos[0].last_modified and info.created_at == repos[0].created_at, f"info dates {info!r} differ from listing {repos[0]!r}"
+`, namespace, rt.apiPrefix, rt.apiPrefix, rt.arg, rt.apiPrefix, rt.pyInfoFunc())
 	runPyScript(t, s.httpURL, script)
 }
 

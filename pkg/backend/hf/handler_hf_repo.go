@@ -32,32 +32,19 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	// Get list of files in the repository at the specified revision (recursive to include files in subdirectories)
 	// An empty repository (no commits yet) is a valid state; treat it as having no files.
-	hfEntries, err := repo.Tree(rev, "", &repository.TreeOptions{Recursive: true})
+	siblings, err := repoSiblings(repo, rev)
 	if err != nil && !errors.Is(err, repository.ErrRevisionNotFound) {
 		responseJSON(w, fmt.Errorf("failed to get tree for repo %q at rev %q: %v", ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}
 
-	var siblings []sibling
-	for _, entry := range hfEntries {
-		if entry.Type() == repository.EntryTypeFile {
-			siblings = append(siblings, sibling{
-				RFilename: entry.Path(),
-			})
-		}
-	}
-
 	usedStorage, _ := repo.DiskUsage(r.Context())
 
-	// Get the commit SHA for this revision
-	commitHash := ""
-	commits, err := repo.Commits(rev, &repository.CommitsOptions{Limit: 1})
-	if err == nil && len(commits) > 0 {
-		commitHash = commits[0].Hash().String()
-	}
+	// The tip commit gives sha and lastModified; createdAt is the earliest reachable author date.
+	dates := h.tips.dates(repo, repository.ResolvePath(ri.RepoName), rev, true)
 
 	// Collect metadata (tags, cardData, pipeline_tag, etc.) from README.md and config.json.
-	meta := collectRepoMetadata(repo, rev)
+	meta := collectRepoMetadata(repo, rev, ri.RepoType)
 
 	tags := meta.tags
 	if tags == nil {
@@ -66,7 +53,8 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 
 	hfInfo := repoInfo{
 		ID:          ri.FullName,
-		SHA:         commitHash,
+		Author:      ri.Namespace,
+		SHA:         dates.sha,
 		Private:     false,
 		Disabled:    false,
 		Gated:       false,
@@ -74,13 +62,22 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Likes:       0,
 		Tags:        tags,
 		Siblings:    siblings,
-		CardData:    meta.cardData,
 		UsedStorage: usedStorage,
+	}
+	// A card the Hub cannot serialize is left out rather than breaking the response.
+	if raw := meta.cardJSON(); raw != nil {
+		hfInfo.CardData = raw
+	}
+	if dates.sha != "" {
+		hfInfo.CreatedAt = hubTime(dates.createdAt)
+		hfInfo.LastModified = hubTime(dates.lastModified)
 	}
 
 	// For models, also set the modelId field which is required by some HuggingFace clients. For datasets and spaces, the client doesn't require it and it can be confusing to have it be different from the ID, so we leave it empty.
 	if ri.RepoType == "models" {
 		hfInfo.ModelID = hfInfo.ID
+		hfInfo.PipelineTag = meta.pipelineTag
+		hfInfo.LibraryName = meta.libraryName
 	}
 
 	responseJSON(w, hfInfo, http.StatusOK)
