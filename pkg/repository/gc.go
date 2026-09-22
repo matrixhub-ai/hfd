@@ -34,6 +34,7 @@ type GCResult struct {
 var errGCPreviewUnsupported = errors.New("dry-run GC not supported for this repository")
 
 // GC requires quiescent writes; a zero cutoff disables grace. A dry run predicts the engine's deletions from refs, loose objects and pack indexes and writes nowhere.
+// Cancellation stops a GC before it starts and a preview at once, but a native gc already running is waited for; the cancellation is still reported.
 func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCResult, error) {
 	if err := ctx.Err(); err != nil {
 		return GCResult{}, err

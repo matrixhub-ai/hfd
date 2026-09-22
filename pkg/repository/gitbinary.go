@@ -397,8 +397,13 @@ func (r *Repository) pushGit(ctx context.Context, dir, url string, refs []string
 }
 
 // gcGit repacks dir with native git, expiring unreachable objects older than cutoff; zero expires them all.
+// A started gc is never killed: only gc itself would die, its repack going on to rewrite packs behind the caller's reindex.
 func gcGit(ctx context.Context, dir string, cutoff time.Time) error {
-	return runGitCmd(gitCmd(ctx, "", nil, "-C", dir, "gc", "--quiet", "--prune="+gitExpiry(cutoff)))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := runGitCmd(gitCmd(context.WithoutCancel(ctx), "", nil, "-C", dir, "gc", "--quiet", "--prune="+gitExpiry(cutoff)))
+	return joinCtx(ctx, err)
 }
 
 // gitExpiry renders cutoff for git's --prune and --expire options; zero expires everything.

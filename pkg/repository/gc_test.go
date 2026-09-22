@@ -1039,7 +1039,7 @@ func TestGCEmptyRepository(t *testing.T) {
 	t.Run("memfs", func(t *testing.T) { empty(t, memfs.New(), false) })
 }
 
-// Cancellation and a failing git leave every object in place and are reported, for previews too.
+// Cancellation before GC starts or during a preview leaves every object in place; a native gc already running finishes first. Cancellation and a failing git are both reported.
 func TestGCCancelled(t *testing.T) {
 	forEachGitMode(t, func(t *testing.T, native bool) {
 		f := buildGCFixture(t)
@@ -1055,53 +1055,110 @@ func TestGCCancelled(t *testing.T) {
 		requireObjects(t, f, f.packed, true)
 	})
 
-	// A git that never finishes must be killed as soon as the context ends: the preview's rev-list or the real gc.
+	// A preview's rev-list that never finishes is killed as soon as the context ends.
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("git binary required: %v", err)
 	}
+	t.Run("NativeDuringPreview", func(t *testing.T) {
+		f := buildGCFixture(t)
+		dir := t.TempDir()
+		started := filepath.Join(dir, "started")
+		bin := filepath.Join(dir, "git")
+		script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" = rev-list ]; then\n  touch %q\n  exec sleep 60\nfi\nexec %q \"$@\"\n", started, gitPath)
+		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		setGitBinary(t, bin)
+		requireGitMode(t, f.repo, true)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := f.repo.GC(ctx, time.Time{}, true)
+			done <- err
+		}()
+		waitForFile(t, started)
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("GC = %v, want context.Canceled", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("GC did not return after cancellation")
+		}
+		requireObjects(t, f, f.loose, true)
+		requireObjects(t, f, f.packed, true)
+	})
+
+	// Killing a running gc would orphan its repack, which then rewrites packs behind the refreshed handle: a started gc runs to completion and the cancellation is reported with whatever git returned.
 	for _, tc := range []struct {
 		name  string
-		dry   bool
-		stage string
-	}{{"NativeDuringGC", false, "gc"}, {"NativeDuringPreview", true, "rev-list"}} {
+		run   string // what the gated child runs in gc's place
+		fails bool
+	}{{"NativeDuringGC", fmt.Sprintf("%q \"$@\"", gitPath), false}, {"NativeGCFails", "(exit 3)", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := buildGCFixture(t)
 			dir := t.TempDir()
-			started := filepath.Join(dir, "started")
+			started, gate, finished := filepath.Join(dir, "started"), filepath.Join(dir, "gate"), filepath.Join(dir, "finished")
+			// The gated child stands in for gc's repack: detached from git's pipes so a kill cannot be masked by them, it writes only once released.
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" != gc ]; then exec %q \"$@\"; fi\n(while [ ! -e %q ]; do sleep 0.01; done; %s; rc=$?; touch %q; exit $rc) >/dev/null 2>&1 </dev/null &\ntouch %q\nwait $!\n",
+				gitPath, gate, tc.run, finished, started)
 			bin := filepath.Join(dir, "git")
-			script := fmt.Sprintf("#!/bin/sh\nif [ \"$3\" = %s ]; then\n  touch %q\n  exec sleep 60\nfi\nexec %q \"$@\"\n", tc.stage, started, gitPath)
 			if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() {
+				// A child left gated would outlive the test: release and join it before the fixture goes away.
+				if err := os.WriteFile(gate, nil, 0o644); err != nil {
+					t.Error(err)
+				}
+				if _, err := os.Stat(started); err == nil {
+					waitForFile(t, finished)
+				}
+			})
 			setGitBinary(t, bin)
 			requireGitMode(t, f.repo, true)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, err := f.repo.GC(ctx, time.Time{}, tc.dry)
+				_, err := f.repo.GC(ctx, time.Time{}, false)
 				done <- err
 			}()
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-				if _, err := os.Stat(started); err == nil {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("git %s was not started", tc.stage)
-				}
-			}
+			waitForFile(t, started)
 			cancel()
 			select {
 			case err := <-done:
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("GC = %v, want context.Canceled", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("GC did not return after cancellation")
+				t.Fatalf("GC = %v before its native gc finished", err)
+			case <-time.After(time.Second):
 			}
-			requireObjects(t, f, f.loose, true)
-			requireObjects(t, f, f.packed, true)
+			if err := os.WriteFile(gate, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("GC did not return after its native gc finished")
+			}
+			if _, statErr := os.Stat(finished); statErr != nil {
+				t.Errorf("GC returned before its native gc finished: %v", statErr)
+			}
+			var exit *exec.ExitError
+			if !errors.Is(err, context.Canceled) || errors.As(err, &exit) != tc.fails {
+				t.Fatalf("GC = %v, want context.Canceled joined with a git failure = %t", err, tc.fails)
+			}
+			requireObjects(t, f, f.loose, tc.fails)
+			requireObjects(t, f, f.packed, tc.fails)
+			requireObjects(t, f, f.live, true)
+			requireBlob(t, f.repo, "main", "file.txt", []byte("one\n"))
+			requireBlob(t, f.repo, "keep", "keep.bin", f.keep)
+			if packs := packFiles(t, osfs.Default, f.bare); (len(packs) == 1) == tc.fails {
+				t.Errorf("packs after GC = %v, want a single consolidated pack = %t", packs, !tc.fails)
+			}
+			gitFsck(t, f.bare)
 		})
 	}
 
@@ -1118,6 +1175,19 @@ func TestGCCancelled(t *testing.T) {
 		requireObjects(t, f, f.packed, true)
 		requireObjects(t, f, f.live, true)
 	})
+}
+
+// waitForFile polls until name exists, failing the test after ten seconds.
+func waitForFile(t *testing.T, name string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(name); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not appear", name)
+		}
+	}
 }
 
 // packCloseCanceller cancels its context as go-git closes the repack's new pack, which go-git itself never checks.
