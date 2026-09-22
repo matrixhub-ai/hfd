@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/wzshiming/xet/auth"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // hubClient is the client axis of the hub API matrix: the hf CLI or the
@@ -139,6 +141,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
 		{name: "ListRepos", supported: pyOnly, run: runHubListRepos},
 		{name: "TreeSize", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubTreeSize},
+		{name: "PathsInfo", supported: pyOnly, run: runHubPathsInfo},
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
 		{name: "Tag", supported: anyClientAnyType, run: runHubTag},
 		{name: "Move", supported: cliModelOnly, run: runHubMove},
@@ -687,6 +690,81 @@ for suffix, want_status, want_body in [
     if want_body is not None:
         assert body == want_body, f"treesize/{suffix} body={body!r}, want {want_body!r}"
 `, repoID)
+	runPyScript(t, s.httpURL, script)
+}
+
+// runHubPathsInfo (py only): get_paths_info over a mixed file/directory/LFS/
+// missing batch with expand, at main, at an upload SHA and on a slash branch
+// (created in-process, since the branch route takes no encoded slash), plus
+// the SDK errors for a missing revision and a traversal path.
+func runHubPathsInfo(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/pathsinfo-" + rt.arg
+	const marker = "PATHS_INFO_COMMITS "
+	setup := hubPyAPI + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`import json
+repo_id, repo_type = %q, %q
+first = api.upload_file(path_or_fileobj=b"one\n", path_in_repo="folder/one.txt", repo_id=repo_id, repo_type=repo_type, commit_message="Add folder/one.txt")
+api.upload_file(path_or_fileobj=b"second\n", path_in_repo="folder/two.txt", repo_id=repo_id, repo_type=repo_type, commit_message="Add folder/two.txt")
+deleted = api.delete_file(path_in_repo="folder/two.txt", repo_id=repo_id, repo_type=repo_type, commit_message="Delete folder/two.txt")
+root = api.upload_file(path_or_fileobj=b"root\n", path_in_repo="root.txt", repo_id=repo_id, repo_type=repo_type, commit_message="Add root.txt")
+weights = api.upload_file(path_or_fileobj=bytes(range(256)) * 8, path_in_repo="weights.bin", repo_id=repo_id, repo_type=repo_type, commit_message="Add weights.bin")
+print(%q + json.dumps({"first": first.oid, "root": root.oid, "weights": weights.oid, "deleted": deleted.oid}))
+`, repoID, rt.arg, marker)
+	var commits map[string]string
+	for _, line := range strings.Split(runPyXet(t, s.httpURL, false, setup), "\n") {
+		if rest, ok := strings.CutPrefix(line, marker); ok {
+			if err := json.Unmarshal([]byte(rest), &commits); err != nil {
+				t.Fatalf("parse commits %q: %v", rest, err)
+			}
+		}
+	}
+	if len(commits) != 4 {
+		t.Fatalf("setup commits %v", commits)
+	}
+	storageName := repoID
+	if rt.arg != "model" {
+		storageName = rt.apiPrefix + "/" + repoID
+	}
+	repo, err := repository.Open(s.storage.RepositoriesFS(), repository.ResolvePath(storageName))
+	if err != nil {
+		t.Fatalf("open %s: %v", storageName, err)
+	}
+	if err := repo.CreateBranch("feature/x", commits["first"]); err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+
+	script := hubPyAPI + fmt.Sprintf(`import hashlib
+from huggingface_hub import RepoFile, RepoFolder
+from huggingface_hub.utils import BadRequestError, HfHubHTTPError
+repo_id, repo_type = %q, %q
+first, root, weights_commit, deleted = %q, %q, %q, %q
+data = bytes(range(256)) * 8
+sha256 = hashlib.sha256(data).hexdigest()
+pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{sha256}\nsize {len(data)}\n"
+infos = api.get_paths_info(repo_id, ["folder", "folder/one.txt", "root.txt", "weights.bin", "missing.txt", "folder/two.txt", "root.txt/x", "folder/"], expand=True, repo_type=repo_type)
+assert [i.path for i in infos] == ["folder", "folder/one.txt", "root.txt", "weights.bin"], f"paths: {[i.path for i in infos]!r}"
+folder, one, root_file, weights = infos
+assert isinstance(folder, RepoFolder) and len(folder.tree_id) == 40 and folder.last_commit.oid == deleted and folder.last_commit.title == "Delete folder/two.txt", f"folder: {folder!r}"
+assert isinstance(one, RepoFile) and one.size == 4 and one.lfs is None and one.last_commit.oid == first and one.last_commit.title == "Add folder/one.txt", f"one: {one!r}"
+assert root_file.size == 5 and root_file.lfs is None and root_file.last_commit.oid == root, f"root: {root_file!r}"
+assert weights.size == len(data) and weights.lfs is not None and weights.lfs.sha256 == sha256 and weights.lfs.size == len(data) and weights.lfs.pointer_size == len(pointer) and weights.last_commit.oid == weights_commit, f"weights: {weights!r}"
+plain = api.get_paths_info(repo_id, "root.txt", repo_type=repo_type)
+assert len(plain) == 1 and plain[0].path == "root.txt" and plain[0].last_commit is None, f"plain: {plain!r}"
+at_first = api.get_paths_info(repo_id, ["folder/one.txt", "root.txt", "folder/two.txt"], revision=first, repo_type=repo_type)
+assert [i.path for i in at_first] == ["folder/one.txt"], f"at first commit: {at_first!r}"
+on_branch = api.get_paths_info(repo_id, ["folder/one.txt", "root.txt"], revision="feature/x", repo_type=repo_type)
+assert [i.path for i in on_branch] == ["folder/one.txt"], f"feature/x: {on_branch!r}"
+assert api.get_paths_info(repo_id, [], repo_type=repo_type) == [], "empty batch"
+try:
+    api.get_paths_info(repo_id, ["root.txt"], revision="nope", repo_type=repo_type)
+    raise AssertionError("missing revision did not fail")
+except HfHubHTTPError as error:
+    assert error.response.status_code == 404 and "nope" in str(error), f"missing revision: {error!r}"
+try:
+    api.get_paths_info(repo_id, ["../root.txt"], repo_type=repo_type)
+    raise AssertionError("traversal did not fail")
+except BadRequestError as error:
+    assert "invalid path" in str(error), f"traversal: {error!r}"
+`, repoID, rt.arg, commits["first"], commits["root"], commits["weights"], commits["deleted"])
 	runPyScript(t, s.httpURL, script)
 }
 
