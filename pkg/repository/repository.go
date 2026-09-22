@@ -41,15 +41,16 @@ const (
 // Repository represents a Git repository and provides methods to interact with it.
 type Repository struct {
 	repo          *git.Repository
+	objectCache   cache.Object // the storer's cache, so GC can drop objects bound to deleted packs
 	fs            billy.Filesystem
 	repoPath      string
 	localDir      string // host directory when fs is OS-backed, else ""
 	defaultBranch atomic.Pointer[string]
 }
 
-// newStorer returns a go-git storer for the bare repository at repoPath on fs.
-func newStorer(fs billy.Filesystem, repoPath string) *filesystem.Storage {
-	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), cache.NewObjectLRUDefault(), filesystem.Options{})
+// newStorer returns a go-git storer for the bare repository at repoPath on fs, caching objects in c.
+func newStorer(fs billy.Filesystem, repoPath string, c cache.Object) *filesystem.Storage {
+	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), c, filesystem.Options{})
 }
 
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
@@ -132,7 +133,7 @@ func IsValidGitProtocol(value string) bool {
 
 // Init initializes a new git repository on fs at the given path with the specified default branch.
 func Init(ctx context.Context, fs billy.Filesystem, repoPath string, defaultBranch string) (*Repository, error) {
-	_, err := git.Init(newStorer(fs, repoPath), git.WithDefaultBranch(plumbing.NewBranchReferenceName(defaultBranch)))
+	_, err := git.Init(newStorer(fs, repoPath, cache.NewObjectLRUDefault()), git.WithDefaultBranch(plumbing.NewBranchReferenceName(defaultBranch)))
 	if err != nil {
 		_ = util.RemoveAll(fs, repoPath)
 		return nil, fmt.Errorf("failed to initialize git repository: %w", err)
@@ -159,15 +160,17 @@ var lruCache = lru.New[cacheKey, *Repository](128) // Cache up to 128 repositori
 func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
 		var r *git.Repository
-		r, err = git.Open(newStorer(fs, repoPath), nil)
+		c := cache.NewObjectLRUDefault()
+		r, err = git.Open(newStorer(fs, repoPath, c), nil)
 		if err != nil {
 			return nil, false
 		}
 		return &Repository{
-			repo:     r,
-			fs:       fs,
-			repoPath: repoPath,
-			localDir: localDir(fs, repoPath),
+			repo:        r,
+			objectCache: c,
+			fs:          fs,
+			repoPath:    repoPath,
+			localDir:    localDir(fs, repoPath),
 		}, true
 
 	})
@@ -445,7 +448,7 @@ func (r *Repository) Move(newPath string) error {
 // DiskUsage returns the total disk usage of the repository in bytes.
 // This includes the on-disk size of the git repository directory plus the
 // declared sizes of any LFS-tracked objects (from their pointer files).
-func (r *Repository) DiskUsage() (int64, error) {
+func (r *Repository) DiskUsage(ctx context.Context) (int64, error) {
 	var total int64
 	err := util.Walk(r.fs, r.repoPath, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -462,7 +465,7 @@ func (r *Repository) DiskUsage() (int64, error) {
 
 	// Add declared LFS content sizes. LFS objects are stored outside the git
 	// repo directory, so the walk above only captures the tiny pointer blobs.
-	lfsPointers, err := r.ScanLFSPointers()
+	lfsPointers, err := r.ScanLFSPointers(ctx)
 	if err != nil {
 		return 0, err
 	}

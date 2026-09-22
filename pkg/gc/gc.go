@@ -24,7 +24,7 @@ var zeroSHA256 = strings.Repeat("0", 64)
 // ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
 var ErrInvalidOID = errors.New("invalid oid")
 
-// Collector prunes xet sha256 index entries no repository LFS pointer names; SweepStep reclaims the data afterwards.
+// Collector runs Git GC in every repository and prunes xet sha256 index entries no surviving LFS pointer names; SweepStep reclaims the data afterwards.
 //
 // Liveness is a git pointer in any repository.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
@@ -97,22 +97,26 @@ func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, erro
 
 // PruneOptions configures one prune run.
 type PruneOptions struct {
-	Grace  time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
-	DryRun bool
+	Grace  time.Duration // shields Git garbage and shards younger than this; zero = xetstorage.DefaultSweepGrace, negative = disabled
+	DryRun bool          // previews Git GC read-only and unlinks nothing
 }
 
-// PruneResult reports one prune run.
+// PruneResult reports one prune run; the Git fields sum the repositories whose GC succeeded, as a preview in a dry run.
 type PruneResult struct {
-	DryRun         bool     `json:"dry_run"`
-	Repositories   int      `json:"repositories"`
-	LiveObjects    int      `json:"live_objects"`
-	Unlinked       []string `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
-	SkippedInGrace int      `json:"skipped_in_grace"`
-	Error          string   `json:"error,omitempty"` // set by the HTTP layer when the run failed after Unlinked was applied
+	DryRun            bool              `json:"dry_run"`
+	Repositories      int               `json:"repositories"` // repositories scanned, GC failures included
+	DeletedGitObjects int               `json:"deleted_git_objects"`
+	DeletedGitBytes   int64             `json:"deleted_git_bytes"` // payload of the deleted objects
+	ReclaimedBytes    int64             `json:"reclaimed_bytes"`   // shrink of the objects directories on disk; 0 in a dry run, which repacks nothing
+	Failed            map[string]string `json:"failed,omitempty"`  // repository path -> Git GC error; all its pointers stay live
+	LiveObjects       int               `json:"live_objects"`
+	Unlinked          []string          `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
+	SkippedInGrace    int               `json:"skipped_in_grace"`
+	Error             string            `json:"error,omitempty"` // set by the HTTP layer when the run failed with a partial result
 }
 
-// Prune unlinks unreferenced OIDs past the grace window; the data stays until SweepStep reclaims it.
-// Busy runs fail with xetstorage.ErrGCBusy; an error after unlinking began comes with the partial result, whose Unlinked lists the entries already removed.
+// Prune runs Git GC in every repository, then unlinks unreferenced OIDs past the grace window; the data stays until SweepStep reclaims it.
+// Busy runs fail with xetstorage.ErrGCBusy; any other error comes with the partial result, whose Git fields and Unlinked list what already happened.
 func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
@@ -120,26 +124,28 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 	defer c.mu.Unlock()
 
 	res := &PruneResult{DryRun: opts.DryRun, Unlinked: []string{}}
-	live := map[string]struct{}{}
-	repos, err := c.mark(ctx, live)
-	if err != nil {
-		return nil, err
-	}
-	res.Repositories, res.LiveObjects = repos, len(live)
-
 	grace := opts.Grace
 	if grace == 0 {
 		grace = xetstorage.DefaultSweepGrace
 	}
-	// Same rule as xet's sweep: second-truncated cutoff, so S3's coarse mtimes only widen the shield.
-	cutoff := time.Now().Add(-grace).Truncate(time.Second)
+	// Same rule as xet's sweep: second-truncated cutoff, so S3's coarse mtimes only widen the shield; zero disables it for Git too.
+	var cutoff time.Time
+	if grace > 0 {
+		cutoff = time.Now().Add(-grace).Truncate(time.Second)
+	}
+	live := map[string]struct{}{}
+	if err := c.mark(ctx, res, cutoff, live); err != nil {
+		return res, err
+	}
+	res.LiveObjects = len(live)
+
 	shards := map[string]time.Time{}
-	err = c.store.WalkShards(ctx, func(shardHash string, _ int64, modTime time.Time) error {
+	err := c.store.WalkShards(ctx, func(shardHash string, _ int64, modTime time.Time) error {
 		shards[shardHash] = modTime
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("walk shards: %w", err)
+		return res, fmt.Errorf("walk shards: %w", err)
 	}
 	candidates := []string{}
 	err = c.store.WalkSHA256Index(ctx, func(sha256Hex, shardHash string) error {
@@ -159,7 +165,7 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("walk sha256 index: %w", err)
+		return res, fmt.Errorf("walk sha256 index: %w", err)
 	}
 	slices.Sort(candidates)
 
@@ -169,7 +175,7 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		for _, h := range candidates {
 			digest, err := parseOID(h)
 			if err != nil {
-				return nil, fmt.Errorf("invalid sha256 index entry %q: %w", h, err)
+				return res, fmt.Errorf("invalid sha256 index entry %q: %w", h, err)
 			}
 			removed, err := c.gc.UnlinkSHA256(ctx, digest)
 			if err != nil {
@@ -183,6 +189,9 @@ func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		}
 	}
 
+	if len(res.Failed) > 0 {
+		return res, fmt.Errorf("git gc failed in %d repositories", len(res.Failed))
+	}
 	return res, nil
 }
 
@@ -233,29 +242,39 @@ func (c *Collector) List(ctx context.Context) ([]Object, error) {
 	return objects, nil
 }
 
-// mark walks the repositories for LFS pointers, adding their OIDs to live and returning the repository count.
-func (c *Collector) mark(ctx context.Context, live map[string]struct{}) (int, error) {
+// mark runs Git GC in every repository, adding its stats to res, then collects the OIDs the surviving LFS pointers name into live.
+func (c *Collector) mark(ctx context.Context, res *PruneResult, cutoff time.Time, live map[string]struct{}) error {
 	if _, err := c.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
+		return nil
 	}
-	repos := 0
-	err := repository.Walk(ctx, c.repos, "/", func(path string) error {
+	return repository.Walk(ctx, c.repos, "/", func(path string) error {
 		repo, err := repository.Open(c.repos, path)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
-		ptrs, err := repo.ScanLFSPointers()
+		gc, err := repo.GC(ctx, cutoff, res.DryRun)
+		if err != nil && errors.Is(err, ctx.Err()) {
+			return err
+		}
+		if err != nil {
+			slog.ErrorContext(ctx, "git gc failed", "repository", path, "err", err)
+			if res.Failed == nil {
+				res.Failed = map[string]string{}
+			}
+			res.Failed[path] = err.Error()
+		}
+		res.DeletedGitObjects += len(gc.DeletedObjects)
+		res.DeletedGitBytes += gc.DeletedBytes
+		res.ReclaimedBytes += gc.ReclaimedBytes
+		// In a dry run the deleted objects are still stored, so they are skipped to mark the post-GC pointer set; a failed GC deleted none.
+		ptrs, err := repo.ScanLFSPointersExcept(ctx, gc.DeletedObjects)
 		if err != nil {
 			return fmt.Errorf("scan %s: %w", path, err)
 		}
 		for _, ptr := range ptrs {
 			live[ptr.OID()] = struct{}{}
 		}
-		repos++
+		res.Repositories++
 		return nil
 	})
-	if err != nil {
-		return 0, err
-	}
-	return repos, nil
 }
