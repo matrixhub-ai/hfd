@@ -14,7 +14,6 @@ import (
 	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 func TestHandleListPermission(t *testing.T) {
@@ -43,7 +42,7 @@ func TestHandleListPermission(t *testing.T) {
 					return false, nil
 				}
 				handler := NewHandler(
-					WithStorage(storage.NewStorage(storage.WithRootDir(dataDir))),
+					WithStorage(newStorage(t, dataDir)),
 					WithPermissionHookFunc(hook),
 				)
 				response := httptest.NewRecorder()

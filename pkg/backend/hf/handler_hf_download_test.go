@@ -21,7 +21,6 @@ import (
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -35,21 +34,12 @@ import (
 // is built over.
 func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Storage) xetstorage.Storage) (*mirror.Mirror, http.Handler) {
 	t.Helper()
-	dataDir := newXETDataDir(t)
-	chunksDir := filepath.Join(dataDir, "chunks")
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		t.Fatalf("create xet chunk cache dir: %v", err)
-	}
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(chunksDir))
+	st := newStorage(t, newXETDataDir(t))
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
 	}
-	xs, err := xetlocal.NewStorage(
-		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
-	)
-	if err != nil {
-		t.Fatalf("create xet storage: %v", err)
-	}
+	xs := st.XETStorage()
 	var wrapped xetstorage.Storage = xs
 	if wrap != nil {
 		wrapped = wrap(xs)
@@ -63,7 +53,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(wrapped),
 			xetmirror.WithUpstream(upstreamURL),
-			xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 			xetmirror.WithClient(client),
 		)
 		if err != nil {
@@ -79,7 +69,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 		mirror.WithXETStorage(wrapped),
 		mirror.WithXETClient(client),
 		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(dataDir),
+		mirror.WithDataDir(st.XETDir()),
 		mirror.WithMintToken(issuer.Sign),
 	)
 	if err != nil {
@@ -106,7 +96,7 @@ func newXETDataDir(t *testing.T) string {
 // files committed on main, returning the storage and the head commit hash.
 func newLFSRepo(t *testing.T, pointers map[string]string) (*storage.Storage, string) {
 	t.Helper()
-	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	st := newStorage(t, t.TempDir())
 	repo, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("org/repo"), "main")
 	if err != nil {
 		t.Fatalf("init repo: %v", err)

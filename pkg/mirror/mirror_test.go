@@ -11,11 +11,11 @@ import (
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // initSourceRepo creates a bare repo with one commit on main. The path ends
@@ -92,27 +92,21 @@ func forEachRepositoriesFS(t *testing.T, fn func(t *testing.T, fs billy.Filesyst
 // a Mirror over them with the extra options appended.
 func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirror {
 	t.Helper()
-	dataDir := newXETDataDir(t)
-	chunksDir := filepath.Join(dataDir, "chunks")
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		t.Fatalf("create xet chunk cache dir: %v", err)
+	st, err := storage.NewStorage(storage.WithRootDir(newXETDataDir(t)))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
 	}
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(chunksDir))
+	xs := st.XETStorage()
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
-	}
-	xs, err := xetlocal.NewStorage(
-		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
-	)
-	if err != nil {
-		t.Fatalf("create xet storage: %v", err)
 	}
 	var engine *xetmirror.Mirror
 	if hubURL != "" {
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithUpstream(hubURL),
-			xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 			xetmirror.WithClient(client),
 		)
 		if err != nil {
@@ -123,7 +117,7 @@ func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirr
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),
 		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(dataDir),
+		mirror.WithDataDir(st.XETDir()),
 	}
 	m, err := mirror.NewMirror(append(opts, extra...)...)
 	if err != nil {

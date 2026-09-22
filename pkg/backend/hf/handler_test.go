@@ -23,6 +23,15 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
+func newStorage(t *testing.T, dir string) *storage.Storage {
+	t.Helper()
+	st, err := storage.NewStorage(storage.WithRootDir(dir))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	return st
+}
+
 func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
 
@@ -32,7 +41,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dataDir) })
 
-	storage := storage.NewStorage(storage.WithRootDir(dataDir))
+	storage := newStorage(t, dataDir)
 
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
@@ -63,7 +72,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 // that direct operations never reach it.
 func TestHuggingFacePreOpenHook(t *testing.T) {
 	ctx := context.Background()
-	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	st := newStorage(t, t.TempDir())
 	repo, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath("datasets/org/repo"), "main")
 	if err != nil {
 		t.Fatalf("init repo: %v", err)
@@ -941,7 +950,7 @@ func TestCommitAuthorFromIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hf := NewHandler(WithStorage(storage.NewStorage(storage.WithRootDir(t.TempDir()))))
+			hf := NewHandler(WithStorage(newStorage(t, t.TempDir())))
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				hf.ServeHTTP(w, r.WithContext(authenticate.WithIdentity(r.Context(), tt.id)))
 			}))
@@ -980,7 +989,7 @@ func TestCommitAuthorFromIdentity(t *testing.T) {
 // before any commit.
 func TestHuggingFaceCommitParentPrecondition(t *testing.T) {
 	ctx := context.Background()
-	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	st := newStorage(t, t.TempDir())
 	repoPath := repository.ResolvePath("org/repo")
 	repo, err := repository.Init(ctx, st.RepositoriesFS(), repoPath, "main")
 	if err != nil {

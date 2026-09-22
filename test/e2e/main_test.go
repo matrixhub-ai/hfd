@@ -21,7 +21,6 @@ import (
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
@@ -102,9 +101,7 @@ func newDataDir(t *testing.T, pattern string) string {
 	return dir
 }
 
-// newTestStorage returns a Storage rooted at dataDir. During the S3 pass the
-// storage filesystem lives in the fake S3 bucket under a per-directory unique
-// prefix, handing out presigned URLs like production.
+// newTestStorage isolates each server's repositories and content in the current backend.
 func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 	t.Helper()
 	opts := []storage.Option{storage.WithRootDir(dataDir)}
@@ -114,8 +111,21 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 				s3fs.WithClient(testS3Client),
 				s3fs.WithPresignClient(s3.NewPresignClient(testS3Client)),
 				s3fs.WithPrefix(filepath.Base(dataDir)))))
+		xs, err := xets3.NewStorage(t.Context(),
+			xets3.WithS3Client(testS3Client),
+			xets3.WithBucket(testS3Bucket),
+			xets3.WithPrefix(filepath.Base(dataDir)+"/xet"),
+		)
+		if err != nil {
+			t.Fatalf("create xet S3 storage: %v", err)
+		}
+		opts = append(opts, storage.WithXETStorage(xs))
 	}
-	return storage.NewStorage(opts...)
+	st, err := storage.NewStorage(opts...)
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	return st
 }
 
 // xetStack carries the xet pieces the callers mount: the CAS storage and the
@@ -135,36 +145,13 @@ func (x *xetStack) casServer(next http.Handler) http.Handler {
 	)
 }
 
-// newTestMirror assembles the xet data-plane pieces the way cmd/hfd does —
-// client, storage, issuer — under dataDir/xet and builds the shared mirror over
-// them with gitOpts appended, returning the mirror and the xet stack.
-// upstreamURL enables the xet mirror engine; s3Storage puts the xet storage in
-// the fake S3 bucket like production. Background work is waited out on cleanup.
-func newTestMirror(t *testing.T, dataDir, upstreamURL string, s3Storage bool, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
+// newTestMirror shares st's xet storage and caches, waiting for background work on cleanup.
+func newTestMirror(t *testing.T, st *storage.Storage, upstreamURL string, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
 	t.Helper()
-	xetDir := filepath.Join(dataDir, "xet")
-	chunksDir := filepath.Join(xetDir, "chunks")
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		t.Fatalf("create xet chunk cache dir: %v", err)
-	}
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(chunksDir))
+	xs, xetDir := st.XETStorage(), st.XETDir()
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(xetDir, "chunks")))
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
-	}
-	var xs xetstorage.Storage
-	if s3Storage {
-		xs, err = xets3.NewStorage(t.Context(),
-			xets3.WithS3Client(testS3Client),
-			xets3.WithBucket(testS3Bucket),
-			xets3.WithPrefix(filepath.Base(dataDir)+"/xet"),
-		)
-	} else {
-		xs, err = xetlocal.NewStorage(
-			xetlocal.WithBasePath(filepath.Join(xetDir, "storage")),
-		)
-	}
-	if err != nil {
-		t.Fatalf("create xet storage: %v", err)
 	}
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {

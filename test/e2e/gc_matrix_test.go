@@ -155,7 +155,7 @@ func TestGCLifecycle(t *testing.T) {
 	// always-404 server), so resolve can re-ingest after GC.
 	dataDir := newDataDir(t, "e2e-gc-proxy")
 	st := newTestStorage(t, dataDir)
-	proxyMirror, xet := newTestMirror(t, dataDir, upstream.httpURL, testS3Client != nil,
+	proxyMirror, xet := newTestMirror(t, st, upstream.httpURL,
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstream.httpURL)),
 	)

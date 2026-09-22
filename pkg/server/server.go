@@ -11,7 +11,6 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/xet/auth"
 	xetserver "github.com/wzshiming/xet/server"
-	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -29,8 +28,7 @@ import (
 
 // Options are the pieces the server is assembled from; Storage is required, everything else is optional.
 type Options struct {
-	Storage        *storage.Storage
-	XETStorage     xetstorage.Storage              // serves the xet CAS routes ahead of user authentication, so /v1/, /v2/, /shards, /reconstructions and /xet-bridge/ paths take precedence over hub and git routes; nil disables them
+	Storage        *storage.Storage                // CAS routes precede user auth, hub and git routes.
 	Mirror         *mirror.Mirror                  // data plane of the lfs/hf backends; nil for a plain server
 	Authenticators *authenticate.Authenticators    // validators for the default authentication layer and the SSH server; nil = anonymous HTTP, unauthenticated SSH
 	Authenticate   func(http.Handler) http.Handler // replaces the default authenticate.NewHandler layer when set; the xet CAS routes are answered before it
@@ -141,16 +139,13 @@ func hfBackend(o Options) middleware {
 }
 
 func xetCASServer(o Options) middleware {
-	if o.XETStorage == nil {
-		return passthrough
-	}
 	authorizer := o.CASAuthorizer
 	if authorizer == nil {
 		authorizer = auth.AuthorizerFunc(func(*http.Request, auth.Grant) error { return auth.ErrUnauthenticated })
 	}
 	return func(next http.Handler) http.Handler {
 		return xetserver.NewHandler(
-			xetserver.WithStorage(o.XETStorage),
+			xetserver.WithStorage(o.Storage.XETStorage()),
 			xetserver.WithAuthorizer(authorizer),
 			xetserver.WithNext(next),
 		)

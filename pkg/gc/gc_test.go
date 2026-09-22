@@ -45,23 +45,26 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "xet")
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
-	if err != nil {
-		t.Fatalf("new xet client: %v", err)
-	}
-	xsDir := filepath.Join(dataDir, "storage")
+	root := t.TempDir()
+	xsDir := filepath.Join(root, "xet", "storage")
 	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(xsDir))
 	if err != nil {
 		t.Fatalf("new xet storage: %v", err)
 	}
-	m, err := mirror.NewMirror(mirror.WithXETStorage(xs), mirror.WithXETClient(client), mirror.WithDataDir(dataDir))
+	st, err := storage.NewStorage(storage.WithRootDir(root), storage.WithXETStorage(xs))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
+	if err != nil {
+		t.Fatalf("new xet client: %v", err)
+	}
+	m, err := mirror.NewMirror(mirror.WithXETStorage(xs), mirror.WithXETClient(client), mirror.WithDataDir(st.XETDir()))
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
 	t.Cleanup(m.Wait)
-	root := t.TempDir()
-	return &fixture{st: storage.NewStorage(storage.WithRootDir(root)), root: root, xs: xs, xsDir: xsDir, m: m}
+	return &fixture{st: st, root: root, xs: xs, xsDir: xsDir, m: m}
 }
 
 // ageFiles moves every file under dir into the past so it falls outside any positive grace window.

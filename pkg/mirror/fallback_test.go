@@ -17,7 +17,8 @@ import (
 
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
-	xetlocal "github.com/wzshiming/xet/storage/local"
+
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // TestPrefetchFallsBackToLFSBatch covers sources without the hub resolve API:
@@ -59,20 +60,19 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 		t.Fatalf("create xet data dir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(dataDir, "chunks")))
+	st, err := storage.NewStorage(storage.WithRootDir(dataDir))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	xs := st.XETStorage()
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)
-	}
-	xs, err := xetlocal.NewStorage(
-		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
-	)
-	if err != nil {
-		t.Fatalf("new xet storage: %v", err)
 	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
 		xetmirror.WithUpstream(srv.URL),
-		xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 		xetmirror.WithClient(client),
 	)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 		WithXETStorage(xs),
 		WithXETClient(client),
 		WithXETMirror(engine),
-		WithDataDir(dataDir),
+		WithDataDir(st.XETDir()),
 	)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)

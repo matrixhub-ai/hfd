@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,11 +20,11 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // newXETDataPlane assembles the xet data-plane pieces the way cmd/hfd does —
@@ -34,20 +33,14 @@ import (
 // mirror and the CAS-server composition.
 func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mirror.Mirror, http.Handler) {
 	t.Helper()
-	dataDir := filepath.Join(t.TempDir(), "xet")
-	chunksDir := filepath.Join(dataDir, "chunks")
-	if err := os.MkdirAll(chunksDir, 0755); err != nil {
-		t.Fatalf("create xet chunk cache dir: %v", err)
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
 	}
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(chunksDir))
+	xs := st.XETStorage()
+	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
-	}
-	xs, err := xetlocal.NewStorage(
-		xetlocal.WithBasePath(filepath.Join(dataDir, "storage")),
-	)
-	if err != nil {
-		t.Fatalf("create xet storage: %v", err)
 	}
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
@@ -58,7 +51,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithUpstream(hubURL),
-			xetmirror.WithCacheDir(filepath.Join(dataDir, "mirror")),
+			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 			xetmirror.WithClient(client),
 		)
 		if err != nil {
@@ -74,7 +67,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		mirror.WithXETStorage(xs),
 		mirror.WithXETClient(client),
 		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(dataDir),
+		mirror.WithDataDir(st.XETDir()),
 		mirror.WithMintToken(issuer.Sign),
 	}, gitOpts...)...)
 	if err != nil {

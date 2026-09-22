@@ -41,8 +41,12 @@ func ExampleNewHTTPHandler() {
 		identity, ok := authenticate.IdentityFrom(ctx).(principal)
 		return ok && identity.ID == 7, nil
 	})
+	st, err := storage.NewStorage(storage.WithRootDir(root))
+	if err != nil {
+		panic(err)
+	}
 	handler := server.NewHTTPHandler(server.Options{
-		Storage:        storage.NewStorage(storage.WithRootDir(root)),
+		Storage:        st,
 		Authenticators: &authenticate.Authenticators{Token: validator},
 		Permission:     hook,
 	})

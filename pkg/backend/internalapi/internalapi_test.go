@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -18,25 +17,28 @@ import (
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/util"
 	xetstorage "github.com/wzshiming/xet/storage"
-	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
-func newStorage(t *testing.T) *xetlocal.Storage {
+func newStorage(t *testing.T) xetstorage.Storage {
 	t.Helper()
-	xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(filepath.Join(t.TempDir(), "xet")))
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
 	if err != nil {
-		t.Fatalf("new xet storage: %v", err)
+		t.Fatalf("new storage: %v", err)
 	}
-	return xs
+	return st.XETStorage()
 }
 
 func newRepos(t *testing.T) billy.Filesystem {
 	t.Helper()
-	return storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	return st.RepositoriesFS()
 }
 
 func newHandler(t *testing.T, repos billy.Filesystem, store xetstorage.Storage) *Handler {
@@ -149,7 +151,7 @@ func TestHandler(t *testing.T) {
 
 // blockingStore parks the first shard walk until released; later walks pass through.
 type blockingStore struct {
-	*xetlocal.Storage
+	xetstorage.Storage
 	once           sync.Once
 	enter, release chan struct{}
 }
@@ -185,7 +187,7 @@ func TestHandlerBusy(t *testing.T) {
 
 // partialStore accepts the first dead entry's unlink and fails the second.
 type partialStore struct {
-	*xetlocal.Storage
+	xetstorage.Storage
 }
 
 const deadSHA = "1111111111111111111111111111111111111111111111111111111111111111"
@@ -222,7 +224,7 @@ func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
 
 // usageStore answers Usage with fixed values and records the contexts it was asked with.
 type usageStore struct {
-	*xetlocal.Storage
+	xetstorage.Storage
 	usage xetstorage.Usage
 	err   error
 	ctxs  []context.Context
@@ -241,7 +243,7 @@ func TestHandlerUsage(t *testing.T) {
 		t.Fatalf("empty usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 
-	repos := storage.NewStorage(storage.WithRootDir(t.TempDir())).RepositoriesFS()
+	repos := newRepos(t)
 	if _, err := repository.Init(ctx, repos, "/org/repo.git", "main"); err != nil {
 		t.Fatalf("init: %v", err)
 	}

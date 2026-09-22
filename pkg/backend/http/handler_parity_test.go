@@ -106,11 +106,17 @@ func (f goGitFS) Chroot(path string) (billy.Filesystem, error) {
 }
 
 // newStorage returns storage rooted at root whose repositories are served natively or by go-git.
-func newStorage(root string, native bool) *storage.Storage {
-	if native {
-		return storage.NewStorage(storage.WithRootDir(root))
+func newStorage(t *testing.T, root string, native bool) *storage.Storage {
+	t.Helper()
+	opts := []storage.Option{storage.WithRootDir(root)}
+	if !native {
+		opts = append(opts, storage.WithFilesystem(goGitFS{osfs.New(root)}))
 	}
-	return storage.NewStorage(storage.WithFilesystem(goGitFS{osfs.New(root)}))
+	st, err := storage.NewStorage(opts...)
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	return st
 }
 
 // modeName labels the serving mode of a test.
@@ -175,7 +181,7 @@ func newServeParityFixture(t *testing.T, native bool) *serveParityFixture {
 
 	f := &serveParityFixture{
 		hfdRepo: filepath.Join(root, "hfd", "repositories", "repo.git"),
-		storage: newStorage(filepath.Join(root, "hfd"), native),
+		storage: newStorage(t, filepath.Join(root, "hfd"), native),
 		work:    filepath.Join(root, "work"),
 	}
 	if err := os.MkdirAll(filepath.Dir(f.hfdRepo), 0o755); err != nil {

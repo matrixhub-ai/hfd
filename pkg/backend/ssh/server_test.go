@@ -45,11 +45,17 @@ func (f goGitFS) Chroot(path string) (billy.Filesystem, error) {
 }
 
 // newStorage returns storage rooted at root whose repositories are served natively or by go-git.
-func newStorage(root string, native bool) *storage.Storage {
-	if native {
-		return storage.NewStorage(storage.WithRootDir(root))
+func newStorage(t *testing.T, root string, native bool) *storage.Storage {
+	t.Helper()
+	opts := []storage.Option{storage.WithRootDir(root)}
+	if !native {
+		opts = append(opts, storage.WithFilesystem(goGitFS{osfs.New(root)}))
 	}
-	return storage.NewStorage(storage.WithFilesystem(goGitFS{osfs.New(root)}))
+	st, err := storage.NewStorage(opts...)
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	return st
 }
 
 // modeName labels the serving mode of a test.
@@ -218,7 +224,7 @@ func testSSHProtocolServer(t *testing.T, native bool, protoVer int) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	st := newStorage(repoDir, native)
+	st := newStorage(t, repoDir, native)
 	hooks := &hookRecorder{}
 
 	// Create a bare repository
@@ -583,7 +589,7 @@ func testSSHPublicKeyAuth(t *testing.T, native bool) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	st := newStorage(repoDir, native)
+	st := newStorage(t, repoDir, native)
 
 	// Create a bare repository
 	repoName := "auth-test-repo.git"
@@ -689,7 +695,7 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 	var names []string
 	server := backendssh.NewServer(
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithStorage(newStorage(repoDir, native)),
+		backendssh.WithStorage(newStorage(t, repoDir, native)),
 		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{
 			string(boundKey.Marshal()): "deploy",
 			string(freeKey.Marshal()):  "",
@@ -765,7 +771,7 @@ func TestSSHLFSAuthenticate(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	storage := storage.NewStorage(storage.WithRootDir(repoDir))
+	storage := newStorage(t, repoDir, true)
 
 	// Create a bare repository
 	repoName := "lfs-test-repo.git"
@@ -904,7 +910,7 @@ func TestSSHLFSAuthenticateNoHTTPURL(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	storage := storage.NewStorage(storage.WithRootDir(repoDir))
+	storage := newStorage(t, repoDir, true)
 
 	repoName := "lfs-test-repo.git"
 	repoPath := filepath.Join(repoDir, "repositories", repoName)
@@ -973,7 +979,7 @@ func testSSHPasswordAuth(t *testing.T, native bool) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	st := newStorage(repoDir, native)
+	st := newStorage(t, repoDir, native)
 
 	// Create a bare repository
 	repoName := "pwd-auth-test-repo.git"
@@ -1052,7 +1058,7 @@ func testSSHPublicKeyAuthViaAuthenticator(t *testing.T, native bool) {
 		_ = os.RemoveAll(clientDir)
 	}()
 
-	st := newStorage(repoDir, native)
+	st := newStorage(t, repoDir, native)
 
 	// Create a bare repository
 	repoName := "pk-auth-test-repo.git"
@@ -1137,7 +1143,7 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 		_ = os.RemoveAll(repoDir)
 	}()
 
-	storage := storage.NewStorage(storage.WithRootDir(repoDir))
+	storage := newStorage(t, repoDir, true)
 
 	// Create a bare repository
 	repoName := "lfs-auth-test-repo.git"
@@ -1239,7 +1245,7 @@ func TestSSHPreOpenHook(t *testing.T) {
 
 func testSSHPreOpenHook(t *testing.T, native bool) {
 	repoDir := t.TempDir()
-	st := newStorage(repoDir, native)
+	st := newStorage(t, repoDir, native)
 	runGitCmd(t, "", nil, "init", "--bare", filepath.Join(repoDir, "repositories", "test-repo.git"))
 
 	hostKey, err := generateHostKey()
