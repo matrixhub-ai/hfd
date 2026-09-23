@@ -52,6 +52,66 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	return server, dataDir
 }
 
+func TestHuggingFaceWhoami(t *testing.T) {
+	hf := NewHandler()
+	whoami := func(ctx context.Context) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		hf.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/whoami-v2", nil).WithContext(ctx))
+		return rec
+	}
+
+	const denied = "Invalid username or password."
+	for _, tt := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"NoIdentity", context.Background()},
+		{"Anonymous", authenticate.WithIdentity(context.Background(), authenticate.Anonymous)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := whoami(tt.ctx)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body)
+			}
+			var body struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error != denied {
+				t.Errorf("body = %s (err %v), want error %q", rec.Body, err, denied)
+			}
+			for header, want := range map[string]string{
+				"X-Error-Message":        denied,
+				"WWW-Authenticate":       `Bearer realm="Authentication required", charset="UTF-8"`,
+				"Content-Type":           "application/json; charset=utf-8",
+				"X-Content-Type-Options": "nosniff",
+			} {
+				if got := rec.Header().Get(header); got != want {
+					t.Errorf("%s = %q, want %q", header, got, want)
+				}
+			}
+		})
+	}
+
+	t.Run("SignedIn", func(t *testing.T) {
+		rec := whoami(authenticate.WithIdentity(context.Background(), authenticate.NewIdentity("alice", "alice@example.com")))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+		}
+		var body whoamiResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.Name != "alice" || body.Email != "alice@example.com" {
+			t.Errorf("body = %+v, want name alice email alice@example.com", body)
+		}
+		for _, header := range []string{"X-Error-Message", "WWW-Authenticate"} {
+			if got := rec.Header().Values(header); len(got) != 0 {
+				t.Errorf("%s = %q, want unset", header, got)
+			}
+		}
+	})
+}
+
 // TestHuggingFacePreOpenHook pins what the pre-open hook observes: the
 // request's repository name and write flag, that it runs before the open so
 // it can create the repository, that its errors map like open errors, and

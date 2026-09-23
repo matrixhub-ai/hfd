@@ -3,12 +3,12 @@
 Hugging Face responses recorded from https://huggingface.co at 2026-09-22T18:47:21Z, replayed against http://127.0.0.1:18083.
 Fixture repositories: model `wzshiming/gpt2`, dataset `wzshiming/fixtures_image_utils`, space `wzshiming/hello_world`; LFS file `64-8bits.tflite`.
 
-Summary: 5 match, 20 content diff, 9 status diff, 0 capture error.
+Summary: 6 match, 19 content diff, 9 status diff, 0 capture error.
 
 | Result | Case | HF | hfd | Diffs |
 |:-------|------|----|-----|------:|
 | ⚠️ content diff | agent-harnesses | 200 | 200 | 2 |
-| ⚠️ content diff | datasets.commits | 200 | 200 | 6 |
+| ⚠️ content diff | datasets.commits | 200 | 200 | 5 |
 | ⚠️ content diff | datasets.info | 200 | 200 | 9 |
 | ❌ status diff | datasets.paths-info | 200 | 404 | 5 |
 | ✅ match | datasets.refs | 200 | 200 | 0 |
@@ -16,8 +16,8 @@ Summary: 5 match, 20 content diff, 9 status diff, 0 capture error.
 | ⚠️ content diff | datasets.tree | 200 | 200 | 14 |
 | ⚠️ content diff | datasets.tree.recursive | 200 | 200 | 49 |
 | ✅ match | datasets.treesize | 200 | 200 | 0 |
-| ⚠️ content diff | models.commits | 200 | 200 | 6 |
-| ⚠️ content diff | models.commits.limit | 200 | 200 | 6 |
+| ⚠️ content diff | models.commits | 200 | 200 | 5 |
+| ⚠️ content diff | models.commits.limit | 200 | 200 | 5 |
 | ⚠️ content diff | models.info | 200 | 200 | 21 |
 | ⚠️ content diff | models.list | 200 | 200 | 15 |
 | ❌ status diff | models.notfound | 401 | 404 | 4 |
@@ -35,12 +35,12 @@ Summary: 5 match, 20 content diff, 9 status diff, 0 capture error.
 | ⚠️ content diff | models.tree.recursive | 200 | 200 | 39 |
 | ✅ match | models.treesize | 200 | 200 | 0 |
 | ⚠️ content diff | models.xet-read-token | 200 | 200 | 1 |
-| ⚠️ content diff | spaces.commits | 200 | 200 | 152 |
+| ⚠️ content diff | spaces.commits | 200 | 200 | 102 |
 | ⚠️ content diff | spaces.info | 200 | 200 | 22 |
 | ✅ match | spaces.refs | 200 | 200 | 0 |
 | ❌ status diff | spaces.resolve.readme.head | 307 -> 200 | 200 | 11 |
 | ⚠️ content diff | spaces.tree | 200 | 200 | 3 |
-| ⚠️ content diff | whoami-v2 | 401 | 401 | 3 |
+| ✅ match | whoami-v2 | 401 | 401 | 0 |
 
 <details>
 <summary>Comparison rules</summary>
@@ -79,7 +79,7 @@ Request: `GET /api/agent-harnesses`
 </details>
 
 <details>
-<summary>⚠️ datasets.commits — content diff (6 differences)</summary>
+<summary>⚠️ datasets.commits — content diff (5 differences)</summary>
 
 Request: `GET /api/datasets/wzshiming/fixtures_image_utils/commits/main`
 
@@ -102,9 +102,6 @@ Request: `GET /api/datasets/wzshiming/fixtures_image_utils/commits/main`
 -   "user": "julien-c"
 - }
 + <absent>
-@@ response.json[id=ba937e465960aa8dc41a6126458531ccc65cef76].message (value differs) @@
-- "\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
-+ "Duplicate from hf-internal-testing/fixtures_image_utils\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
 ```
 
 </details>
@@ -1061,7 +1058,7 @@ Request: `GET /api/datasets/wzshiming/fixtures_image_utils/tree/main?expand=true
 </details>
 
 <details>
-<summary>⚠️ models.commits — content diff (6 differences)</summary>
+<summary>⚠️ models.commits — content diff (5 differences)</summary>
 
 Request: `GET /api/models/wzshiming/gpt2/commits/main`
 
@@ -1084,15 +1081,12 @@ Request: `GET /api/models/wzshiming/gpt2/commits/main`
 -   "user": "julien-c"
 - }
 + <absent>
-@@ response.json[id=ae329b6937f31305a0d6c6779f6cd4072cc4097e].message (value differs) @@
-- "\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
-+ "Duplicate from openai-community/gpt2\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
 ```
 
 </details>
 
 <details>
-<summary>⚠️ models.commits.limit — content diff (6 differences)</summary>
+<summary>⚠️ models.commits.limit — content diff (5 differences)</summary>
 
 Request: `GET /api/models/wzshiming/gpt2/commits/main?limit=2`
 
@@ -1115,9 +1109,6 @@ Request: `GET /api/models/wzshiming/gpt2/commits/main?limit=2`
 -   "user": "julien-c"
 - }
 + <absent>
-@@ response.json[id=ae329b6937f31305a0d6c6779f6cd4072cc4097e].message (value differs) @@
-- "\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
-+ "Duplicate from openai-community/gpt2\n\n\nCo-authored-by: Julien Chaumond \u003cjulien-c@users.noreply.huggingface.co\u003e\n"
 ```
 
 </details>
@@ -2556,7 +2547,7 @@ Request: `GET /api/models/wzshiming/gpt2/xet-read-token/main`
 </details>
 
 <details>
-<summary>⚠️ spaces.commits — content diff (152 differences)</summary>
+<summary>⚠️ spaces.commits — content diff (102 differences)</summary>
 
 Request: `GET /api/spaces/wzshiming/hello_world/commits/main`
 
@@ -2573,450 +2564,300 @@ Request: `GET /api/spaces/wzshiming/hello_world/commits/main`
 @@ response.json[id=04f3d3a0928da49c993b8fc9a96b843b13c6ce8f].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=04f3d3a0928da49c993b8fc9a96b843b13c6ce8f].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=0cbdc566bd746c6ede31d0a14fcc1a23667d9f16].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=0cbdc566bd746c6ede31d0a14fcc1a23667d9f16].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=0cbdc566bd746c6ede31d0a14fcc1a23667d9f16].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=0f59182316934a8f28724b8bf810df7b3015c654].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=0f59182316934a8f28724b8bf810df7b3015c654].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=0f59182316934a8f28724b8bf810df7b3015c654].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=1302de4af49cf616b7c61047cd232a9822a151ee].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=1302de4af49cf616b7c61047cd232a9822a151ee].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=1302de4af49cf616b7c61047cd232a9822a151ee].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=15f6b12d7a96b451cbe68eb05aa26d6d3afa1ca5].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=15f6b12d7a96b451cbe68eb05aa26d6d3afa1ca5].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=15f6b12d7a96b451cbe68eb05aa26d6d3afa1ca5].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=1f349570422dfd9990c7883b33600da494eda0bc].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=1f349570422dfd9990c7883b33600da494eda0bc].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=1f349570422dfd9990c7883b33600da494eda0bc].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=23b3ae2228c310f95ae609c20bb9329c49f71a67].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=23b3ae2228c310f95ae609c20bb9329c49f71a67].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=23b3ae2228c310f95ae609c20bb9329c49f71a67].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=295d9db68f3864e9a2a0a8a9576f49ba430c6ec1].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=295d9db68f3864e9a2a0a8a9576f49ba430c6ec1].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=295d9db68f3864e9a2a0a8a9576f49ba430c6ec1].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=2a86485315c1653a774c8476bc4da6aee8906c34].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=2a86485315c1653a774c8476bc4da6aee8906c34].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=2a86485315c1653a774c8476bc4da6aee8906c34].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=2d87c0d54e90bfe3f582437e1e74c5a94847559e].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=2d87c0d54e90bfe3f582437e1e74c5a94847559e].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=2d87c0d54e90bfe3f582437e1e74c5a94847559e].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=35616c537afe8aec380d0c37b25fae29576d667e].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=35616c537afe8aec380d0c37b25fae29576d667e].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=35616c537afe8aec380d0c37b25fae29576d667e].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=3879914a95638b197a88f85386e855fb0d8d5b95].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=3879914a95638b197a88f85386e855fb0d8d5b95].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=3879914a95638b197a88f85386e855fb0d8d5b95].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=39f9f7c662651f41aeb3ed5df21db40585d5c9e9].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=39f9f7c662651f41aeb3ed5df21db40585d5c9e9].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=39f9f7c662651f41aeb3ed5df21db40585d5c9e9].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=3c007dc6419c2df31d861bb774d9aa699056e1be].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=3c007dc6419c2df31d861bb774d9aa699056e1be].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=3c007dc6419c2df31d861bb774d9aa699056e1be].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=3c9cc5291768084490dd3f8ae9219dd4359c1531].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=3c9cc5291768084490dd3f8ae9219dd4359c1531].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=3c9cc5291768084490dd3f8ae9219dd4359c1531].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=3f01e8ae0b0d85035699b3c1127d9466b0edae0c].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=3f01e8ae0b0d85035699b3c1127d9466b0edae0c].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=3f01e8ae0b0d85035699b3c1127d9466b0edae0c].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=40c0939824e62372932610170e009163607c5597].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=40c0939824e62372932610170e009163607c5597].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=40c0939824e62372932610170e009163607c5597].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=42fb662bd733408fc277ebeeafbed0596deb9c26].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=42fb662bd733408fc277ebeeafbed0596deb9c26].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=42fb662bd733408fc277ebeeafbed0596deb9c26].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=43cba9017036d294a76072f31e5411f3b5048efc].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=43cba9017036d294a76072f31e5411f3b5048efc].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=43cba9017036d294a76072f31e5411f3b5048efc].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=551d323cc71b110fe53f6fe23c127d2bc783b5f2].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=551d323cc71b110fe53f6fe23c127d2bc783b5f2].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=551d323cc71b110fe53f6fe23c127d2bc783b5f2].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=5d1aaf4cdf954d341d4026b792121a2e66938e53].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=5d1aaf4cdf954d341d4026b792121a2e66938e53].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=5d1aaf4cdf954d341d4026b792121a2e66938e53].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=6051eb31c32109cbd6d530c2302851e20678ea42].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=6051eb31c32109cbd6d530c2302851e20678ea42].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=6051eb31c32109cbd6d530c2302851e20678ea42].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=7241d14e5d254ab5633e38ce107d89ed947e5d1c].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=7241d14e5d254ab5633e38ce107d89ed947e5d1c].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=7241d14e5d254ab5633e38ce107d89ed947e5d1c].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=72eb391fc2f4894e3e17da91255bd806c600351b].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=72eb391fc2f4894e3e17da91255bd806c600351b].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=72eb391fc2f4894e3e17da91255bd806c600351b].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=75c2a6742a85cf7325888c7ab58c2a041f473355].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=75c2a6742a85cf7325888c7ab58c2a041f473355].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=75c2a6742a85cf7325888c7ab58c2a041f473355].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=839255a1583f5e7881b3fdec55dd0fbd3653411f].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=839255a1583f5e7881b3fdec55dd0fbd3653411f].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=839255a1583f5e7881b3fdec55dd0fbd3653411f].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=8635b34aa4b20a7c2a4f7180b845626719a51163].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=8635b34aa4b20a7c2a4f7180b845626719a51163].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=8635b34aa4b20a7c2a4f7180b845626719a51163].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=869a21b1a0b9092d2aa15424f4fe67b686f5b05c].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=869a21b1a0b9092d2aa15424f4fe67b686f5b05c].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=869a21b1a0b9092d2aa15424f4fe67b686f5b05c].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=8d7350707282687cb14ae6ffecc7b813c2ddef4d].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=8d7350707282687cb14ae6ffecc7b813c2ddef4d].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=8d7350707282687cb14ae6ffecc7b813c2ddef4d].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=927916ba35d4be6b275e42365042e2ccff1ec112].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=927916ba35d4be6b275e42365042e2ccff1ec112].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=927916ba35d4be6b275e42365042e2ccff1ec112].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=9fbf3b8813c2ea9bc712939d4a82b20668985f36].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=9fbf3b8813c2ea9bc712939d4a82b20668985f36].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=9fbf3b8813c2ea9bc712939d4a82b20668985f36].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=9feb06c81463e6d5c520998070150701e65c6499].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=9feb06c81463e6d5c520998070150701e65c6499].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=9feb06c81463e6d5c520998070150701e65c6499].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=a1f3338f1df52cca923dc0c810ec9f13320d6ea3].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=a1f3338f1df52cca923dc0c810ec9f13320d6ea3].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=a1f3338f1df52cca923dc0c810ec9f13320d6ea3].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=a30c11da00cf003d2a0b8db6dc0dbebc486a3825].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=a30c11da00cf003d2a0b8db6dc0dbebc486a3825].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=a30c11da00cf003d2a0b8db6dc0dbebc486a3825].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=a7e9db7644db7fbdc94c77c85ab4f28759df6873].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=a7e9db7644db7fbdc94c77c85ab4f28759df6873].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=a7e9db7644db7fbdc94c77c85ab4f28759df6873].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=a8cc42408c6c2ed7d77fd62607bad50d6b669bd7].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=a8cc42408c6c2ed7d77fd62607bad50d6b669bd7].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=a8cc42408c6c2ed7d77fd62607bad50d6b669bd7].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=aeb41f2f35d95fa7f20dbabdff8702cf2d43c3aa].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=aeb41f2f35d95fa7f20dbabdff8702cf2d43c3aa].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=aeb41f2f35d95fa7f20dbabdff8702cf2d43c3aa].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=b6f09882c8c35cba3bf2b6219d416ec6b688b550].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=b6f09882c8c35cba3bf2b6219d416ec6b688b550].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=b6f09882c8c35cba3bf2b6219d416ec6b688b550].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=b9c3d04c03433227e913dc6d3c93e8f790359a99].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=b9c3d04c03433227e913dc6d3c93e8f790359a99].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=b9c3d04c03433227e913dc6d3c93e8f790359a99].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=c0381b9b30e9cdeaa5ed1fe1165ec3bda4a788ba].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=c0381b9b30e9cdeaa5ed1fe1165ec3bda4a788ba].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=c0381b9b30e9cdeaa5ed1fe1165ec3bda4a788ba].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=c08cc0e22e6393c17f92415c35b7eba5c5847b4b].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=c08cc0e22e6393c17f92415c35b7eba5c5847b4b].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=c08cc0e22e6393c17f92415c35b7eba5c5847b4b].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=c4ee11c90c883cd92c092e0688c3c1879e4618d0].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=c4ee11c90c883cd92c092e0688c3c1879e4618d0].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=c4ee11c90c883cd92c092e0688c3c1879e4618d0].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=c6908fc552709fb373d30e968639455598918fd8].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=c6908fc552709fb373d30e968639455598918fd8].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=c6908fc552709fb373d30e968639455598918fd8].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=e8e8183a808ae2af591aaff17191ac12a1f1b016].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=e8e8183a808ae2af591aaff17191ac12a1f1b016].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=e8e8183a808ae2af591aaff17191ac12a1f1b016].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=ec48796602a656c161a8cc8710791ddc08949ca4].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=ec48796602a656c161a8cc8710791ddc08949ca4].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=ec48796602a656c161a8cc8710791ddc08949ca4].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=ef7146284a2de360019a23b9d9298b9d578ea354].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=ef7146284a2de360019a23b9d9298b9d578ea354].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=ef7146284a2de360019a23b9d9298b9d578ea354].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=f150d930dc5a726b0410f1982bfe4f1a999f7f11].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=f150d930dc5a726b0410f1982bfe4f1a999f7f11].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=f150d930dc5a726b0410f1982bfe4f1a999f7f11].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=f3558536268699159d30bf8cea88a664c40fa646].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=f3558536268699159d30bf8cea88a664c40fa646].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=f3558536268699159d30bf8cea88a664c40fa646].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=f9b5224db2af58a6fa8c90b153f1241bad0f7652].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/1654278567459-626a9bfa03e2e2796f24ca11.jpeg"
 + <absent>
 @@ response.json[id=f9b5224db2af58a6fa8c90b153f1241bad0f7652].authors[0].user (value differs) @@
 - "freddyaboulton"
 + "Freddy Boulton"
-@@ response.json[id=f9b5224db2af58a6fa8c90b153f1241bad0f7652].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 @@ response.json[id=fc00acaae2d665872d0594a9eac0266f158a30c5].authors[0].avatar (missing in hfd) @@
 - "https://cdn-avatars.huggingface.co/v1/production/uploads/653920e4b5a5431cee25051a/yUXDlNUCfU372lUYlVfuv.png"
 + <absent>
 @@ response.json[id=fc00acaae2d665872d0594a9eac0266f158a30c5].authors[0].user (value differs) @@
 - "gradio-pr-bot"
 + "Gradio PR Bot"
-@@ response.json[id=fc00acaae2d665872d0594a9eac0266f158a30c5].message (value differs) @@
-- ""
-+ "Upload folder using huggingface_hub"
 ```
 
 </details>
@@ -3183,25 +3024,6 @@ Request: `GET /api/spaces/wzshiming/hello_world/tree/main`
 @@ response.json[path=screenshot.gif].xetHash (missing in hfd) @@
 - "8de88a9afedbbf7fc8c6e94cd11c61bb1fcfb96463d7e99b3d52aa0ea863787c"
 + <absent>
-```
-
-</details>
-
-<details>
-<summary>⚠️ whoami-v2 — content diff (3 differences)</summary>
-
-Request: `GET /api/whoami-v2`
-
-```diff
-@@ response.headers.Www-Authenticate (missing in hfd) @@
-- Bearer realm="Authentication required", charset="UTF-8"
-+ <absent>
-@@ response.headers.X-Error-Message (missing in hfd) @@
-- Invalid username or password.
-+ <absent>
-@@ response.json.error (value differs) @@
-- "Invalid username or password."
-+ "Unauthorized"
 ```
 
 </details>
