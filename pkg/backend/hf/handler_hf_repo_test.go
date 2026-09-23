@@ -1,11 +1,24 @@
 package hf
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-git/go-billy/v6/util"
+
+	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // createRepoAndCommit creates a repo and commits a file, returning the commit SHA.
@@ -1114,5 +1127,298 @@ func TestHuggingFaceListCommitsDatasets(t *testing.T) {
 	}
 	if len(commits) != 2 {
 		t.Fatalf("Expected 2 commits, got %d", len(commits))
+	}
+}
+
+// seedCommit adds one file on branch of repoName, creating the repository when needed.
+func seedCommit(t *testing.T, st *storage.Storage, repoName, branch, file string) string {
+	t.Helper()
+	ctx := context.Background()
+	repoPath := repository.ResolvePath(repoName)
+	repo, err := repository.Open(st.RepositoriesFS(), repoPath)
+	if err != nil {
+		if repo, err = repository.Init(ctx, st.RepositoriesFS(), repoPath, "main"); err != nil {
+			t.Fatalf("init %s: %v", repoName, err)
+		}
+	}
+	sha, err := repo.CreateCommit(ctx, branch, "Add "+file+"\n\nSeeded by the test.\n", "Alice", "alice@example.com",
+		[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: file, Content: []byte(file)}}, "")
+	if err != nil {
+		t.Fatalf("commit %s: %v", repoName, err)
+	}
+	return sha
+}
+
+func getCommits(t *testing.T, h http.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	return rec
+}
+
+// decodeCommits asserts a 200 listing with the expected X-Total-Count and returns its titles.
+func decodeCommits(t *testing.T, rec *httptest.ResponseRecorder, wantTotal string) ([]commitInfo, []string) {
+	t.Helper()
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Total-Count") != wantTotal {
+		t.Fatalf("status %d total %q, want 200 total %q: %s", rec.Code, rec.Header().Get("X-Total-Count"), wantTotal, rec.Body)
+	}
+	var items []commitInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	titles := make([]string, 0, len(items))
+	for _, it := range items {
+		titles = append(titles, it.Title)
+	}
+	return items, titles
+}
+
+// nextCommitsLink parses the rel="next" URL of the Link header.
+func nextCommitsLink(t *testing.T, rec *httptest.ResponseRecorder) *url.URL {
+	t.Helper()
+	link := rec.Header().Get("Link")
+	raw, _, ok := strings.Cut(strings.TrimPrefix(link, "<"), ">")
+	if !ok || !strings.HasSuffix(link, `; rel="next"`) {
+		t.Fatalf("Link %q", link)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("Link %q: %v", link, err)
+	}
+	return u
+}
+
+func TestHuggingFaceListCommitsTotalCountAndLink(t *testing.T) {
+	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	var checks, opened []string
+	h := NewHandler(WithStorage(st),
+		WithPermissionHookFunc(func(_ context.Context, op permission.Operation, name string, c permission.Context) (bool, error) {
+			checks = append(checks, op.String()+" "+name+" "+c.Ref)
+			return name != "alice/secret", nil
+		}),
+		WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
+			opened = append(opened, fmt.Sprintf("%s %v", name, write))
+			return nil
+		}))
+	seedCommit(t, st, "alice/m1", "main", "README.md")
+	seedCommit(t, st, "alice/m1", "main", "a.txt")
+	sha3 := seedCommit(t, st, "alice/m1", "main", "b.txt")
+	seedCommit(t, st, "alice/m1", "feature/x", "f1.txt")
+	seedCommit(t, st, "alice/m1", "feature/x", "f2.txt")
+	seedCommit(t, st, "alice/m1", "pct%x", "p1.txt")
+	seedCommit(t, st, "alice/m1", "pct%x", "p2.txt")
+	seedCommit(t, st, "datasets/alice/d1", "main", "README.md")
+	seedCommit(t, st, "alice/secret", "main", "README.md")
+	if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("alice/empty"), "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := getCommits(t, h, "/api/models/alice/m1/commits/main")
+	items, titles := decodeCommits(t, rec, "3")
+	if want := []string{"Add b.txt", "Add a.txt", "Add README.md"}; !slices.Equal(titles, want) || rec.Header().Get("Link") != "" {
+		t.Errorf("main: %v link %q", titles, rec.Header().Get("Link"))
+	}
+	first := items[0]
+	if _, err := time.Parse(repository.TimeFormat, first.Date); err != nil {
+		t.Errorf("date %q: %v", first.Date, err)
+	}
+	if first.ID != sha3 || first.Message != "Add b.txt\n\nSeeded by the test.\n" || len(first.Authors) != 1 || first.Authors[0].User != "Alice" {
+		t.Errorf("commit %+v", first)
+	}
+	if !slices.Contains(checks, "read_repo alice/m1 main") || !slices.Contains(opened, "alice/m1 false") {
+		t.Errorf("checks %v opened %v", checks, opened)
+	}
+
+	rec = getCommits(t, h, "/api/models/alice/m1/commits/main?limit=2&expand%5B%5D=formatted")
+	if _, titles = decodeCommits(t, rec, "3"); len(titles) != 2 {
+		t.Fatalf("page 0: %v", titles)
+	}
+	u := nextCommitsLink(t, rec)
+	if u.Path != "/api/models/alice/m1/commits/main" || u.Query().Get("p") != "1" || u.Query().Get("limit") != "2" || u.Query().Get("expand[]") != "formatted" {
+		t.Errorf("link %s", u)
+	}
+	rec = getCommits(t, h, u.RequestURI())
+	if _, titles = decodeCommits(t, rec, "3"); !slices.Equal(titles, []string{"Add README.md"}) || rec.Header().Get("Link") != "" {
+		t.Errorf("page 1: %v link %q", titles, rec.Header().Get("Link"))
+	}
+	rec = getCommits(t, h, "/api/models/alice/m1/commits/main?p=9223372036854775807&limit=50")
+	if _, titles = decodeCommits(t, rec, "3"); len(titles) != 0 || rec.Header().Get("Link") != "" {
+		t.Errorf("huge page: %v link %q", titles, rec.Header().Get("Link"))
+	}
+	rec = getCommits(t, h, "/api/models/alice/m1/commits/main?limit=9223372036854775807")
+	if _, titles = decodeCommits(t, rec, "3"); len(titles) != 3 {
+		t.Errorf("capped limit: %v", titles)
+	}
+
+	for _, tc := range []struct{ rev, second string }{{"feature%2Fx", "Add f1.txt"}, {"pct%25x", "Add p1.txt"}} {
+		rec = getCommits(t, h, "/api/models/alice/m1/commits/"+tc.rev+"?limit=1")
+		if _, titles = decodeCommits(t, rec, "2"); len(titles) != 1 {
+			t.Fatalf("%s: %v", tc.rev, titles)
+		}
+		u = nextCommitsLink(t, rec)
+		if !strings.HasSuffix(u.EscapedPath(), "/commits/"+tc.rev) {
+			t.Errorf("%s link %s", tc.rev, u)
+		}
+		rec = getCommits(t, h, u.RequestURI())
+		if _, titles = decodeCommits(t, rec, "2"); !slices.Equal(titles, []string{tc.second}) || rec.Header().Get("Link") != "" {
+			t.Errorf("%s page 1: %v link %q", tc.rev, titles, rec.Header().Get("Link"))
+		}
+	}
+	if !slices.Contains(checks, "read_repo alice/m1 feature/x") {
+		t.Errorf("checks %v", checks)
+	}
+
+	rec = getCommits(t, h, "/api/datasets/alice/d1/commits/main")
+	if _, titles = decodeCommits(t, rec, "1"); len(titles) != 1 || !slices.Contains(opened, "datasets/alice/d1 false") || !slices.Contains(checks, "read_repo datasets/alice/d1 main") {
+		t.Errorf("dataset: %v opened %v checks %v", titles, opened, checks)
+	}
+	rec = getCommits(t, h, "/api/models/alice/empty/commits/main")
+	if _, titles = decodeCommits(t, rec, "0"); len(titles) != 0 || rec.Header().Get("Link") != "" {
+		t.Errorf("unborn: %v", titles)
+	}
+
+	for target, want := range map[string]int{
+		"/api/models/alice/m1/commits/nope":                            http.StatusNotFound,
+		"/api/models/alice/empty/commits/other":                        http.StatusNotFound,
+		"/api/models/alice/missing/commits/main":                       http.StatusNotFound,
+		"/api/datasets/alice/m1/commits/main":                          http.StatusNotFound,
+		"/api/models/alice/secret/commits/main":                        http.StatusForbidden,
+		"/api/models/alice/m1/commits/main?p=-1":                       http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?p=x":                        http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?p=9223372036854775808":      http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?limit=0":                    http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?limit=-1":                   http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?limit=y":                    http.StatusBadRequest,
+		"/api/models/alice/m1/commits/main?limit=99999999999999999999": http.StatusBadRequest,
+	} {
+		rec := getCommits(t, h, target)
+		if rec.Code != want || !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Errorf("%s: %d %s", target, rec.Code, rec.Body)
+		}
+	}
+	if slices.ContainsFunc(opened, func(s string) bool { return strings.HasPrefix(s, "alice/secret") }) {
+		t.Errorf("denied repository was opened: %v", opened)
+	}
+}
+
+func TestHuggingFaceListCommitsRevisionExpressions(t *testing.T) {
+	root := t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(root))
+	h := NewHandler(WithStorage(st))
+	sha1 := seedCommit(t, st, "alice/m1", "main", "README.md")
+	seedCommit(t, st, "alice/m1", "main", "a.txt")
+	if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("alice/empty"), "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := getCommits(t, h, "/api/models/alice/m1/commits/"+url.PathEscape("HEAD^"))
+	if items, _ := decodeCommits(t, rec, "1"); len(items) != 1 || items[0].ID != sha1 {
+		t.Errorf("HEAD^: %+v", items)
+	}
+	for _, tc := range []struct{ repo, rev string }{
+		{"m1", "^"}, {"m1", "~"}, {"m1", "main..main"}, {"m1", "main...main"}, {"m1", "main~999"}, {"m1", "main^2"}, {"m1", "nope"}, {"m1", "refs/heads/nope"},
+		{"empty", "^"}, {"empty", "other"},
+	} {
+		target := "/api/models/alice/" + tc.repo + "/commits/" + url.PathEscape(tc.rev)
+		if rec := getCommits(t, h, target); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Errorf("%s: %d %s", target, rec.Code, rec.Body)
+		}
+	}
+
+	// A parent whose object is gone is a storage failure, not an unknown revision.
+	if err := st.RepositoriesFS().Remove(path.Join(repository.ResolvePath("alice/m1"), "objects", sha1[:2], sha1[2:])); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewHandler(WithStorage(storage.NewStorage(storage.WithRootDir(root))))
+	if rec := getCommits(t, fresh, "/api/models/alice/m1/commits/main~1"); rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("missing parent: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestHuggingFaceListCommitsMissingAncestor(t *testing.T) {
+	root := t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(root))
+	sha1 := seedCommit(t, st, "alice/m1", "main", "README.md")
+	seedCommit(t, st, "alice/m1", "main", "a.txt")
+	seedCommit(t, st, "alice/m1", "main", "b.txt")
+	if err := st.RepositoriesFS().Remove(path.Join(repository.ResolvePath("alice/m1"), "objects", sha1[:2], sha1[2:])); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(WithStorage(storage.NewStorage(storage.WithRootDir(root))))
+	rec := getCommits(t, h, "/api/models/alice/m1/commits/main?limit=1")
+	if rec.Code != http.StatusInternalServerError || rec.Header().Get("X-Total-Count") != "" || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("missing ancestor: %d total %q %s", rec.Code, rec.Header().Get("X-Total-Count"), rec.Body)
+	}
+}
+
+// A reference whose target object cannot be read, alone or under a ~ or ^
+// path, or a reference store that cannot be scanned, is a storage failure
+// rather than an unknown revision.
+func TestHuggingFaceListCommitsUnreadableRefTarget(t *testing.T) {
+	root := t.TempDir()
+	st := storage.NewStorage(storage.WithRootDir(root))
+	first := seedCommit(t, st, "alice/m1", "main", "README.md")
+	tip := seedCommit(t, st, "alice/m1", "main", "a.txt")
+	repo, err := repository.Open(st.RepositoriesFS(), repository.ResolvePath("alice/m1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateBranch("feature/x", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateTag("v1", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateBranch("ok", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RepositoriesFS().Remove(path.Join(repository.ResolvePath("alice/m1"), "objects", tip[:2], tip[2:])); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alice/empty", "alice/broken"} {
+		if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath(name), "main"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := util.WriteFile(st.RepositoriesFS(), path.Join(repository.ResolvePath("alice/broken"), "packed-refs"), []byte("corrupt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(WithStorage(storage.NewStorage(storage.WithRootDir(root))))
+	for target, want := range map[string]int{
+		"/api/models/alice/m1/commits/main":                       http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/HEAD":                       http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/@":                          http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/@~1":                        http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/refs%2Fheads%2Fmain":        http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/feature%2Fx":                http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/v1":                         http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/refs%2Ftags%2Fv1":           http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/main~1":                     http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/main~0":                     http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/HEAD^":                      http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/feature%2Fx~1":              http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/v1~1":                       http.StatusInternalServerError,
+		"/api/models/alice/m1/commits/nope":                       http.StatusNotFound,
+		"/api/models/alice/m1/commits/feature%2Fnope":             http.StatusNotFound,
+		"/api/models/alice/m1/commits/refs%2Fheads%2Fnope":        http.StatusNotFound,
+		"/api/models/alice/m1/commits/nope~1":                     http.StatusNotFound,
+		"/api/models/alice/m1/commits/main^3":                     http.StatusNotFound,
+		"/api/models/alice/m1/commits/ok^3":                       http.StatusNotFound,
+		"/api/models/alice/m1/commits/ok~999":                     http.StatusNotFound,
+		"/api/models/alice/m1/commits/" + strings.Repeat("a", 40): http.StatusNotFound,
+		"/api/models/alice/broken/commits/main":                   http.StatusInternalServerError,
+		"/api/models/alice/broken/commits/nope":                   http.StatusInternalServerError,
+	} {
+		rec := getCommits(t, h, target)
+		if rec.Code != want || rec.Header().Get("X-Total-Count") != "" || !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Errorf("%s: %d total %q %s", target, rec.Code, rec.Header().Get("X-Total-Count"), rec.Body)
+		}
+	}
+	if items, _ := decodeCommits(t, getCommits(t, h, "/api/models/alice/m1/commits/ok"), "1"); len(items) != 1 || items[0].ID != first {
+		t.Errorf("ok: %+v", items)
+	}
+	if _, titles := decodeCommits(t, getCommits(t, h, "/api/models/alice/empty/commits/main"), "0"); len(titles) != 0 {
+		t.Errorf("unborn: %v", titles)
 	}
 }

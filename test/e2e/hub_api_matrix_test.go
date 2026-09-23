@@ -608,7 +608,8 @@ assert "data.txt" in siblings, f"data.txt not in {siblings}"
 }
 
 // runHubCommits (py only): two uploads with messages, then
-// list_repo_commits with the upload OIDs anchoring the listed commit_ids.
+// list_repo_commits with the upload OIDs anchoring the listed commit_ids; an
+// unknown revision is a 404, and the raw route paginates with X-Total-Count.
 func runHubCommits(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/commits-" + rt.arg
 
@@ -627,7 +628,22 @@ assert second.oid in commit_ids, f"second upload oid {second.oid} not in {commit
 titles = [c.title for c in commits]
 assert "Add first file" in titles, f"'Add first file' not in {titles}"
 assert "Add second file" in titles, f"'Add second file' not in {titles}"
-`, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg)
+from huggingface_hub.utils import HfHubHTTPError, paginate
+try:
+    api.list_repo_commits(repo_id=%q, repo_type=%q, revision="no-such-rev")
+    raise AssertionError("list_repo_commits on an unknown revision did not fail")
+except HfHubHTTPError as e:
+    assert e.response.status_code == 404, f"unknown revision status {e.response.status_code}, want 404"
+import json, urllib.request
+url = os.environ["HF_ENDPOINT"] + "/api/%s/%s/commits/main"
+with urllib.request.urlopen(url + "?limit=1") as r:
+    page, total, link = json.load(r), r.headers.get("X-Total-Count"), r.headers.get("Link", "")
+assert total == str(len(commits)), f"X-Total-Count {total!r}, want {len(commits)}"
+assert [c["id"] for c in page] == [commits[0].commit_id], f"first page {page!r}"
+assert 'rel="next"' in link and "p=1" in link and "limit=1" in link, f"Link {link!r}"
+paged = [c["id"] for c in paginate(url, params={"limit": 1}, headers={})]
+assert paged == [c.commit_id for c in commits], f"paged {paged!r} != {[c.commit_id for c in commits]!r}"
+`, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg, rt.apiPrefix, repoID)
 	runPyScript(t, s.httpURL, script)
 }
 

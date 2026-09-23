@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-git/v6/plumbing"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -94,6 +95,31 @@ func TestDiskUsageIncludesLFSSize(t *testing.T) {
 	if usageAfter-usageBefore < lfsSize {
 		t.Errorf("Expected DiskUsage to include LFS size (%d): before=%d, after=%d, delta=%d",
 			lfsSize, usageBefore, usageAfter, usageAfter-usageBefore)
+	}
+}
+
+func TestCommitsMissingAncestorFails(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := Init(context.Background(), osfs.Default, dir, "main")
+	if err != nil {
+		t.Fatalf("Failed to init repo: %v", err)
+	}
+	root := mustCommit(t, repo, "main", "", CommitOperation{Type: CommitOperationAdd, Path: "a", Content: []byte("a")})
+	mustCommit(t, repo, "main", "", CommitOperation{Type: CommitOperationAdd, Path: "b", Content: []byte("b")})
+	head := mustCommit(t, repo, "main", "", CommitOperation{Type: CommitOperationAdd, Path: "c", Content: []byte("c")})
+	if err := os.Remove(filepath.Join(dir, "objects", root[:2], root[2:])); err != nil {
+		t.Fatal(err)
+	}
+	lruCache.Remove(cacheKey{osfs.Default, dir})
+	if repo, err = Open(osfs.Default, dir); err != nil {
+		t.Fatalf("Failed to reopen repo: %v", err)
+	}
+	if commits, err := repo.Commits(head, &CommitsOptions{Limit: 2}); err != nil || len(commits) != 2 {
+		t.Fatalf("Commits(limit 2) = %d commits, %v", len(commits), err)
+	}
+	commits, err := repo.Commits(head, nil)
+	if !errors.Is(err, plumbing.ErrObjectNotFound) {
+		t.Fatalf("Commits = %d commits, %v; want ErrObjectNotFound", len(commits), err)
 	}
 }
 

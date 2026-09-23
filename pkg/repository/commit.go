@@ -52,7 +52,7 @@ func (r *Repository) Commits(rev string, opts *CommitsOptions) ([]Commit, error)
 		}
 		return nil
 	})
-	if err != nil && err != io.EOF && len(commits) == 0 {
+	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("failed to iterate commits: %w", err)
 	}
 

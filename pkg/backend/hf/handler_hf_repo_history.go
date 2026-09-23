@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,14 +17,36 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
+const (
+	defaultCommitsLimit = 50
+	maxCommitsLimit     = 1000
+)
+
 // handleListCommits handles GET /api/{repoType}/{repo}/commits/{rev}
-// It returns a paginated list of commits for the given revision.
+// One history walk yields both X-Total-Count and the requested page.
 func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
+	query := r.URL.Query()
+	limit, page := defaultCommitsLimit, 0
+	var err error
+	if v := query.Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil || limit <= 0 {
+			responseJSON(w, fmt.Errorf("invalid limit parameter: %s", v), http.StatusBadRequest)
+			return
+		}
+		limit = min(limit, maxCommitsLimit)
+	}
+	if v := query.Get("p"); v != "" {
+		if page, err = strconv.Atoi(v); err != nil || page < 0 {
+			responseJSON(w, fmt.Errorf("invalid page parameter: %s", v), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}) {
 		return
 	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
@@ -31,41 +54,48 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := r.URL.Query()
-
-	limit := 50
-	if l := query.Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 {
-			limit = v
-		}
-	}
-
-	var page int
-	var offset int
-	if pageStr := query.Get("p"); pageStr != "" {
-		if v, err := strconv.Atoi(pageStr); err == nil {
-			page = v
-			if page >= 0 {
-				offset = page * limit
+	hash, err := repo.ResolveRevision(rev)
+	if err != nil {
+		status, rerr := revisionError(rev, err)
+		if status == http.StatusNotFound {
+			refs, lerr := repo.Refs()
+			switch {
+			case lerr != nil:
+				status, rerr = http.StatusInternalServerError, fmt.Errorf("failed to read references for %q: %v", rev, lerr)
+			case len(refs) == 0 && rev == repo.DefaultBranch():
+				// An unborn default branch has no commits rather than no revision.
+				w.Header().Set("X-Total-Count", "0")
+				responseJSON(w, []commitInfo{}, http.StatusOK)
+				return
+			case unreadableRef(repo, refs, rev, err):
+				// go-git reports a reference whose target object cannot be read as not found.
+				status, rerr = http.StatusInternalServerError, fmt.Errorf("failed to resolve revision %q: reference target is unreadable", rev)
 			}
 		}
+		responseJSON(w, rerr, status)
+		return
 	}
-
-	// Fetch one extra commit so we can detect whether a next page exists.
-	rawCommits, err := repo.Commits(rev, &repository.CommitsOptions{Limit: limit + 1, Offset: offset})
+	all, err := repo.Commits(hash, nil)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to list commits for %q: %v", rev, err), http.StatusInternalServerError)
 		return
 	}
 
-	if len(rawCommits) > limit {
-		rawCommits = rawCommits[:limit]
+	total := len(all)
+	// Comparing against total/limit keeps page*limit from overflowing on a huge p.
+	start := total
+	if page <= total/limit {
+		start = page * limit
+	}
+	end := min(start+limit, total)
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+	if end < total {
 		nextURL := buildNextCommitPageURL(r, page+1, limit)
 		w.Header().Set("Link", fmt.Sprintf("<%s>; rel=\"next\"", nextURL))
 	}
 
-	commitInfos := make([]commitInfo, 0, len(rawCommits))
-	for _, c := range rawCommits {
+	commitInfos := make([]commitInfo, 0, end-start)
+	for _, c := range all[start:end] {
 		commitInfos = append(commitInfos, commitInfo{
 			ID:      c.Hash().String(),
 			Title:   c.Title(),
@@ -79,13 +109,51 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildNextCommitPageURL constructs the URL for the next commits page,
-// replacing the p parameter with the given page number.
+// replacing the p parameter with the given page number. The escaped path
+// keeps an encoded slash or percent inside the revision as one segment.
 func buildNextCommitPageURL(r *http.Request, nextPage, limit int) string {
 	origin := requestOrigin(r)
 	q := r.URL.Query()
 	q.Set("p", strconv.Itoa(nextPage))
 	q.Set("limit", strconv.Itoa(limit))
-	return origin + r.URL.Path + "?" + q.Encode()
+	return origin + r.URL.EscapedPath() + "?" + q.Encode()
+}
+
+// revisionError maps unknown, invalid or exhausted revisions (main~999 runs
+// out of parents as io.EOF) to 404 and anything else to 500.
+func revisionError(rev string, err error) (int, error) {
+	// go-git's invalid-revision error type is internal, so its message prefix is the only handle.
+	if errors.Is(err, repository.ErrRevisionNotFound) || errors.Is(err, io.EOF) || strings.HasPrefix(err.Error(), "Revision invalid") {
+		return http.StatusNotFound, fmt.Errorf("revision %q not found", rev)
+	}
+	return http.StatusInternalServerError, fmt.Errorf("failed to resolve revision %q: %v", rev, err)
+}
+
+// unreadableRef reports whether rev, or the reference before its ~ or ^ path
+// when go-git found no revision, names a listed reference that fails to resolve alone.
+func unreadableRef(repo *repository.Repository, refs map[string]string, rev string, err error) bool {
+	if namesRef(refs, rev, repo.DefaultBranch()) {
+		return true
+	}
+	i := strings.IndexAny(rev, "~^")
+	if i < 0 || !errors.Is(err, repository.ErrRevisionNotFound) || !namesRef(refs, rev[:i], repo.DefaultBranch()) {
+		return false
+	}
+	_, err = repo.ResolveRevision(rev[:i])
+	return err != nil
+}
+
+// namesRef reports whether rev names a listed reference under go-git's rev-parse rules; Refs omits HEAD.
+func namesRef(refs map[string]string, rev, defaultBranch string) bool {
+	if rev == "HEAD" || rev == "@" {
+		rev = defaultBranch
+	}
+	for _, rule := range plumbing.RefRevParseRules {
+		if _, ok := refs[fmt.Sprintf(rule, rev)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // handleCompare handles GET /api/{repoType}/{repo}/compare/{compare}
