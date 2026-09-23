@@ -101,7 +101,7 @@ func buildRepoListItems(ctx context.Context, fs billy.Filesystem, baseDir string
 	var roots []string
 	if f.author != "" {
 		// An author is one path element; a slash or dot path would walk out of its namespace.
-		if strings.Contains(f.author, "/") || f.author == "." || f.author == ".." || (isModel && (f.author == "datasets" || f.author == "spaces")) {
+		if strings.Contains(f.author, "/") || f.author == "." || f.author == ".." || (isModel && (f.author == "datasets" || f.author == "spaces" || f.author == "kernels")) {
 			return nil
 		}
 		roots = []string{filepath.Join(baseDir, f.author)}
@@ -116,8 +116,8 @@ func buildRepoListItems(ctx context.Context, fs billy.Filesystem, baseDir string
 			}
 			nsName := nsEntry.Name()
 
-			// For models, skip the datasets/ and spaces/ directories
-			if isModel && (nsName == "datasets" || nsName == "spaces") {
+			// For models, skip the other repo types' directories
+			if isModel && (nsName == "datasets" || nsName == "spaces" || nsName == "kernels") {
 				continue
 			}
 			roots = append(roots, filepath.Join(baseDir, nsName))

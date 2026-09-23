@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -600,6 +601,80 @@ func TestHuggingFaceSpaceCreateAndCommit(t *testing.T) {
 	}
 }
 
+func TestHuggingFaceKernelCreateAndCommit(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(`{"type":"kernel","name":"test-kernel","organization":"test-user"}`))
+	if err != nil {
+		t.Fatalf("Failed to create kernel repo: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+	var result createRepoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if !strings.HasSuffix(result.URL, "/kernels/test-user/test-kernel") {
+		t.Errorf("Expected URL ending in '/kernels/test-user/test-kernel', got %q", result.URL)
+	}
+
+	ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add kernel\"}}\n" +
+		"{\"key\":\"file\",\"value\":{\"content\":\"# Test Kernel\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n"
+	resp, err = http.Post(endpoint+"/api/kernels/test-user/test-kernel/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit to kernel: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, respBody)
+	}
+
+	resp, err = http.Get(endpoint + "/kernels/test-user/test-kernel/resolve/main/README.md")
+	if err != nil {
+		t.Fatalf("Failed to resolve kernel file: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected 200 for kernel resolve, got %d: %s", resp.StatusCode, respBody)
+	}
+	content, _ := io.ReadAll(resp.Body)
+	if string(content) != "# Test Kernel\n" {
+		t.Errorf("Unexpected kernel content: %q", content)
+	}
+
+	for _, path := range []string{"/api/kernels/test-user/test-kernel", "/api/kernels/test-user/test-kernel/revision/main"} {
+		resp, err = http.Get(endpoint + path)
+		if err != nil {
+			t.Fatalf("Failed to get %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			t.Fatalf("Expected 200 for %s, got %d: %s", path, resp.StatusCode, respBody)
+		}
+		var info repoInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+			t.Fatalf("Failed to decode %s: %v", path, err)
+		}
+		if info.ID != "test-user/test-kernel" || info.ModelID != "" {
+			t.Errorf("%s: id = %q, modelId = %q; want test-user/test-kernel and no modelId", path, info.ID, info.ModelID)
+		}
+		var names []string
+		for _, s := range info.Siblings {
+			names = append(names, s.RFilename)
+		}
+		if len(names) != 2 || !slices.Contains(names, ".gitattributes") || !slices.Contains(names, "README.md") {
+			t.Errorf("%s: siblings = %v, want .gitattributes and README.md", path, names)
+		}
+	}
+}
+
 func TestHuggingFaceDatasetPreupload(t *testing.T) {
 	server, _ := setupTestServer(t)
 	endpoint := server.URL
@@ -643,13 +718,16 @@ func TestHuggingFaceRepoTypeIsolation(t *testing.T) {
 	endpoint := server.URL
 
 	// Create repos with the same name but different types
-	for _, repoType := range []string{"model", "dataset", "space"} {
+	for _, repoType := range []string{"model", "dataset", "space", "kernel"} {
 		body := `{"type":"` + repoType + `","name":"shared-name","organization":"test-user"}`
 		resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("Failed to create %s repo: %v", repoType, err)
 		}
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected 200 creating %s repo, got %d", repoType, resp.StatusCode)
+		}
 	}
 
 	// Commit different content to each
@@ -661,6 +739,7 @@ func TestHuggingFaceRepoTypeIsolation(t *testing.T) {
 		{"model", "/api/models", "model content"},
 		{"dataset", "/api/datasets", "dataset content"},
 		{"space", "/api/spaces", "space content"},
+		{"kernel", "/api/kernels", "kernel content"},
 	} {
 		ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"Add readme\"}}\n" +
 			"{\"key\":\"file\",\"value\":{\"content\":\"" + tc.content + "\\n\",\"path\":\"README.md\",\"encoding\":\"utf-8\"}}\n"
@@ -670,6 +749,9 @@ func TestHuggingFaceRepoTypeIsolation(t *testing.T) {
 			t.Fatalf("Failed to commit to %s: %v", tc.repoType, err)
 		}
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected 200 committing to %s, got %d", tc.repoType, resp.StatusCode)
+		}
 	}
 
 	// Verify each type has its own content
@@ -680,6 +762,7 @@ func TestHuggingFaceRepoTypeIsolation(t *testing.T) {
 		{"", "model content\n"},
 		{"/datasets", "dataset content\n"},
 		{"/spaces", "space content\n"},
+		{"/kernels", "kernel content\n"},
 	} {
 		resp, err := http.Get(endpoint + tc.resolvePrefix + "/test-user/shared-name/resolve/main/README.md")
 		if err != nil {

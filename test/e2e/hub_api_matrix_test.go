@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,6 +58,7 @@ var hubRepoTypes = []hubRepoType{
 	{name: "Model", arg: "model", apiPrefix: "models", resolvePrefix: ""},
 	{name: "Dataset", arg: "dataset", apiPrefix: "datasets", resolvePrefix: "/datasets"},
 	{name: "Space", arg: "space", apiPrefix: "spaces", resolvePrefix: "/spaces"},
+	{name: "Kernel", arg: "kernel", apiPrefix: "kernels", resolvePrefix: "/kernels"},
 }
 
 // cliTypeArgs returns the --repo-type flag for non-default repo types.
@@ -83,6 +85,8 @@ func (rt hubRepoType) pyInfoFunc() string {
 		return "dataset_info"
 	case "space":
 		return "space_info"
+	case "kernel":
+		return "kernel_info"
 	default:
 		return "model_info"
 	}
@@ -118,13 +122,20 @@ func modelCellOnly(_ hubClient, rt hubRepoType) bool { return rt.arg == "model" 
 // TypeIsolation proves — so CLI x {dataset,space} would re-test the same
 // handler at ~2s interpreter start-up per call; the legacy suite covered
 // these CLI ops on model only. The CLI x type surface itself stays covered
-// by UploadAndDownload/Branch/Tag on all three types.
+// by UploadAndDownload/Branch/Tag on all types.
 func cliModelOnly(c hubClient, rt hubRepoType) bool { return c.py || rt.arg == "model" }
 
+func cliModelOrKernel(c hubClient, rt hubRepoType) bool {
+	return cliModelOnly(c, rt) || rt.arg == "kernel"
+}
+
+// huggingface_hub 1.32 rejects kernel uploads and has no list_kernels accessor.
+func clientWrites(_ hubClient, rt hubRepoType) bool { return rt.arg != "kernel" }
+
 // TestHubAPIOperationsMatrix exercises hub management operations across
-// {hf CLI, python library} x {model, dataset, space}. Each client x type
-// group shares one server (ops use disjoint op-named repoIDs) and the six
-// groups run in parallel; with each python op merged into a single
+// {hf CLI, python library} x {model, dataset, space, kernel}. Each client x
+// type group shares one server (ops use disjoint op-named repoIDs) and the
+// eight groups run in parallel; with each python op merged into a single
 // interpreter run, this keeps the double-storage-pass wall time well inside
 // the go test timeout.
 func TestHubAPIOperationsMatrix(t *testing.T) {
@@ -133,23 +144,23 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "PyLib", py: true},
 	}
 	ops := []hubOp{
-		{name: "CreateAndDelete", supported: cliModelOnly, run: runHubCreateAndDelete},
+		{name: "CreateAndDelete", supported: cliModelOrKernel, run: runHubCreateAndDelete},
 		{name: "UploadAndDownload", supported: anyClientAnyType, run: runHubUploadAndDownload},
 		{name: "SnapshotDownload", supported: pyOnly, run: runHubSnapshotDownload},
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
-		{name: "ListRepos", supported: pyOnly, run: runHubListRepos},
+		{name: "ListRepos", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubListRepos},
 		{name: "TreeSize", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubTreeSize},
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
 		{name: "Tag", supported: anyClientAnyType, run: runHubTag},
-		{name: "Move", supported: cliModelOnly, run: runHubMove},
-		{name: "Settings", supported: cliModelOnly, run: runHubSettings},
-		{name: "DeleteFile", supported: cliModelOnly, run: runHubDeleteFile},
+		{name: "Move", supported: cliModelOrKernel, run: runHubMove},
+		{name: "Settings", supported: func(c hubClient, rt hubRepoType) bool { return cliModelOnly(c, rt) && clientWrites(c, rt) }, run: runHubSettings},
+		{name: "DeleteFile", supported: func(c hubClient, rt hubRepoType) bool { return cliModelOnly(c, rt) && clientWrites(c, rt) }, run: runHubDeleteFile},
 		{name: "RepoInfo", supported: pyOnly, run: runHubRepoInfo},
-		{name: "Commits", supported: pyOnly, run: runHubCommits},
-		{name: "CommitParent", supported: pyOnly, run: runHubCommitParent},
+		{name: "Commits", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubCommits},
+		{name: "CommitParent", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubCommitParent},
 		{name: "Compare", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubCompare},
 		{name: "Refs", supported: pyOnly, run: runHubRefs},
-		{name: "Squash", supported: pyOnly, run: runHubSquash},
+		{name: "Squash", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubSquash},
 		{name: "TypeIsolation", supported: modelCellOnly, run: runHubTypeIsolation},
 	}
 
@@ -166,6 +177,10 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 					for _, op := range ops {
 						t.Run(op.name, func(t *testing.T) {
 							if !op.supported(c, rt) {
+								// A kernel-only skip of an op this client runs on datasets is a client limit.
+								if !clientWrites(c, rt) && op.supported(c, hubRepoTypes[1]) {
+									t.Skipf("%s not supported for %s/%s: huggingface_hub rejects repo_type=kernel client-side", op.name, c.name, rt.name)
+								}
 								t.Skipf("%s not supported for %s/%s", op.name, c.name, rt.name)
 							}
 							// Ops touch disjoint repos, so they parallelize on the
@@ -222,16 +237,61 @@ func hubPyCreateLine(repoID string, rt hubRepoType, existOK bool) string {
 	return fmt.Sprintf("api.create_repo(repo_id=%q, repo_type=%q, exist_ok=%s%s)\n", repoID, rt.arg, ok, sdk)
 }
 
-// hubPySetupLines returns create_repo plus upload_file lines for embedding
-// at the top of an op's merged script (after the hubPyAPI prologue).
-func hubPySetupLines(repoID string, rt hubRepoType, files []hubFile) string {
+// Kernel files need HTTP seeding because the Python client rejects uploads.
+func hubPySetupLines(t *testing.T, s *e2eServer, repoID string, rt hubRepoType, files []hubFile) string {
+	t.Helper()
 	var b strings.Builder
+	if !clientWrites(hubClient{}, rt) {
+		hubSeedFiles(t, s, rt, repoID, files, "Seed files")
+		files = nil
+	}
 	b.WriteString(hubPyCreateLine(repoID, rt, true))
 	for _, f := range files {
 		fmt.Fprintf(&b, "api.upload_file(path_or_fileobj=b%q, path_in_repo=%q, repo_id=%q, repo_type=%q)\n",
 			f.content, f.path, repoID, rt.arg)
 	}
 	return b.String()
+}
+
+func hubSeedFiles(t *testing.T, s *e2eServer, rt hubRepoType, repoID string, files []hubFile, msg string) string {
+	t.Helper()
+	resp, err := http.Post(s.httpURL+"/api/repos/create", "application/json",
+		strings.NewReader(fmt.Sprintf(`{"type":%q,"name":%q}`, rt.arg, repoID)))
+	if err != nil {
+		t.Fatalf("POST create %s: %v", repoID, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create %s status = %d, want 200", repoID, resp.StatusCode)
+	}
+
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	operations := []map[string]any{{"key": "header", "value": map[string]any{"summary": msg}}}
+	for _, f := range files {
+		operations = append(operations, map[string]any{"key": "file", "value": map[string]any{"path": f.path, "content": f.content, "encoding": "utf-8"}})
+	}
+	for _, operation := range operations {
+		if err := encoder.Encode(operation); err != nil {
+			t.Fatalf("encode commit: %v", err)
+		}
+	}
+	resp, err = http.Post(s.httpURL+"/api/"+rt.apiPrefix+"/"+repoID+"/commit/main", "application/x-ndjson", &body)
+	if err != nil {
+		t.Fatalf("POST commit %s: %v", repoID, err)
+	}
+	defer resp.Body.Close()
+	var result struct {
+		CommitOid string `json:"commitOid"`
+	}
+	decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("commit %s status = %d, want 200", repoID, resp.StatusCode)
+	}
+	if decodeErr != nil || len(result.CommitOid) < 40 {
+		t.Fatalf("commit %s oid = %q (decode error %v), want a commit hash", repoID, result.CommitOid, decodeErr)
+	}
+	return result.CommitOid
 }
 
 func hubCliCreate(t *testing.T, s *e2eServer, rt hubRepoType, repoID string, existOK bool) {
@@ -262,6 +322,10 @@ func writeHubFiles(t *testing.T, dir string, files []hubFile) {
 // explicit-create path is covered by CreateAndDelete.
 func hubCliUpload(t *testing.T, s *e2eServer, rt hubRepoType, repoID string, files []hubFile, msg string) {
 	t.Helper()
+	if !clientWrites(hubClient{}, rt) {
+		hubSeedFiles(t, s, rt, repoID, files, msg)
+		return
+	}
 	dir := t.TempDir()
 	writeHubFiles(t, dir, files)
 	args := append([]string{"upload", repoID, dir, ".", "--commit-message", msg}, rt.cliTypeArgs()...)
@@ -387,11 +451,7 @@ func runHubCreateAndDelete(t *testing.T, s *e2eServer, c hubClient, rt hubRepoTy
 	}
 }
 
-// runHubUploadAndDownload: multi-file upload with a nested directory, then
-// a client download with per-file content asserts and per-file resolve
-// content asserts. The python row uploads via upload_folder and downloads
-// in the same interpreter run; upload_file is covered by every other py
-// op's setup.
+// Kernel rows exercise client downloads after HTTP seeding, not client uploads.
 func runHubUploadAndDownload(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/updown-" + rt.arg
 	files := []hubFile{
@@ -400,12 +460,15 @@ func runHubUploadAndDownload(t *testing.T, s *e2eServer, c hubClient, rt hubRepo
 	}
 
 	if c.py {
-		dir := t.TempDir()
-		writeHubFiles(t, dir, files)
-		script := hubPyAPI + hubPyCreateLine(repoID, rt, true) +
-			fmt.Sprintf("api.upload_folder(folder_path=%q, repo_id=%q, repo_type=%q)\n", dir, repoID, rt.arg) +
-			hubPyDownloadLines(t.TempDir(), rt, repoID, files)
-		runPyScript(t, s.httpURL, script)
+		setup := hubPyCreateLine(repoID, rt, true)
+		if clientWrites(c, rt) {
+			dir := t.TempDir()
+			writeHubFiles(t, dir, files)
+			setup += fmt.Sprintf("api.upload_folder(folder_path=%q, repo_id=%q, repo_type=%q)\n", dir, repoID, rt.arg)
+		} else {
+			hubSeedFiles(t, s, rt, repoID, files, "Seed files")
+		}
+		runPyScript(t, s.httpURL, hubPyAPI+setup+hubPyDownloadLines(t.TempDir(), rt, repoID, files))
 	} else {
 		hubCliUpload(t, s, rt, repoID, files, "Upload via hf CLI")
 		hubCliDownloadAndAssert(t, s, rt, repoID, files)
@@ -428,7 +491,7 @@ func runHubSnapshotDownload(t *testing.T, s *e2eServer, c hubClient, rt hubRepoT
 	}
 
 	localDir := t.TempDir()
-	script := hubPyAPI + hubPySetupLines(repoID, rt, files) + fmt.Sprintf(`local_dir = huggingface_hub.snapshot_download(
+	script := hubPyAPI + hubPySetupLines(t, s, repoID, rt, files) + fmt.Sprintf(`local_dir = huggingface_hub.snapshot_download(
     repo_id=%q,
     repo_type=%q,
     local_dir=%q,
@@ -452,7 +515,7 @@ func runHubListFiles(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 		{"sub/c.txt", "c\n"},
 	}
 
-	script := hubPyAPI + hubPySetupLines(repoID, rt, files) + fmt.Sprintf(`files = sorted(api.list_repo_files(repo_id=%q, repo_type=%q))
+	script := hubPyAPI + hubPySetupLines(t, s, repoID, rt, files) + fmt.Sprintf(`files = sorted(api.list_repo_files(repo_id=%q, repo_type=%q))
 assert "a.txt" in files, f"a.txt not in {files}"
 assert "b.txt" in files, f"b.txt not in {files}"
 assert "sub/c.txt" in files, f"sub/c.txt not in {files}"
@@ -468,7 +531,7 @@ func runHubBranch(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	file := hubFile{"main.txt", "main content\n"}
 
 	if c.py {
-		script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(repoID, rt, []hubFile{file}) +
+		script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(t, s, repoID, rt, []hubFile{file}) +
 			fmt.Sprintf("api.create_branch(repo_id=%q, branch=\"dev\", repo_type=%q)\n", repoID, rt.arg) +
 			fmt.Sprintf("assert_content(%q, %q)\n", hubResolveURL(s, rt, repoID, "dev", file.path), file.content) +
 			fmt.Sprintf("api.delete_branch(repo_id=%q, branch=\"dev\", repo_type=%q)\n", repoID, rt.arg)
@@ -494,7 +557,7 @@ func runHubTag(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	file := hubFile{"readme.txt", "v1 content\n"}
 
 	if c.py {
-		script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(repoID, rt, []hubFile{file}) +
+		script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(t, s, repoID, rt, []hubFile{file}) +
 			fmt.Sprintf("api.create_tag(repo_id=%q, tag=\"v1.0\", tag_message=\"First release\", repo_type=%q)\n", repoID, rt.arg) +
 			fmt.Sprintf("assert_content(%q, %q)\n", hubResolveURL(s, rt, repoID, "v1.0", file.path), file.content) +
 			fmt.Sprintf("api.delete_tag(repo_id=%q, tag=\"v1.0\", repo_type=%q)\n", repoID, rt.arg)
@@ -531,7 +594,7 @@ func runHubMove(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	file := hubFile{"README.md", "# Move Test\n"}
 
 	if c.py {
-		script := hubPyAPI + hubPySetupLines(fromID, rt, []hubFile{file}) +
+		script := hubPyAPI + hubPySetupLines(t, s, fromID, rt, []hubFile{file}) +
 			fmt.Sprintf("api.move_repo(from_id=%q, to_id=%q, repo_type=%q)\n", fromID, toID, rt.arg)
 		runPyScript(t, s.httpURL, script)
 	} else {
@@ -574,7 +637,7 @@ func runHubDeleteFile(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	del := hubFile{"delete.txt", "delete me\n"}
 
 	if c.py {
-		script := hubPyAPI + hubPySetupLines(repoID, rt, []hubFile{keep, del}) +
+		script := hubPyAPI + hubPySetupLines(t, s, repoID, rt, []hubFile{keep, del}) +
 			fmt.Sprintf("api.delete_file(path_in_repo=%q, repo_id=%q, repo_type=%q)\n", del.path, repoID, rt.arg)
 		runPyScript(t, s.httpURL, script)
 	} else {
@@ -591,19 +654,24 @@ func runHubDeleteFile(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 // runHubRepoInfo (py only): the type's info accessor returns the id and the
 // full sibling set; setup and info share one script. The README carries YAML
 // front matter so the info path exercises the card-metadata parser.
+// KernelInfo keeps siblings as the raw response dicts.
 func runHubRepoInfo(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/info-" + rt.arg
 	files := []hubFile{
 		{"README.md", "---\ntags:\n- text-classification\n- pytorch\n---\n# Info Test\n"},
 		{"data.txt", "data\n"},
 	}
+	rfilename := "s.rfilename"
+	if rt.arg == "kernel" {
+		rfilename = `s["rfilename"]`
+	}
 
-	script := hubPyAPI + hubPySetupLines(repoID, rt, files) + fmt.Sprintf(`info = api.%s(repo_id=%q)
+	script := hubPyAPI + hubPySetupLines(t, s, repoID, rt, files) + fmt.Sprintf(`info = api.%s(repo_id=%q)
 assert info.id == %q, f"unexpected id: {info.id}"
-siblings = [s.rfilename for s in info.siblings]
+siblings = [%s for s in info.siblings]
 assert "README.md" in siblings, f"README.md not in {siblings}"
 assert "data.txt" in siblings, f"data.txt not in {siblings}"
-`, rt.pyInfoFunc(), repoID, repoID)
+`, rt.pyInfoFunc(), repoID, repoID, rfilename)
 	runPyScript(t, s.httpURL, script)
 }
 
@@ -690,7 +758,7 @@ assert [repo["id"] for repo in repos] == want, f"Link pagination: {repos!r}, wan
 // including default attributes, and a missing-directory 404.
 func runHubTreeSize(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/treesize-" + rt.arg
-	script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(repoID, rt, []hubFile{
+	script := hubPyAPI + hubPyHTTPHelpers + hubPySetupLines(t, s, repoID, rt, []hubFile{
 		{"folder/one.txt", "one\n"},
 		{"folder/two.txt", "second\n"},
 		{"root.txt", "root\n"},
@@ -752,13 +820,17 @@ assert status == 400, f"triple-dot compare status={status}, want 400; body={body
 // name/ref/target_commit; after deletion the refs are gone.
 func runHubRefs(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	repoID := "hub-user/refs-" + rt.arg
+	file := hubFile{"refs.txt", "refs content\n"}
 
 	// Setup, both listings, and the deletions run in one script so the
 	// upload's CommitInfo.oid (the main HEAD) anchors every target_commit.
 	// dev and v1.0 are created from that exact revision; the server creates
 	// lightweight tags, so the tag ref points at the commit itself.
-	script := hubPyAPI + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`head = api.upload_file(path_or_fileobj=b"refs content\n", path_in_repo="refs.txt", repo_id=%q, repo_type=%q).oid
-api.create_branch(repo_id=%q, branch="dev", revision=head, repo_type=%q)
+	head := fmt.Sprintf("head = api.upload_file(path_or_fileobj=b%q, path_in_repo=%q, repo_id=%q, repo_type=%q).oid\n", file.content, file.path, repoID, rt.arg)
+	if !clientWrites(c, rt) {
+		head = fmt.Sprintf("head = %q\n", hubSeedFiles(t, s, rt, repoID, []hubFile{file}, "Add refs"))
+	}
+	script := hubPyAPI + hubPyCreateLine(repoID, rt, true) + head + fmt.Sprintf(`api.create_branch(repo_id=%q, branch="dev", revision=head, repo_type=%q)
 api.create_tag(repo_id=%q, tag="v1.0", tag_message="First release", revision=head, repo_type=%q)
 refs = api.list_repo_refs(repo_id=%q, repo_type=%q)
 branches = {b.name: b for b in refs.branches}
@@ -779,7 +851,7 @@ assert "main" in branch_names, f"main not in {branch_names}"
 assert "dev" not in branch_names, f"dev still in {branch_names}"
 tag_names = [t.name for t in refs.tags]
 assert "v1.0" not in tag_names, f"v1.0 still in {tag_names}"
-`, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg,
+`, repoID, rt.arg, repoID, rt.arg, repoID, rt.arg,
 		repoID, rt.arg, repoID, rt.arg, repoID, rt.arg)
 	runPyScript(t, s.httpURL, script)
 }
@@ -823,7 +895,7 @@ for name in ("one.txt", "two.txt", "three.txt"):
 }
 
 // runHubTypeIsolation uploads different content to the same repo name under
-// all three repo types and proves each resolve prefix serves its own bytes.
+// all repo types and proves each resolve prefix serves its own bytes.
 // It spans all repo types internally, so it is anchored to the Model cell
 // and runs once per client.
 func runHubTypeIsolation(t *testing.T, s *e2eServer, c hubClient, _ hubRepoType) {
@@ -832,22 +904,18 @@ func runHubTypeIsolation(t *testing.T, s *e2eServer, c hubClient, _ hubRepoType)
 		"model":   "model content\n",
 		"dataset": "dataset content\n",
 		"space":   "space content\n",
+		"kernel":  "kernel content\n",
 	}
 
 	if c.py {
-		script := hubPyAPI + fmt.Sprintf(`api.create_repo(repo_id=%q, repo_type="model", exist_ok=True)
-api.upload_file(path_or_fileobj=b"model content\n", path_in_repo="data.txt", repo_id=%q, repo_type="model")
-api.create_repo(repo_id=%q, repo_type="dataset", exist_ok=True)
-api.upload_file(path_or_fileobj=b"dataset content\n", path_in_repo="data.txt", repo_id=%q, repo_type="dataset")
-api.create_repo(repo_id=%q, repo_type="space", space_sdk="gradio", exist_ok=True)
-api.upload_file(path_or_fileobj=b"space content\n", path_in_repo="data.txt", repo_id=%q, repo_type="space")
-`, repoID, repoID, repoID, repoID, repoID, repoID)
+		script := hubPyAPI
+		for _, rt := range hubRepoTypes {
+			script += hubPySetupLines(t, s, repoID, rt, []hubFile{{"data.txt", contents[rt.arg]}})
+		}
 		runPyScript(t, s.httpURL, script)
 	} else {
 		for _, rt := range hubRepoTypes {
-			dir := t.TempDir()
-			writeHubFiles(t, dir, []hubFile{{"data.txt", contents[rt.arg]}})
-			runHFCmd(t, s.httpURL, "upload", repoID, dir, ".", "--repo-type", rt.arg, "--commit-message", "Upload "+rt.arg)
+			hubCliUpload(t, s, rt, repoID, []hubFile{{"data.txt", contents[rt.arg]}}, "Upload "+rt.arg)
 		}
 	}
 
@@ -899,6 +967,8 @@ func TestXETTokenRoutes(t *testing.T) {
 	}{
 		{s.httpURL + "/api/models/org/repo/xet-read-token/main", auth.Grant{Permission: auth.Read}},
 		{s.httpURL + "/api/models/org/repo/xet-write-token/main", auth.Grant{Permission: auth.Write}},
+		{s.httpURL + "/api/kernels/org/repo/xet-read-token/main", auth.Grant{Permission: auth.Read}},
+		{s.httpURL + "/api/kernels/org/repo/xet-write-token/main", auth.Grant{Permission: auth.Write}},
 	} {
 		url := tc.url
 		resp, err := http.Get(url)

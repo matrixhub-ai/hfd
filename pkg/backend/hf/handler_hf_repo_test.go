@@ -25,6 +25,8 @@ func createRepoAndCommit(t *testing.T, endpoint, repoType, org, name string) str
 		apiPrefix = "/api/datasets"
 	} else if repoType == "space" {
 		apiPrefix = "/api/spaces"
+	} else if repoType == "kernel" {
+		apiPrefix = "/api/kernels"
 	}
 
 	// Commit a file

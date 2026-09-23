@@ -186,7 +186,7 @@ func methodOrder(m string) int {
 // tagOrder returns a sort key for common OpenAPI tags.
 func tagOrder(t string) int {
 	order := map[string]int{
-		"models": 0, "datasets": 1, "spaces": 2, "repos": 3,
+		"models": 0, "datasets": 1, "spaces": 2, "kernels": 3, "repos": 4,
 	}
 	if v, ok := order[t]; ok {
 		return v

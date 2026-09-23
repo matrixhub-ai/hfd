@@ -126,6 +126,12 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ✅ | `GET` | `/api/spaces/{namespace}/{repo}/xet-read-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-read-token/{rev}) | Xet read token |
 | ✅ | `GET` | `/api/spaces/{namespace}/{repo}/xet-write-token/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/xet-write-token/{rev}) | Xet write token |
 | ✅ | `GET` | `/spaces/{namespace}/{repo}/resolve/{rev}/{path}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/spaces/{namespace}/{repo}/resolve/{rev}/{path}) | Resolve a file |
+| ✅ | `GET` | `/api/kernels` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels) | List kernels |
+| ❌ | `POST` | `/api/kernels/access-request/approve` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/POST/api/kernels/access-request/approve) | Approve kernel access |
+| ✅ | `GET` | `/api/kernels/{namespace}/{repo}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}) | Get kernel |
+| ❌ | `POST` | `/api/kernels/{namespace}/{repo}/lfs-files/duplicate` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/POST/api/kernels/{namespace}/{repo}/lfs-files/duplicate) | Duplicate xet files |
+| ❌ | `GET` | `/api/kernels/{namespace}/{repo}/likers` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/likers) | List likers |
+| ✅ | `GET` | `/api/kernels/{namespace}/{repo}/revision/{rev}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/revision/{rev}) | Get kernel |
 | ✅ | `POST` | `/api/repos/create` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/create) | Create repository |
 | ✅ | `POST` | `/api/repos/move` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/move) | Move repo |
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
@@ -210,12 +216,6 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `PUT` | `/api/jobs/{namespace}/{jobId}/labels` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/PUT/api/jobs/{namespace}/{jobId}/labels) | Update job labels |
 | ❌ | `GET` | `/api/jobs/{namespace}/{jobId}/logs` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/jobs/{namespace}/{jobId}/logs) | Stream job logs |
 | ❌ | `GET` | `/api/jobs/{namespace}/{jobId}/metrics` | [jobs](https://huggingface.co/spaces/huggingface/openapi#tag/jobs/GET/api/jobs/{namespace}/{jobId}/metrics) | Stream job metrics |
-| ❌ | `GET` | `/api/kernels` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels) | List kernels |
-| ❌ | `POST` | `/api/kernels/access-request/approve` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/POST/api/kernels/access-request/approve) | Approve kernel access |
-| ❌ | `GET` | `/api/kernels/{namespace}/{repo}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}) | Get kernel |
-| ❌ | `POST` | `/api/kernels/{namespace}/{repo}/lfs-files/duplicate` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/POST/api/kernels/{namespace}/{repo}/lfs-files/duplicate) | Duplicate xet files |
-| ❌ | `GET` | `/api/kernels/{namespace}/{repo}/likers` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/likers) | List likers |
-| ❌ | `GET` | `/api/kernels/{namespace}/{repo}/revision/{rev}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/revision/{rev}) | Get kernel |
 | ❌ | `GET` | `/api/notifications` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/GET/api/notifications) | List notifications |
 | ❌ | `DELETE` | `/api/notifications` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/DELETE/api/notifications) | Delete notifications |
 | ❌ | `POST` | `/api/notifications/mark-as-read` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/POST/api/notifications/mark-as-read) | Change read status |
