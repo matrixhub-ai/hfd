@@ -27,6 +27,7 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	tips                tipCache
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
@@ -91,6 +92,7 @@ func WithMirror(m *mirror.Mirror) Option {
 func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
 		root: mux.NewRouter(),
+		tips: tipCache{entries: map[string]tipEntry{}},
 	}
 
 	for _, opt := range opts {
