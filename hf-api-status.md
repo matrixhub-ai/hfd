@@ -17,7 +17,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `DELETE` | `/api/models/{namespace}/{repo}/lfs-files/{sha}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/DELETE/api/models/{namespace}/{repo}/lfs-files/{sha}) | Delete Large file |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/likers` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/likers) | List likers |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/notebook/{rev}/{path}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/notebook/{rev}/{path}) | Get notebook URL |
-| ❌ | `POST` | `/api/models/{namespace}/{repo}/paths-info/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/paths-info/{rev}) | List paths info |
+| ✅ | `POST` | `/api/models/{namespace}/{repo}/paths-info/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/paths-info/{rev}) | List paths info |
 | ✅ | `POST` | `/api/models/{namespace}/{repo}/preupload/{rev}` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/POST/api/models/{namespace}/{repo}/preupload/{rev}) | Check upload method |
 | ✅ | `GET` | `/api/models/{namespace}/{repo}/refs` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/refs) | List references |
 | ❌ | `GET` | `/api/models/{namespace}/{repo}/resource-group` | [models](https://huggingface.co/spaces/huggingface/openapi#tag/models/GET/api/models/{namespace}/{repo}/resource-group) | Get resource group |
@@ -55,7 +55,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `DELETE` | `/api/datasets/{namespace}/{repo}/lfs-files/{sha}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/DELETE/api/datasets/{namespace}/{repo}/lfs-files/{sha}) | Delete Large file |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/likers` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/likers) | List likers |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/notebook/{rev}/{path}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/notebook/{rev}/{path}) | Get notebook URL |
-| ❌ | `POST` | `/api/datasets/{namespace}/{repo}/paths-info/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/paths-info/{rev}) | List paths info |
+| ✅ | `POST` | `/api/datasets/{namespace}/{repo}/paths-info/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/paths-info/{rev}) | List paths info |
 | ✅ | `POST` | `/api/datasets/{namespace}/{repo}/preupload/{rev}` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/POST/api/datasets/{namespace}/{repo}/preupload/{rev}) | Check upload method |
 | ✅ | `GET` | `/api/datasets/{namespace}/{repo}/refs` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/refs) | List references |
 | ❌ | `GET` | `/api/datasets/{namespace}/{repo}/resource-group` | [datasets](https://huggingface.co/spaces/huggingface/openapi#tag/datasets/GET/api/datasets/{namespace}/{repo}/resource-group) | Get resource group |
@@ -102,7 +102,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/logs/{logType}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/logs/{logType}) | Stream logs |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/metrics` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/metrics) | Stream metrics |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/notebook/{rev}/{path}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/notebook/{rev}/{path}) | Get notebook URL |
-| ❌ | `POST` | `/api/spaces/{namespace}/{repo}/paths-info/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/POST/api/spaces/{namespace}/{repo}/paths-info/{rev}) | List paths info |
+| ✅ | `POST` | `/api/spaces/{namespace}/{repo}/paths-info/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/POST/api/spaces/{namespace}/{repo}/paths-info/{rev}) | List paths info |
 | ✅ | `POST` | `/api/spaces/{namespace}/{repo}/preupload/{rev}` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/POST/api/spaces/{namespace}/{repo}/preupload/{rev}) | Check upload method |
 | ✅ | `GET` | `/api/spaces/{namespace}/{repo}/refs` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/refs) | List references |
 | ❌ | `GET` | `/api/spaces/{namespace}/{repo}/resource-group` | [spaces](https://huggingface.co/spaces/huggingface/openapi#tag/spaces/GET/api/spaces/{namespace}/{repo}/resource-group) | Get resource group |
