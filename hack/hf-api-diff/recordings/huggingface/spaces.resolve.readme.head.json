@@ -1,0 +1,56 @@
+{
+  "request": {
+    "name": "spaces.resolve.readme.head",
+    "method": "HEAD",
+    "path": "/spaces/wzshiming/hello_world/resolve/main/README.md",
+    "file": true
+  },
+  "response": {
+    "status": 307,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Disposition": "inline; filename*=UTF-8''README.md; filename=\"README.md\";",
+      "Content-Length": "251",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Location": "/api/resolve-cache/spaces/wzshiming/hello_world/2d87c0d54e90bfe3f582437e1e74c5a94847559e/README.md?%2Fspaces%2Fwzshiming%2Fhello_world%2Fresolve%2Fmain%2FREADME.md=&etag=%22d7f62e0ef31fcef4992a7c193e33354dbff551a3%22",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin, Accept",
+      "X-Hf-Warning": "unauthenticated; Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.",
+      "X-Linked-Etag": "\"d7f62e0ef31fcef4992a7c193e33354dbff551a3\"",
+      "X-Powered-By": "huggingface-moon",
+      "X-Repo-Commit": "2d87c0d54e90bfe3f582437e1e74c5a94847559e"
+    }
+  },
+  "hops": [
+    {
+      "status": 307,
+      "location": "/api/resolve-cache/spaces/wzshiming/hello_world/2d87c0d54e90bfe3f582437e1e74c5a94847559e/README.md?%2Fspaces%2Fwzshiming%2Fhello_world%2Fresolve%2Fmain%2FREADME.md=&etag=%22d7f62e0ef31fcef4992a7c193e33354dbff551a3%22"
+    }
+  ],
+  "final": {
+    "status": 200,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Disposition": "inline; filename*=UTF-8''README.md; filename=\"README.md\";",
+      "Content-Length": "153",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "\"d7f62e0ef31fcef4992a7c193e33354dbff551a3\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon",
+      "X-Repo-Commit": "2d87c0d54e90bfe3f582437e1e74c5a94847559e"
+    }
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "request": {
+    "name": "models.revision",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/revision/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "1604",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"644-t0pS5DaBwIgY3RtM1gpMHe5ey3w\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "_id": "6ab2b9f6148b5cae56d6e842",
+      "id": "wzshiming/gpt2",
+      "private": false,
+      "tags": [
+        "pytorch",
+        "tf",
+        "jax",
+        "tflite",
+        "rust",
+        "onnx",
+        "safetensors",
+        "gpt2",
+        "exbert",
+        "en",
+        "license:mit",
+        "region:us"
+      ],
+      "downloads": 0,
+      "likes": 0,
+      "modelId": "wzshiming/gpt2",
+      "author": "wzshiming",
+      "sha": "ae329b6937f31305a0d6c6779f6cd4072cc4097e",
+      "lastModified": "2026-09-22T17:25:10.000Z",
+      "gated": false,
+      "disabled": false,
+      "model-index": null,
+      "config": {
+        "architectures": [
+          "GPT2LMHeadModel"
+        ],
+        "model_type": "gpt2",
+        "tokenizer_config": {}
+      },
+      "cardData": {
+        "language": "en",
+        "tags": [
+          "exbert"
+        ],
+        "license": "mit"
+      },
+      "siblings": [
+        {
+          "rfilename": ".gitattributes"
+        },
+        {
+          "rfilename": "64-8bits.tflite"
+        },
+        {
+          "rfilename": "64-fp16.tflite"
+        },
+        {
+          "rfilename": "64.tflite"
+        },
+        {
+          "rfilename": "README.md"
+        },
+        {
+          "rfilename": "config.json"
+        },
+        {
+          "rfilename": "flax_model.msgpack"
+        },
+        {
+          "rfilename": "generation_config.json"
+        },
+        {
+          "rfilename": "merges.txt"
+        },
+        {
+          "rfilename": "model.safetensors"
+        },
+        {
+          "rfilename": "onnx/config.json"
+        },
+        {
+          "rfilename": "onnx/decoder_model.onnx"
+        },
+        {
+          "rfilename": "onnx/decoder_model_merged.onnx"
+        },
+        {
+          "rfilename": "onnx/decoder_with_past_model.onnx"
+        },
+        {
+          "rfilename": "onnx/generation_config.json"
+        },
+        {
+          "rfilename": "onnx/merges.txt"
+        },
+        {
+          "rfilename": "onnx/special_tokens_map.json"
+        },
+        {
+          "rfilename": "onnx/tokenizer.json"
+        },
+        {
+          "rfilename": "onnx/tokenizer_config.json"
+        },
+        {
+          "rfilename": "onnx/vocab.json"
+        },
+        {
+          "rfilename": "pytorch_model.bin"
+        },
+        {
+          "rfilename": "rust_model.ot"
+        },
+        {
+          "rfilename": "tf_model.h5"
+        },
+        {
+          "rfilename": "tokenizer.json"
+        },
+        {
+          "rfilename": "tokenizer_config.json"
+        },
+        {
+          "rfilename": "vocab.json"
+        }
+      ],
+      "spaces": [],
+      "createdAt": "2026-09-22T17:25:10.000Z",
+      "safetensors": {
+        "parameters": {
+          "F32": 137022720
+        },
+        "total": 137022720
+      },
+      "usedStorage": 5626190610
+    },
+    "sha256": "1b66fec62cdfeda07a6871f9de296703e7bdcf1b2c724e876b16eba4023791c3",
+    "size": 1604
+  }
+}

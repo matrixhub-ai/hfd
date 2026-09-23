@@ -1,0 +1,55 @@
+{
+  "request": {
+    "name": "models.list",
+    "method": "GET",
+    "path": "/api/models?author=wzshiming&limit=5&search=gpt2",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "296",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"128-zNCNUMFMVRgiaMOHw8IAUZv6ubs\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": [
+      {
+        "_id": "6ab2b9f6148b5cae56d6e842",
+        "id": "wzshiming/gpt2",
+        "likes": 0,
+        "trendingScore": 0,
+        "private": false,
+        "downloads": 0,
+        "tags": [
+          "pytorch",
+          "tf",
+          "jax",
+          "tflite",
+          "rust",
+          "onnx",
+          "safetensors",
+          "gpt2",
+          "exbert",
+          "en",
+          "license:mit",
+          "region:us"
+        ],
+        "createdAt": "2026-09-22T17:25:10.000Z",
+        "modelId": "wzshiming/gpt2"
+      }
+    ],
+    "sha256": "bfe835f8cdef6fb9fedcc2bf5189d1bb2c7c479f0b38c3bc6351dd436763ed38",
+    "size": 296
+  }
+}

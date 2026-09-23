@@ -1,0 +1,34 @@
+{
+  "request": {
+    "name": "models.revision.notfound",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/revision/does-not-exist",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "42",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"2a-TQAfhukuCBO4wOfjXb5rePuXRN0\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Error-Code": "RevisionNotFound",
+      "X-Error-Message": "Invalid rev id: does-not-exist",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "error": "Invalid rev id: does-not-exist"
+    },
+    "sha256": "cc15b1901748ab956d518a07f3c7951b31dc159e79e940d62a410bcd2f7df2bb",
+    "size": 42
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "request": {
+    "name": "models.resolve.config",
+    "method": "GET",
+    "path": "/wzshiming/gpt2/resolve/main/config.json",
+    "file": true
+  },
+  "response": {
+    "status": 307,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "232",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Location": "/api/resolve-cache/models/wzshiming/gpt2/ae329b6937f31305a0d6c6779f6cd4072cc4097e/config.json?%2Fwzshiming%2Fgpt2%2Fresolve%2Fmain%2Fconfig.json=&etag=%2210c66461e4c109db5a2196bff4bb59be30396ed8%22",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin, Accept",
+      "X-Hf-Warning": "unauthenticated; Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.",
+      "X-Linked-Etag": "\"10c66461e4c109db5a2196bff4bb59be30396ed8\"",
+      "X-Powered-By": "huggingface-moon",
+      "X-Repo-Commit": "ae329b6937f31305a0d6c6779f6cd4072cc4097e"
+    }
+  },
+  "hops": [
+    {
+      "status": 307,
+      "location": "/api/resolve-cache/models/wzshiming/gpt2/ae329b6937f31305a0d6c6779f6cd4072cc4097e/config.json?%2Fwzshiming%2Fgpt2%2Fresolve%2Fmain%2Fconfig.json=&etag=%2210c66461e4c109db5a2196bff4bb59be30396ed8%22"
+    }
+  ],
+  "final": {
+    "status": 200,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Disposition": "inline; filename*=UTF-8''config.json; filename=\"config.json\";",
+      "Content-Length": "665",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "\"10c66461e4c109db5a2196bff4bb59be30396ed8\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon",
+      "X-Repo-Commit": "ae329b6937f31305a0d6c6779f6cd4072cc4097e"
+    },
+    "sha256": "0daed7749b4f02b8f76240d5444551d7b08712dab4d0adb8239c56ba823bb7b4",
+    "size": 665
+  }
+}

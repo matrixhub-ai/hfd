@@ -1,0 +1,34 @@
+{
+  "request": {
+    "name": "models.tree.notfound",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/tree/main/does-not-exist",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "53",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"35-jZQ7A3f4ZSHOkgDs8j0Aact1hjE\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Error-Code": "EntryNotFound",
+      "X-Error-Message": "does-not-exist does not exist on \"main\"",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "error": "does-not-exist does not exist on \"main\""
+    },
+    "sha256": "8351db5928fd37bc164c224741769bd2591d2a133812b0f0999fe62792b2bc1c",
+    "size": 53
+  }
+}

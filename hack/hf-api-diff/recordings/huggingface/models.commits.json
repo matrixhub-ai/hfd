@@ -1,0 +1,48 @@
+{
+  "request": {
+    "name": "models.commits",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/commits/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "517",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"205-8JfN/XiQhN7V3a2gy55GHN9dJqQ\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon",
+      "X-Total-Count": "1"
+    },
+    "json": [
+      {
+        "id": "ae329b6937f31305a0d6c6779f6cd4072cc4097e",
+        "title": "Duplicate from openai-community/gpt2",
+        "message": "\n\n\nCo-authored-by: Julien Chaumond <julien-c@users.noreply.huggingface.co>\n",
+        "authors": [
+          {
+            "user": "wzshiming",
+            "avatar": "https://cdn-avatars.huggingface.co/v1/production/uploads/64e9ed3b233101ed99cd9030/pWD8oLjx4n7_AEem7faot.jpeg"
+          },
+          {
+            "user": "julien-c",
+            "avatar": "https://cdn-avatars.huggingface.co/v1/production/uploads/5dd96eb166059660ed1ee413/NQtzmrDdbG0H8qkZvRyGk.jpeg"
+          }
+        ],
+        "date": "2026-09-22T17:25:10.000Z"
+      }
+    ],
+    "sha256": "a4640f8ec12a29b3fadecd4243e97b2e22b3dbdd4747fc78eef92cd5338eacf7",
+    "size": 517
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "request": {
+    "name": "datasets.treesize",
+    "method": "GET",
+    "path": "/api/datasets/wzshiming/fixtures_image_utils/treesize/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "28",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"1c-Ss+oEIE65x3ddLH6hdHi8frUyJo\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "path": "/",
+      "size": 21199204
+    },
+    "sha256": "9848d37a7b83881dbe5ce149c0425d459d91fd88740149d86f3fee5343e59eaa",
+    "size": 28
+  }
+}

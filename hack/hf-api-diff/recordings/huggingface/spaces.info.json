@@ -1,0 +1,112 @@
+{
+  "request": {
+    "name": "spaces.info",
+    "method": "GET",
+    "path": "/api/spaces/wzshiming/hello_world",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "1230",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"4ce-3fNomYTW37j3m0xL9K7ZoGXZbIk\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "_id": "6ab2b972340accf53b97a784",
+      "id": "wzshiming/hello_world",
+      "sdk": "gradio",
+      "likes": 0,
+      "tags": [
+        "gradio",
+        "region:us"
+      ],
+      "private": false,
+      "author": "wzshiming",
+      "sha": "2d87c0d54e90bfe3f582437e1e74c5a94847559e",
+      "lastModified": "2026-09-18T12:04:43.000Z",
+      "cardData": {
+        "title": "hello_world",
+        "emoji": "🔥",
+        "colorFrom": "indigo",
+        "colorTo": "indigo",
+        "sdk": "gradio",
+        "sdk_version": "6.28.0",
+        "app_file": "run.py",
+        "pinned": false,
+        "hf_oauth": true
+      },
+      "subdomain": "wzshiming-hello-world",
+      "gated": false,
+      "disabled": false,
+      "host": "https://wzshiming-hello-world.hf.space",
+      "region": "us",
+      "siblings": [
+        {
+          "rfilename": ".gitattributes"
+        },
+        {
+          "rfilename": "DESCRIPTION.md"
+        },
+        {
+          "rfilename": "README.md"
+        },
+        {
+          "rfilename": "__pycache__/run.cpython-36.pyc"
+        },
+        {
+          "rfilename": "__pycache__/run.cpython-38.pyc"
+        },
+        {
+          "rfilename": "app.py"
+        },
+        {
+          "rfilename": "run.ipynb"
+        },
+        {
+          "rfilename": "run.py"
+        },
+        {
+          "rfilename": "screenshot.gif"
+        },
+        {
+          "rfilename": "screenshot.png"
+        }
+      ],
+      "createdAt": "2026-09-22T17:22:58.000Z",
+      "usedStorage": 897877,
+      "runtime": {
+        "stage": "RUNTIME_ERROR",
+        "hardware": {
+          "current": null,
+          "requested": "zero-a10g"
+        },
+        "gcTimeout": 172800,
+        "errorMessage": "No @spaces.GPU function detected during startup",
+        "replicas": {
+          "requested": 1
+        },
+        "devMode": false,
+        "domains": [
+          {
+            "domain": "wzshiming-hello-world.hf.space",
+            "stage": "READY"
+          }
+        ]
+      }
+    },
+    "sha256": "57f79581ab75f3760ca7fd6913de395edbb43b73fc2ef6d322d09033b0b0d10f",
+    "size": 1230
+  }
+}

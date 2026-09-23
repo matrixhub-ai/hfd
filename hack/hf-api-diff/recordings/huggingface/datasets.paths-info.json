@@ -1,0 +1,63 @@
+{
+  "request": {
+    "name": "datasets.paths-info",
+    "method": "POST",
+    "path": "/api/datasets/wzshiming/fixtures_image_utils/paths-info/main",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": "{\"paths\":[\"README.md\",\"does-not-exist.txt\"],\"expand\":true}",
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "606",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"25e-UEEPWinPv2NPAVeSkp61EX7E4XY\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": [
+      {
+        "type": "file",
+        "oid": "072da2918ce4d084616646eca739fdc36b534a96",
+        "size": 365,
+        "path": "README.md",
+        "lastCommit": {
+          "id": "ba937e465960aa8dc41a6126458531ccc65cef76",
+          "title": "Duplicate from hf-internal-testing/fixtures_image_utils",
+          "date": "2026-09-22T17:26:11.000Z"
+        },
+        "securityFileStatus": {
+          "status": "safe",
+          "protectAiScan": {
+            "status": "unscanned"
+          },
+          "avScan": {
+            "status": "safe",
+            "message": "No security issues detected",
+            "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+          },
+          "pickleImportScan": {
+            "status": "unscanned",
+            "pickleImports": [],
+            "version": "0.0.0"
+          },
+          "virusTotalScan": {
+            "status": "unscanned"
+          }
+        }
+      }
+    ],
+    "sha256": "801cc085abc434e155883ec7d62abb4c0cdfa729f23b4bb47048373804348b98",
+    "size": 606
+  }
+}

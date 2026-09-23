@@ -1,0 +1,91 @@
+{
+  "request": {
+    "name": "spaces.tree",
+    "method": "GET",
+    "path": "/api/spaces/wzshiming/hello_world/tree/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "1071",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"42f-1pjHiFUJiRXqG6oOqlSQDbQSB4M\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": [
+      {
+        "type": "directory",
+        "oid": "93126891cbfacfce960a125dce9e42bec6a11753",
+        "size": 0,
+        "path": "__pycache__"
+      },
+      {
+        "type": "file",
+        "oid": "92ecdc75bb59d7e554da3309ad4aa527e84a6dfd",
+        "size": 1389,
+        "path": ".gitattributes"
+      },
+      {
+        "type": "file",
+        "oid": "e4c1c3944e609e3b05f3e0b7f728c332243ed016",
+        "size": 117,
+        "path": "DESCRIPTION.md"
+      },
+      {
+        "type": "file",
+        "oid": "d7f62e0ef31fcef4992a7c193e33354dbff551a3",
+        "size": 153,
+        "path": "README.md"
+      },
+      {
+        "type": "file",
+        "oid": "3080757e54975305dcec519aaf63e4ca3a291ede",
+        "size": 154,
+        "path": "app.py"
+      },
+      {
+        "type": "file",
+        "oid": "297a6e21fcf9534ef43707e85d1d11b4770099b3",
+        "size": 919,
+        "path": "run.ipynb"
+      },
+      {
+        "type": "file",
+        "oid": "fc3a84202b093ad9fd7938c4f769eeb682339dc2",
+        "size": 207,
+        "path": "run.py"
+      },
+      {
+        "type": "file",
+        "oid": "8a7a275722a845c73159593638fce4e913f84fc6",
+        "size": 897877,
+        "lfs": {
+          "oid": "78978f9fb71daf24685e7f2aba0060b2839613d22a4a06d0b95143316883deb6",
+          "size": 897877,
+          "pointerSize": 131
+        },
+        "xetHash": "8de88a9afedbbf7fc8c6e94cd11c61bb1fcfb96463d7e99b3d52aa0ea863787c",
+        "path": "screenshot.gif"
+      },
+      {
+        "type": "file",
+        "oid": "962ce78edc7702c2c9ccd1f5dbd27a2ad4a1c6e4",
+        "size": 11527,
+        "path": "screenshot.png"
+      }
+    ],
+    "sha256": "b5b9f01338ab75d7a6372b60cab0554c3288401c91765d1bff275142d1143dfd",
+    "size": 1071
+  }
+}
