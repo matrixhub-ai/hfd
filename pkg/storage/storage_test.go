@@ -89,8 +89,7 @@ func TestNewStorageXETStorageError(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "create xet storage: ") {
 		t.Fatalf("error = %q, want prefix %q", err, "create xet storage: ")
 	}
-	var pathErr *fs.PathError
-	if !errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Fatalf("error = %v, want wrapped *fs.PathError", err)
 	}
 }
@@ -109,8 +108,7 @@ func TestNewStorageXETCacheError(t *testing.T) {
 			if err == nil || st != nil {
 				t.Fatalf("NewStorage(regular-file xet/%s) = %v, %v; want nil, error", dir, st, err)
 			}
-			var pathErr *fs.PathError
-			if !errors.As(err, &pathErr) {
+			if _, ok := errors.AsType[*fs.PathError](err); !ok {
 				t.Fatalf("error = %v, want wrapped *fs.PathError", err)
 			}
 		})

@@ -12,17 +12,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/matrixhub-ai/hfd/internal/server"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/storage"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
 	xetauth "github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xets3 "github.com/wzshiming/xet/storage/s3"
-
-	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/server"
-	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // s3Configured reports whether the S3 storage backend is configured.

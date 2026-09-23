@@ -101,7 +101,7 @@ func memfsUsageRepo(t *testing.T, fs billy.Filesystem) *Repository {
 func gitObjectIDs(t *testing.T, bare string) map[string]bool {
 	t.Helper()
 	ids := map[string]bool{}
-	for _, id := range strings.Fields(gitOut(t, bare, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)")) {
+	for id := range strings.FieldsSeq(gitOut(t, bare, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)")) {
 		ids[id] = true
 	}
 	return ids

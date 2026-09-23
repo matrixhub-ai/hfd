@@ -8,12 +8,11 @@ import (
 	"os"
 	"time"
 
-	xetauth "github.com/wzshiming/xet/auth"
-
+	"github.com/matrixhub-ai/hfd/internal/server"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
-	"github.com/matrixhub-ai/hfd/pkg/server"
+	xetauth "github.com/wzshiming/xet/auth"
 )
 
 func main() {

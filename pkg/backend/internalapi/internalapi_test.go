@@ -318,7 +318,7 @@ func TestHandlerPruneGitGC(t *testing.T) {
 	h := newHandler(t, repos, newStorage(t))
 	var preview gc.PruneResult
 	// A second identical preview proves the first deleted nothing.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		rec := do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0")
 		preview = decodePrune(t, rec, http.StatusOK)
 		if !preview.DryRun || preview.Repositories != 1 || preview.DeletedGitObjects != 4 || preview.DeletedGitBytes <= 64<<10 || preview.ReclaimedBytes != 0 {

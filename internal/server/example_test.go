@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 
+	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
-	"github.com/matrixhub-ai/hfd/pkg/server"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
