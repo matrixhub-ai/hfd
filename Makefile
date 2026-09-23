@@ -21,3 +21,8 @@ hf-api-record:
 .PHONY: hf-api-diff
 hf-api-diff:
 	go run ./hack/hf-api-diff compare -hfd-url "$(HFD_URL)" -max-body "$(HF_API_MAX_BODY)" -timeout "$(HF_API_TIMEOUT)"
+
+# Same comparison as CI: builds hfd from this checkout, seeds the pinned fixtures and replays against it.
+.PHONY: hf-api-diff-ci
+hf-api-diff-ci:
+	hack/hf-api-diff/ci.sh

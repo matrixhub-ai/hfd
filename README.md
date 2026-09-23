@@ -36,8 +36,9 @@ hooks.
   [Hugging Face Hub OpenAPI](https://huggingface.co/.well-known/openapi.json)
   ([interactive viewer](https://huggingface.co/spaces/huggingface/openapi)).
 - [hf-api-diff.md](hf-api-diff.md) compares recorded Hugging Face responses
-  for public fixture repositories with an hfd pull mirror replaying the same
-  requests.
+  for public fixture repositories with hfd replaying the same requests against
+  pinned fixture data; CI repeats the comparison against each build and uploads the
+  report and captures as the `hf-api-diff` artifact.
 - [test/e2e](test/e2e) exercises `git`, `git-lfs`, `hf`, `huggingface_hub`, and
   `hf_xet` against local and S3 backends.
 - Filesystem-backed repositories use the system `git` binary when one is

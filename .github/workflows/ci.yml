@@ -59,3 +59,44 @@ jobs:
       # client matrix here instead of skipping.
       - name: Test
         run: go test -timeout 30m ./...
+
+  # Compatibility differences are informational; setup and capture failures fail CI.
+  hf-api-diff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Cache fixture inputs, never server data or comparison results.
+      - uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/hf-api-diff-cache
+          key: hf-api-diff-fixtures-v1-${{ runner.os }}-${{ hashFiles('hack/hf-api-diff/recordings/huggingface/*.json') }}
+          restore-keys: hf-api-diff-fixtures-v1-${{ runner.os }}-
+
+      - name: Compare
+        env:
+          HF_API_DIFF_OUTPUT: ${{ runner.temp }}/hf-api-diff-output
+          HF_API_DIFF_CACHE: ${{ runner.temp }}/hf-api-diff-cache
+        run: hack/hf-api-diff/ci.sh
+
+      - uses: actions/upload-artifact@v7
+        id: report
+        if: always()
+        with:
+          name: hf-api-diff
+          path: ${{ runner.temp }}/hf-api-diff-output
+          if-no-files-found: ignore
+
+      - if: always() && steps.report.outputs.artifact-url != ''
+        env:
+          ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: |
+          echo "Report artifact: $ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
