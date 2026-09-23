@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -305,5 +308,168 @@ func TestResolveLFSStreamsFromEngine(t *testing.T) {
 	}
 	if got := rec.Result().Header.Get("X-Linked-Size"); got != fmt.Sprint(len(data)) {
 		t.Fatalf("X-Linked-Size = %q, want %d", got, len(data))
+	}
+}
+
+// TestTreeDirectoryEntries pins the hub shape of the tree route across repo
+// types: directory entries are {type: directory, path, oid, size: 0} listed
+// in pre-order with no blanks, expand carries the directory's own last
+// commit, malformed boolean flags are 400 before any hook runs, and a file
+// path is 404.
+func TestTreeDirectoryEntries(t *testing.T) {
+	ctx := context.Background()
+	st := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	pointer := hfLFSPointerText(strings.Repeat("e", 64), 12345)
+	commit := func(repo *repository.Repository, msg string, files map[string]string) string {
+		t.Helper()
+		var ops []repository.CommitOperation
+		for p, content := range files {
+			ops = append(ops, repository.CommitOperation{Type: repository.CommitOperationAdd, Path: p, Content: []byte(content)})
+		}
+		sha, err := repo.CreateCommit(ctx, "main", msg, "Test", "test@test.com", ops, "")
+		if err != nil {
+			t.Fatalf("commit %s: %v", msg, err)
+		}
+		return sha
+	}
+	repos := map[string]*repository.Repository{}
+	shas := map[string][]string{}
+	for _, name := range []string{"org/repo", "datasets/org/repo", "spaces/org/repo", "org/empty"} {
+		repo, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(name), "main")
+		if err != nil {
+			t.Fatalf("init %s: %v", name, err)
+		}
+		repos[name] = repo
+		shas[name] = []string{
+			commit(repo, "Add README", map[string]string{"README.md": "r"}),
+			commit(repo, "Add docs", map[string]string{"docs/a.txt": "aa", "docs/guide/intro.txt": "intro"}),
+			commit(repo, "Add model", map[string]string{"model.bin": pointer}),
+		}
+	}
+	if _, err := repos["org/empty"].CreateCommit(ctx, "main", "Empty", "Test", "test@test.com", []repository.CommitOperation{
+		{Type: repository.CommitOperationDelete, Path: "README.md"},
+		{Type: repository.CommitOperationDelete, Path: "docs/a.txt"},
+		{Type: repository.CommitOperationDelete, Path: "docs/guide/intro.txt"},
+		{Type: repository.CommitOperationDelete, Path: "model.bin"},
+	}, ""); err != nil {
+		t.Fatalf("empty commit: %v", err)
+	}
+
+	var checks, opened []string
+	h := NewHandler(WithStorage(st),
+		WithPermissionHookFunc(func(_ context.Context, op permission.Operation, name string, _ permission.Context) (bool, error) {
+			checks = append(checks, op.String()+" "+name)
+			return true, nil
+		}),
+		WithPreOpenHookFunc(func(_ context.Context, name string, _ bool) error {
+			opened = append(opened, name)
+			return nil
+		}))
+	get := func(t *testing.T, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		return rec
+	}
+	list := func(t *testing.T, target string) []map[string]any {
+		t.Helper()
+		rec := get(t, target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", target, rec.Code, rec.Body)
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+			t.Fatalf("GET %s: decode %v: %s", target, err, rec.Body)
+		}
+		return items
+	}
+	pathsOf := func(items []map[string]any) []string {
+		var paths []string
+		for _, item := range items {
+			paths = append(paths, fmt.Sprint(item["path"]))
+		}
+		return paths
+	}
+
+	for apiType, name := range map[string]string{"models": "org/repo", "datasets": "datasets/org/repo", "spaces": "spaces/org/repo"} {
+		want, err := repos[name].Tree("main", "", nil)
+		if err != nil {
+			t.Fatalf("Tree %s: %v", name, err)
+		}
+		got := list(t, "/api/"+apiType+"/org/repo/tree/main")
+		if len(got) != 3 || len(want) != 3 {
+			t.Fatalf("%s: %d entries %v, want 3", apiType, len(got), got)
+		}
+		for i, e := range want {
+			if item := got[i]; item["path"] != e.Path() || item["oid"] != e.Hash().String() || item["type"] != string(e.Type()) {
+				t.Errorf("%s entry %d = %v, want %s %s %s", apiType, i, item, e.Type(), e.Path(), e.Hash())
+			}
+		}
+		if readme := got[0]; readme["type"] != "file" || readme["size"] != float64(1) || readme["lfs"] != nil {
+			t.Errorf("%s README %v", apiType, readme)
+		}
+		if docs := got[1]; docs["type"] != "directory" || docs["path"] != "docs" || docs["size"] != float64(0) || docs["lfs"] != nil || docs["lastCommit"] != nil {
+			t.Errorf("%s docs %v", apiType, docs)
+		}
+		bin := got[2]
+		if lfs, _ := bin["lfs"].(map[string]any); bin["size"] != float64(12345) || lfs == nil || lfs["oid"] != strings.Repeat("e", 64) || lfs["size"] != float64(12345) || lfs["pointerSize"] != float64(len(pointer)) {
+			t.Errorf("%s model.bin %v", apiType, bin)
+		}
+	}
+	if rec := get(t, "/api/models/org/empty/tree/main"); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("empty tree: %d %s", rec.Code, rec.Body)
+	}
+
+	all := []string{"README.md", "docs", "docs/a.txt", "docs/guide", "docs/guide/intro.txt", "model.bin"}
+	for target, want := range map[string][]string{
+		"/api/models/org/repo/tree/main?recursive=true":      all,
+		"/api/models/org/repo/tree/main/docs?recursive=1":    all[2:5],
+		"/api/models/org/repo/tree/main/docs?recursive=True": all[2:5],
+		"/api/models/org/repo/tree/main/docs":                {"docs/a.txt", "docs/guide"},
+		"/api/models/org/repo/tree/main?recursive=false":     {"README.md", "docs", "model.bin"},
+		"/api/models/org/repo/tree/main?recursive=":          {"README.md", "docs", "model.bin"},
+	} {
+		if got := pathsOf(list(t, target)); !slices.Equal(got, want) {
+			t.Errorf("%s: paths %v, want %v", target, got, want)
+		}
+	}
+
+	entries, err := repos["org/repo"].Tree("main", "", &repository.TreeOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	sha := shas["org/repo"]
+	wantCommit := map[string]string{"README.md": sha[0], "docs": sha[1], "docs/a.txt": sha[1], "docs/guide": sha[1], "docs/guide/intro.txt": sha[1], "model.bin": sha[2]}
+	expanded := list(t, "/api/models/org/repo/tree/main?recursive=true&expand=true")
+	if got := pathsOf(expanded); !slices.Equal(got, all) {
+		t.Fatalf("expanded paths %v, want %v", got, all)
+	}
+	for i, e := range entries {
+		item := expanded[i]
+		lc, _ := item["lastCommit"].(map[string]any)
+		if item["oid"] != e.Hash().String() || lc == nil || lc["id"] != wantCommit[e.Path()] || lc["date"] != e.LastCommit().Author().When().UTC().Format(repository.TimeFormat) {
+			t.Errorf("%s expanded %v, want oid %s lastCommit %s", e.Path(), item, e.Hash(), wantCommit[e.Path()])
+		}
+	}
+	if lc, _ := expanded[1]["lastCommit"].(map[string]any); lc["title"] != "Add docs" {
+		t.Errorf("docs lastCommit %v", lc)
+	}
+
+	checks, opened = nil, nil
+	for _, target := range []string{"/api/models/org/repo/tree/main?recursive=maybe", "/api/models/org/repo/tree/main?expand=2", "/api/models/org/repo/tree/main?recursive=true&expand=yes"} {
+		if rec := get(t, target); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Errorf("GET %s: %d %s", target, rec.Code, rec.Body)
+		}
+	}
+	if len(checks) != 0 || len(opened) != 0 {
+		t.Errorf("invalid flags reached checks %v opened %v", checks, opened)
+	}
+	for _, target := range []string{"/api/models/org/repo/tree/main/README.md", "/api/models/org/repo/tree/main/nope", "/api/models/org/repo/tree/main/docs/nope"} {
+		if rec := get(t, target); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Errorf("GET %s: %d %s", target, rec.Code, rec.Body)
+		}
+	}
+	if !slices.Contains(checks, "read_repo org/repo") || !slices.Contains(opened, "org/repo") {
+		t.Errorf("checks %v opened %v", checks, opened)
 	}
 }

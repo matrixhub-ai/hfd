@@ -137,6 +137,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "UploadAndDownload", supported: anyClientAnyType, run: runHubUploadAndDownload},
 		{name: "SnapshotDownload", supported: pyOnly, run: runHubSnapshotDownload},
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
+		{name: "Tree", supported: pyOnly, run: runHubTree},
 		{name: "ListRepos", supported: pyOnly, run: runHubListRepos},
 		{name: "TreeSize", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubTreeSize},
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
@@ -456,6 +457,38 @@ func runHubListFiles(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 assert "a.txt" in files, f"a.txt not in {files}"
 assert "b.txt" in files, f"b.txt not in {files}"
 assert "sub/c.txt" in files, f"sub/c.txt not in {files}"
+`, repoID, rt.arg)
+	runPyScript(t, s.httpURL, script)
+}
+
+// runHubTree (py only): list_repo_tree yields RepoFolder entries carrying
+// the directory's tree_id, non-recursive and recursive in pre-order, and
+// expand=True dates a directory by the newest upload beneath it; the upload
+// OIDs anchor the last_commit values.
+func runHubTree(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/tree-" + rt.arg
+	script := hubPyAPI + hubPyCreateLine(repoID, rt, true) + fmt.Sprintf(`from huggingface_hub.hf_api import RepoFile, RepoFolder
+repo_id, repo_type = %q, %q
+first = api.upload_file(path_or_fileobj=b"one\n", path_in_repo="folder/one.txt", repo_id=repo_id, repo_type=repo_type).oid
+second = api.upload_file(path_or_fileobj=b"deep\n", path_in_repo="folder/nested/deep.txt", repo_id=repo_id, repo_type=repo_type).oid
+third = api.upload_file(path_or_fileobj=b"root\n", path_in_repo="root.txt", repo_id=repo_id, repo_type=repo_type).oid
+root = list(api.list_repo_tree(repo_id=repo_id, repo_type=repo_type))
+assert [e.path for e in root] == [".gitattributes", "folder", "root.txt"], f"root: {root!r}"
+folder = root[1]
+assert isinstance(folder, RepoFolder) and len(folder.tree_id) == 40 and folder.last_commit is None, f"folder: {folder!r}"
+assert isinstance(root[2], RepoFile) and root[2].size == 5 and len(root[2].blob_id) == 40, f"root.txt: {root[2]!r}"
+tree = list(api.list_repo_tree(repo_id=repo_id, repo_type=repo_type, recursive=True, expand=True))
+assert [e.path for e in tree] == [".gitattributes", "folder", "folder/nested", "folder/nested/deep.txt", "folder/one.txt", "root.txt"], f"recursive: {tree!r}"
+by_path = {e.path: e for e in tree}
+nested = by_path["folder/nested"]
+assert isinstance(nested, RepoFolder) and len(nested.tree_id) == 40 and nested.tree_id != folder.tree_id, f"nested: {nested!r}"
+assert by_path["folder"].tree_id == folder.tree_id, f"folder: {by_path['folder']!r}"
+want = {"folder": second, "folder/nested": second, "folder/nested/deep.txt": second, "folder/one.txt": first, "root.txt": third}
+got = {path: by_path[path].last_commit.oid for path in want}
+assert got == want, f"last_commit: {got!r}, want {want!r}"
+sub = list(api.list_repo_tree(repo_id=repo_id, repo_type=repo_type, path_in_repo="folder"))
+assert [(e.path, type(e).__name__) for e in sub] == [("folder/nested", "RepoFolder"), ("folder/one.txt", "RepoFile")], f"folder listing: {sub!r}"
+assert sub[0].tree_id == nested.tree_id, f"nested tree_id: {sub[0]!r}"
 `, repoID, rt.arg)
 	runPyScript(t, s.httpURL, script)
 }

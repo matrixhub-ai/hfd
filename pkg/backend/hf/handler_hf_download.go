@@ -35,8 +35,16 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	revpath := vars["revpath"]
 
 	query := r.URL.Query()
-	recursive, _ := strconv.ParseBool(query.Get("recursive"))
-	expand, _ := strconv.ParseBool(query.Get("expand"))
+	recursive, err := queryBool(query, "recursive")
+	if err != nil {
+		responseJSON(w, err, http.StatusBadRequest)
+		return
+	}
+	expand, err := queryBool(query, "expand")
+	if err != nil {
+		responseJSON(w, err, http.StatusBadRequest)
+		return
+	}
 
 	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
 		return
@@ -63,37 +71,51 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, toHFTreeEntries(r.Context(), entries, expand), http.StatusOK)
 }
 
+// queryBool reads an optional boolean query flag; an unset or empty value is false.
+func queryBool(query url.Values, key string) (bool, error) {
+	value := query.Get(key)
+	if value == "" {
+		return false, nil
+	}
+	flag, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value %q: expected a boolean", key, value)
+	}
+	return flag, nil
+}
+
 func toHFTreeEntries(ctx context.Context, entries []*repository.TreeEntry, expand bool) []treeEntry {
-	result := make([]treeEntry, len(entries))
-	for i, e := range entries {
-
-		blob, err := e.Blob()
-		if err != nil {
-			slog.WarnContext(ctx, "failed to get blob for tree entry, skipping", "path", e.Path(), "error", err)
-			continue
-		}
-
-		result[i] = treeEntry{
+	result := make([]treeEntry, 0, len(entries))
+	for _, e := range entries {
+		item := treeEntry{
 			OID:  e.Hash().String(),
 			Path: e.Path(),
 			Type: e.Type(),
-			Size: blob.Size(),
 		}
-		if ptr, _ := blob.LFSPointer(); ptr != nil {
-			result[i].LFS = &lfsPointer{
-				OID:         ptr.OID(),
-				Size:        ptr.Size(),
-				PointerSize: blob.Size(),
+		if e.Type() == repository.EntryTypeFile {
+			blob, err := e.Blob()
+			if err != nil {
+				slog.WarnContext(ctx, "failed to get blob for tree entry, skipping", "path", e.Path(), "error", err)
+				continue
 			}
-			result[i].Size = ptr.Size()
+			item.Size = blob.Size()
+			if ptr, _ := blob.LFSPointer(); ptr != nil {
+				item.LFS = &lfsPointer{
+					OID:         ptr.OID(),
+					Size:        ptr.Size(),
+					PointerSize: blob.Size(),
+				}
+				item.Size = ptr.Size()
+			}
 		}
 		if lastCommit := e.LastCommit(); expand && lastCommit != nil {
-			result[i].LastCommit = &treeLastCommit{
+			item.LastCommit = &treeLastCommit{
 				ID:    lastCommit.Hash().String(),
 				Title: lastCommit.Title(),
 				Date:  lastCommit.Author().When().UTC().Format(repository.TimeFormat),
 			}
 		}
+		result = append(result, item)
 	}
 	return result
 }
