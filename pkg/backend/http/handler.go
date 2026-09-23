@@ -9,6 +9,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -100,12 +101,12 @@ func (h *Handler) register() {
 }
 
 func (h *Handler) registryGit(r *mux.Router) {
-	r.HandleFunc("/{repo:.+}.git/info/refs", h.handleInfoRefs).Methods(http.MethodGet)
-	r.HandleFunc("/{repo:.+}/info/refs", h.handleInfoRefs).Methods(http.MethodGet)
-	r.HandleFunc("/{repo:.+}.git/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost)
-	r.HandleFunc("/{repo:.+}/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost)
-	r.HandleFunc("/{repo:.+}.git/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost)
-	r.HandleFunc("/{repo:.+}/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost)
+	r.HandleFunc("/{repo:.+}.git/info/refs", h.handleInfoRefs).Methods(http.MethodGet).Queries("service", "")
+	r.HandleFunc("/{repo:.+}/info/refs", h.handleInfoRefs).Methods(http.MethodGet).Queries("service", "")
+	r.HandleFunc("/{repo:.+}.git/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost).MatcherFunc(rpcMatcher(repository.GitUploadPack))
+	r.HandleFunc("/{repo:.+}/git-upload-pack", h.handleUploadPack).Methods(http.MethodPost).MatcherFunc(rpcMatcher(repository.GitUploadPack))
+	r.HandleFunc("/{repo:.+}.git/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost).MatcherFunc(rpcMatcher(repository.GitReceivePack))
+	r.HandleFunc("/{repo:.+}/git-receive-pack", h.handleReceivePack).Methods(http.MethodPost).MatcherFunc(rpcMatcher(repository.GitReceivePack))
 }
 
 func responseText(w http.ResponseWriter, text string, sc int) {

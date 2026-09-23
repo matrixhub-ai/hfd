@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -36,6 +37,15 @@ func requestBody(r *http.Request) (io.ReadCloser, error) {
 		return gzip.NewReader(r.Body)
 	}
 	return r.Body, nil
+}
+
+// rpcMatcher matches requests whose Content-Type is the service's RPC media type.
+func rpcMatcher(service string) mux.MatcherFunc {
+	want := "application/x-" + service + "-request"
+	return func(r *http.Request, _ *mux.RouteMatch) bool {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		return err == nil && mediaType == want
+	}
 }
 
 // handleInfoRefs handles the /info/refs endpoint for git service discovery.
