@@ -167,6 +167,10 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ptr, _ := blob.LFSPointer(); ptr != nil {
+		if h.mirror == nil {
+			responseJSON(w, errors.New("server is not configured to handle LFS objects"), http.StatusInternalServerError)
+			return
+		}
 		name := blob.Name()
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 
@@ -174,39 +178,38 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 		// Set HuggingFace-required headers first
 		w.Header().Set("X-Repo-Commit", commitHash)
 
-		if h.mirror != nil {
-			// Hub parity: fully ingested files answer with metadata and a
-			// redirect to the sha256 bridge; only in-flight ingests stream
-			// bytes on this response (via the mirror's spool).
-			if fileHash := h.mirror.FileHash(r.Context(), ptr.OID()); fileHash != "" {
-				base := h.mirror.ExternalBase(r)
-				lfs.SetObjectHeaders(w, ptr.OID(), ptr.Size())
-				lfs.SetXETLinkHeaders(w, fileHash, base, base+"/api/"+ri.RepoType+"/"+ri.FullName+"/xet-read-token/"+url.PathEscape(rev))
-				// huggingface_hub >= 1.30 follows same-host redirects on its
-				// metadata HEAD and reads the headers off the final response,
-				// which the bridge cannot supply; answer the probe here.
-				if ptr.Size() == 0 || r.Method == http.MethodHead {
-					w.Header().Set("Content-Length", strconv.FormatInt(ptr.Size(), 10))
-					w.WriteHeader(http.StatusOK)
-					return
-				}
-				http.Redirect(w, r, base+"/xet-bridge/"+ptr.OID(), http.StatusFound)
+		// Hub parity: fully ingested files answer with metadata and a
+		// redirect to the sha256 bridge; only in-flight ingests stream
+		// bytes on this response (via the mirror's spool).
+		if fileHash := h.mirror.FileHash(r.Context(), ptr.OID()); fileHash != "" {
+			base := h.mirror.ExternalBase(r)
+			lfs.SetObjectHeaders(w, ptr.OID(), ptr.Size())
+			lfs.SetXETLinkHeaders(w, fileHash, base, base+"/api/"+ri.RepoType+"/"+ri.FullName+"/xet-read-token/"+url.PathEscape(rev))
+			// huggingface_hub >= 1.30 follows same-host redirects on its
+			// metadata HEAD and reads the headers off the final response,
+			// which the bridge cannot supply; answer the probe here.
+			if ptr.Size() == 0 || r.Method == http.MethodHead {
+				w.Header().Set("Content-Length", strconv.FormatInt(ptr.Size(), 10))
+				w.WriteHeader(http.StatusOK)
 				return
 			}
-			resolveRev := commitHash
-			if resolveRev == "" {
-				resolveRev = rev
-			}
-			// Register the pointer's target so the OID-keyed data plane
-			// (and later LFS batch lookups) also covers revisions outside
-			// pull-scan tips. ServeOID streams while ingesting and ingests
-			// on miss; prefer the commit hash so cache entries stay
-			// immutable.
-			h.mirror.RegisterObject(ptr.OID(), ri.RepoName, resolveRev, path, ptr.Size())
-			if h.mirror.ServeOID(w, r, ptr.OID()) {
-				return
-			}
+			http.Redirect(w, r, base+"/xet-bridge/"+ptr.OID(), http.StatusFound)
+			return
 		}
+		resolveRev := commitHash
+		if resolveRev == "" {
+			resolveRev = rev
+		}
+		// Register the pointer's target so the OID-keyed data plane
+		// (and later LFS batch lookups) also covers revisions outside
+		// pull-scan tips. ServeOID streams while ingesting and ingests
+		// on miss; prefer the commit hash so cache entries stay
+		// immutable.
+		h.mirror.RegisterObject(ptr.OID(), ri.RepoName, resolveRev, path, ptr.Size())
+		if h.mirror.ServeOID(w, r, ptr.OID()) {
+			return
+		}
+
 		responseJSON(w, fmt.Errorf("LFS object %q not found for file %q in repository %q at revision %q", ptr.OID(), path, ri.RepoName, rev), http.StatusNotFound)
 		return
 	}
