@@ -300,11 +300,11 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	)
 
 	var destHandler http.Handler
-	destHandler = backendhf.NewHandler(
+	destHandler = backendhf.NewHandler(append(catalogOptions(destStorage),
 		backendhf.WithStorage(destStorage),
 		backendhf.WithMirror(destMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
-	)
+	)...)
 	destHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(destStorage),
 		backendlfs.WithNext(destHandler),
@@ -354,11 +354,11 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	}
 
 	var sourceHandler http.Handler
-	sourceHandler = backendhf.NewHandler(
+	sourceHandler = backendhf.NewHandler(append(catalogOptions(sourceStorage),
 		backendhf.WithStorage(sourceStorage),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
-	)
+	)...)
 	sourceHandler = backendlfs.NewHandler(
 		backendlfs.WithStorage(sourceStorage),
 		backendlfs.WithNext(sourceHandler),

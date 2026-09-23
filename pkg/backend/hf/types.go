@@ -6,28 +6,28 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// whoamiResponse represents the response for the /api/whoami-v2 endpoint.
-type whoamiResponse struct {
-	Type          string   `json:"type"`
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Fullname      string   `json:"fullname"`
-	Email         string   `json:"email,omitempty"`
-	EmailVerified bool     `json:"emailVerified"`
-	IsPro         bool     `json:"isPro"`
-	CanPay        bool     `json:"canPay"`
-	AvatarURL     string   `json:"avatarUrl,omitempty"`
-	Orgs          []any    `json:"orgs"`
-	Auth          authInfo `json:"auth"`
+// WhoamiResponse represents the response for the /api/whoami-v2 endpoint.
+type WhoamiResponse struct {
+	Type          string     `json:"type"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Fullname      string     `json:"fullname"`
+	Email         string     `json:"email,omitempty"`
+	EmailVerified bool       `json:"emailVerified"`
+	IsPro         bool       `json:"isPro"`
+	CanPay        bool       `json:"canPay"`
+	AvatarURL     string     `json:"avatarUrl,omitempty"`
+	Orgs          []any      `json:"orgs"`
+	Auth          WhoamiAuth `json:"auth"`
 }
 
-// authInfo represents the auth section of the whoami response.
-type authInfo struct {
-	AccessToken accessToken `json:"accessToken"`
+// WhoamiAuth represents the auth section of the whoami response.
+type WhoamiAuth struct {
+	AccessToken WhoamiAccessToken `json:"accessToken"`
 }
 
-// accessToken represents the access token info in the whoami response.
-type accessToken struct {
+// WhoamiAccessToken represents the access token info in the whoami response.
+type WhoamiAccessToken struct {
 	DisplayName string `json:"displayName"`
 	Role        string `json:"role"`
 }
@@ -62,8 +62,8 @@ type treeSize struct {
 	Size int64  `json:"size"`
 }
 
-// repoListItem represents a repository item in the list response for models, datasets, and spaces.
-type repoListItem struct {
+// RepoListItem represents a repository item in the list response for models, datasets, and spaces.
+type RepoListItem struct {
 	RepoID        string   `json:"id"`
 	Likes         int      `json:"likes"`
 	TrendingScore int      `json:"trendingScore"`
@@ -112,8 +112,8 @@ type moveRepoRequest struct {
 	Type     string `json:"type"`
 }
 
-// repoSettingsRequest represents the repo settings update request body.
-type repoSettingsRequest struct {
+// RepoSettings represents the repo settings update request body.
+type RepoSettings struct {
 	Private *bool `json:"private,omitempty"`
 	Gated   any   `json:"gated,omitempty"`
 }
@@ -186,8 +186,8 @@ type preuploadResponseFile struct {
 	ShouldIgnore bool   `json:"shouldIgnore"`
 }
 
-// createRepoRequest represents the create repo request body.
-type createRepoRequest struct {
+// CreateRepoRequest represents the create repo request body.
+type CreateRepoRequest struct {
 	Type         string `json:"type"`
 	Name         string `json:"name"`
 	Organization string `json:"organization,omitempty"`

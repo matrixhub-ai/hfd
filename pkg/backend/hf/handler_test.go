@@ -1,4 +1,4 @@
-package hf
+package hf_test
 
 import (
 	"context"
@@ -16,12 +16,66 @@ import (
 
 	"github.com/go-git/go-billy/v6/util"
 
+	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
+)
+
+// Response shapes decoded by the tests; the handler's own types are unexported.
+type (
+	createRepoResponse struct {
+		URL string `json:"url"`
+	}
+	preuploadResponse struct {
+		Files []struct {
+			Path         string `json:"path"`
+			UploadMode   string `json:"uploadMode"`
+			ShouldIgnore bool   `json:"shouldIgnore"`
+		} `json:"files"`
+	}
+	commitResponse struct {
+		CommitURL     string `json:"commitUrl"`
+		CommitOid     string `json:"commitOid"`
+		CommitMessage string `json:"commitMessage"`
+	}
+	sibling struct {
+		RFilename string `json:"rfilename"`
+	}
+	repoInfo struct {
+		ID          string    `json:"id"`
+		ModelID     string    `json:"modelId"`
+		SHA         string    `json:"sha"`
+		Siblings    []sibling `json:"siblings"`
+		UsedStorage int64     `json:"usedStorage"`
+	}
+	treeSize struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+	gitRefInfo struct {
+		Name         string `json:"name"`
+		Ref          string `json:"ref"`
+		TargetCommit string `json:"targetCommit"`
+	}
+	gitRefs struct {
+		Branches []gitRefInfo `json:"branches"`
+		Converts []gitRefInfo `json:"converts"`
+		Tags     []gitRefInfo `json:"tags"`
+	}
+	commitInfo struct {
+		ID      string `json:"id"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+		Authors []struct {
+			User string `json:"user"`
+		} `json:"authors"`
+		Date string `json:"date"`
+	}
 )
 
 func newStorage(t *testing.T, dir string) *storage.Storage {
@@ -31,6 +85,19 @@ func newStorage(t *testing.T, dir string) *storage.Storage {
 		t.Fatalf("new storage: %v", err)
 	}
 	return st
+}
+
+// catalogOptions enables the six catalog routes with the server defaults over st.
+func catalogOptions(st *storage.Storage) []hf.Option {
+	hooks := &server.Hooks{Storage: st}
+	return []hf.Option{
+		hf.WithCreateRepoFunc(hooks.CreateRepo),
+		hf.WithDeleteRepoFunc(hooks.DeleteRepo),
+		hf.WithMoveRepoFunc(hooks.MoveRepo),
+		hf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
+		hf.WithListReposFunc(hooks.ListRepos),
+		hf.WithWhoamiFunc(hooks.Whoami),
+	}
 }
 
 func setupTestServer(t *testing.T) (*httptest.Server, string) {
@@ -47,9 +114,9 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	// Set up handler chain (same order as main.go)
 	var handler http.Handler
 
-	handler = NewHandler(
-		WithStorage(storage),
-	)
+	handler = hf.NewHandler(append(catalogOptions(storage),
+		hf.WithStorage(storage),
+	)...)
 
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(storage),
@@ -89,7 +156,7 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 	}
 	var calls []call
 	var hookErr error
-	h := NewHandler(WithStorage(st), WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
+	h := hf.NewHandler(append(catalogOptions(st), hf.WithStorage(st), hf.WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
 		calls = append(calls, call{repoName, write})
 		if hookErr != nil {
 			return hookErr
@@ -99,7 +166,7 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 			return err
 		}
 		return nil
-	}))
+	}))...)
 	do := func(t *testing.T, method, target, body string, want int) {
 		t.Helper()
 		rec := httptest.NewRecorder()
@@ -127,16 +194,6 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		hookErr = repository.ErrRepositoryNotExists
 		defer func() { hookErr = nil }()
 		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusNotFound)
-	})
-
-	t.Run("InvalidNameSkipsHook", func(t *testing.T) {
-		calls = nil
-		if _, err := h.openRepo(ctx, "x/../repo", true); !errors.Is(err, repository.ErrRepositoryNotExists) {
-			t.Fatalf("openRepo error = %v, want ErrRepositoryNotExists", err)
-		}
-		if len(calls) != 0 {
-			t.Fatalf("hook calls = %v, want none", calls)
-		}
 	})
 
 	t.Run("DirectOperationsBypass", func(t *testing.T) {
@@ -1033,9 +1090,10 @@ func TestCommitAuthorFromIdentity(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hf := NewHandler(WithStorage(newStorage(t, t.TempDir())))
+			st := newStorage(t, t.TempDir())
+			handler := hf.NewHandler(append(catalogOptions(st), hf.WithStorage(st))...)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hf.ServeHTTP(w, r.WithContext(authenticate.WithIdentity(r.Context(), tt.id)))
+				handler.ServeHTTP(w, r.WithContext(authenticate.WithIdentity(r.Context(), tt.id)))
 			}))
 			defer server.Close()
 
@@ -1085,12 +1143,12 @@ func TestHuggingFaceCommitParentPrecondition(t *testing.T) {
 	}
 
 	var pres, posts []receive.RefUpdate
-	h := NewHandler(WithStorage(st),
-		WithPreReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) (bool, error) {
+	h := hf.NewHandler(hf.WithStorage(st),
+		hf.WithPreReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) (bool, error) {
 			pres = append(pres, updates...)
 			return true, nil
 		}),
-		WithPostReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) error {
+		hf.WithPostReceiveHookFunc(func(_ context.Context, _ string, updates []receive.RefUpdate) error {
 			posts = append(posts, updates...)
 			return nil
 		}))

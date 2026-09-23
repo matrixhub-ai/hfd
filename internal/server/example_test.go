@@ -10,6 +10,7 @@ import (
 
 	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -33,10 +34,13 @@ func ExampleNewHTTPHandler() {
 	if err != nil {
 		panic(err)
 	}
+	// Catalog routes are off until a callback is registered; Hooks carries the filesystem defaults.
+	hooks := &server.Hooks{Storage: st}
 	handler := server.NewHTTPHandler(server.Options{
 		Storage:        st,
 		Authenticators: &authenticate.Authenticators{Token: validator},
 		Permission:     hook,
+		HFOptions:      []backendhf.Option{backendhf.WithWhoamiFunc(hooks.Whoami), backendhf.WithListReposFunc(hooks.ListRepos)},
 	})
 	get := func(path, bearer string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, path, nil)

@@ -31,13 +31,13 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationDeleteRepo, storageName, permission.Context{}) {
 		return
 	}
-	repo, ok := h.openRepoDirect(w, storageName)
-	if !ok {
+	if repository.ResolvePath(storageName) == "" {
+		respondOpenRepoError(w, storageName, repository.ErrRepositoryNotExists)
 		return
 	}
 
-	if err := repo.Remove(); err != nil {
-		responseJSON(w, fmt.Errorf("failed to delete repository %q: %v", storageName, err), http.StatusInternalServerError)
+	if err := h.deleteRepoFunc(r.Context(), storageName); err != nil {
+		respondCatalogError(w, err)
 		return
 	}
 
@@ -66,26 +66,17 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationUpdateRepo, fromName, permission.Context{DestRepo: toName}) {
 		return
 	}
-
-	repo, ok := h.openRepoDirect(w, fromName)
-	if !ok {
+	if repository.ResolvePath(fromName) == "" {
+		respondOpenRepoError(w, fromName, repository.ErrRepositoryNotExists)
 		return
 	}
-
-	toPath := repository.ResolvePath(toName)
-	if toPath == "" {
+	if repository.ResolvePath(toName) == "" {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
 		return
 	}
 
-	// Check that destination doesn't already exist
-	if repository.IsRepository(h.storage.RepositoriesFS(), toPath) {
-		responseJSON(w, fmt.Errorf("destination repository %q already exists", req.ToRepo), http.StatusConflict)
-		return
-	}
-
-	if err := repo.Move(toPath); err != nil {
-		responseJSON(w, fmt.Errorf("failed to move repository: %v", err), http.StatusInternalServerError)
+	if err := h.moveRepoFunc(r.Context(), fromName, toName); err != nil {
+		respondCatalogError(w, err)
 		return
 	}
 
@@ -99,14 +90,19 @@ func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{}) {
 		return
 	}
-	if _, ok := h.openRepoDirect(w, ri.RepoName); !ok {
+	if repository.ResolvePath(ri.RepoName) == "" {
+		respondOpenRepoError(w, ri.RepoName, repository.ErrRepositoryNotExists)
 		return
 	}
 
-	// Accept the settings payload but don't enforce private/gated in this server
-	var req repoSettingsRequest
+	var req RepoSettings
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.updateRepoSettingsFunc(r.Context(), ri.RepoName, req); err != nil {
+		respondCatalogError(w, err)
 		return
 	}
 

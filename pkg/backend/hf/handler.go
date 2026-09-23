@@ -27,6 +27,13 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+
+	createRepoFunc         CreateRepoFunc
+	deleteRepoFunc         DeleteRepoFunc
+	moveRepoFunc           MoveRepoFunc
+	updateRepoSettingsFunc UpdateRepoSettingsFunc
+	listReposFunc          ListReposFunc
+	whoamiFunc             WhoamiFunc
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
@@ -123,22 +130,32 @@ func (h *Handler) register() {
 // with HF_ENDPOINT pointing to this server.
 func (h *Handler) registryHuggingFace(r *mux.Router) {
 	// Auth endpoint - used by huggingface-cli auth commands (login, whoami)
-	r.HandleFunc("/api/whoami-v2", h.handleWhoami).Methods(http.MethodGet)
+	if h.whoamiFunc != nil {
+		r.HandleFunc("/api/whoami-v2", h.handleWhoami).Methods(http.MethodGet)
+	}
 
 	// Agent harness registry - fetched anonymously by huggingface_hub >=1.29 during xet bootstrap
 	r.HandleFunc("/api/agent-harnesses", h.handleAgentHarnesses).Methods(http.MethodGet)
 
 	// Repository management endpoints - used by huggingface_hub for repo CRUD
-	r.HandleFunc("/api/repos/create", h.handleCreateRepo).Methods(http.MethodPost)
-	r.HandleFunc("/api/repos/delete", h.handleDeleteRepo).Methods(http.MethodDelete)
-	r.HandleFunc("/api/repos/move", h.handleMoveRepo).Methods(http.MethodPost)
+	if h.createRepoFunc != nil {
+		r.HandleFunc("/api/repos/create", h.handleCreateRepo).Methods(http.MethodPost)
+	}
+	if h.deleteRepoFunc != nil {
+		r.HandleFunc("/api/repos/delete", h.handleDeleteRepo).Methods(http.MethodDelete)
+	}
+	if h.moveRepoFunc != nil {
+		r.HandleFunc("/api/repos/move", h.handleMoveRepo).Methods(http.MethodPost)
+	}
 
 	// YAML validation endpoint - used by huggingface_hub to validate README YAML front matter
 	r.HandleFunc("/api/validate-yaml", h.handleValidateYAML).Methods(http.MethodPost)
 
 	// Repository settings, branch, tag, and refs endpoints
 	// These must be registered before the generic model info catch-all route.
-	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/settings", h.handleRepoSettings).Methods(http.MethodPut)
+	if h.updateRepoSettingsFunc != nil {
+		r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/settings", h.handleRepoSettings).Methods(http.MethodPut)
+	}
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/branch/{rev}", h.handleCreateBranch).Methods(http.MethodPost)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/branch/{rev}", h.handleDeleteBranch).Methods(http.MethodDelete)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/tag/{rev}", h.handleCreateTag).Methods(http.MethodPost)
@@ -159,7 +176,9 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/tree/{revpath:.*}", h.handleTree).Methods(http.MethodGet)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}", h.handleList).Methods(http.MethodGet)
+	if h.listReposFunc != nil {
+		r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}", h.handleList).Methods(http.MethodGet)
+	}
 
 	// File download endpoints - non-model types use a type prefix, models use the root
 	r.HandleFunc("/{repoType:datasets|spaces|kernels}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)

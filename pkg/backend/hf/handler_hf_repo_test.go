@@ -1,4 +1,4 @@
-package hf
+package hf_test
 
 import (
 	"encoding/json"

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/matrixhub-ai/hfd/internal/server"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -41,7 +42,7 @@ func run(ctx context.Context, cfg *config) error {
 	slog.InfoContext(ctx, "Starting hfd server", "addr", cfg.Addr, "data", cfg.DataDir)
 
 	// Phase 2: auth layer.
-	hooks := &server.Hooks{ProxyToken: cfg.ProxyToken, PullTTL: cfg.ProxyCacheTTL}
+	hooks := &server.Hooks{Storage: st, ProxyToken: cfg.ProxyToken, PullTTL: cfg.ProxyCacheTTL}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("prepare authenticators: %w", err)
@@ -81,6 +82,14 @@ func run(ctx context.Context, cfg *config) error {
 		PostReceive:    hooks.PostReceive,
 		AccessLog:      os.Stderr,
 		HostURL:        cfg.HostURL,
+		HFOptions: []backendhf.Option{
+			backendhf.WithCreateRepoFunc(hooks.CreateRepo),
+			backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
+			backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+			backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
+			backendhf.WithListReposFunc(hooks.ListRepos),
+			backendhf.WithWhoamiFunc(hooks.Whoami),
+		},
 	}
 	if cfg.Internal {
 		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
