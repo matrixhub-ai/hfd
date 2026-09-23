@@ -332,25 +332,30 @@ func testHTTPHandlerPreOpenHook(t *testing.T, native bool) {
 		}),
 	)
 	for _, test := range []struct {
-		name   string
-		method string
-		target string
-		body   string
-		want   int
-		calls  []call
+		name        string
+		method      string
+		target      string
+		body        string
+		contentType string
+		want        int
+		calls       []call
 	}{
-		{"InfoRefsRead", http.MethodGet, "/test-repo.git/info/refs?service=git-upload-pack", "", http.StatusOK, []call{{"test-repo", false}}},
-		{"InfoRefsWrite", http.MethodGet, "/test-repo.git/info/refs?service=git-receive-pack", "", http.StatusOK, []call{{"test-repo", true}}},
-		{"ReceivePack", http.MethodPost, "/test-repo.git/git-receive-pack", "0000", http.StatusOK, []call{{"test-repo", true}}},
-		{"HookCreatesRepository", http.MethodGet, "/late.git/info/refs?service=git-upload-pack", "", http.StatusOK, []call{{"late", false}}},
-		{"MissingRepository", http.MethodGet, "/missing.git/info/refs?service=git-upload-pack", "", http.StatusNotFound, []call{{"missing", false}}},
+		{"InfoRefsRead", http.MethodGet, "/test-repo.git/info/refs?service=git-upload-pack", "", "", http.StatusOK, []call{{"test-repo", false}}},
+		{"InfoRefsWrite", http.MethodGet, "/test-repo.git/info/refs?service=git-receive-pack", "", "", http.StatusOK, []call{{"test-repo", true}}},
+		{"ReceivePack", http.MethodPost, "/test-repo.git/git-receive-pack", "0000", "application/x-git-receive-pack-request", http.StatusOK, []call{{"test-repo", true}}},
+		{"HookCreatesRepository", http.MethodGet, "/late.git/info/refs?service=git-upload-pack", "", "", http.StatusOK, []call{{"late", false}}},
+		{"MissingRepository", http.MethodGet, "/missing.git/info/refs?service=git-upload-pack", "", "", http.StatusNotFound, []call{{"missing", false}}},
 		// The router redirects to the cleaned path, so the handler never sees an interior "..".
-		{"InvalidName", http.MethodGet, "/org/../repo.git/info/refs?service=git-upload-pack", "", http.StatusMovedPermanently, nil},
+		{"InvalidName", http.MethodGet, "/org/../repo.git/info/refs?service=git-upload-pack", "", "", http.StatusMovedPermanently, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls = nil
+			req := httptest.NewRequest(test.method, test.target, strings.NewReader(test.body))
+			if test.contentType != "" {
+				req.Header.Set("Content-Type", test.contentType)
+			}
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(test.method, test.target, strings.NewReader(test.body)))
+			handler.ServeHTTP(rec, req)
 			if rec.Code != test.want {
 				t.Errorf("status = %d, want %d; body = %q", rec.Code, test.want, rec.Body.String())
 			}
@@ -358,5 +363,66 @@ func testHTTPHandlerPreOpenHook(t *testing.T, native bool) {
 				t.Errorf("hook calls = %v, want %v", calls, test.calls)
 			}
 		})
+	}
+}
+
+func TestGitRoutes(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		method      string
+		path        string
+		contentType string
+		op          permission.Operation
+		repo        string
+		status      int
+	}{
+		{"DiscoveryRead", http.MethodGet, "/info/refs?service=git-upload-pack", "", permission.OperationReadRepo, "org/name", http.StatusForbidden},
+		{"DiscoveryWrite", http.MethodGet, "/info/refs?service=git-receive-pack", "", permission.OperationUpdateRepo, "org/name", http.StatusForbidden},
+		{"DiscoveryEmptyService", http.MethodGet, "/info/refs?service=", "", 0, "", http.StatusBadRequest},
+		{"DiscoveryUnknownService", http.MethodGet, "/info/refs?service=git-foo", "", 0, "", http.StatusForbidden},
+		{"DiscoveryNoService", http.MethodGet, "/info/refs", "", 0, "", http.StatusTeapot},
+		{"DiscoveryWrongMethod", http.MethodPost, "/info/refs?service=git-upload-pack", "", 0, "", http.StatusMethodNotAllowed},
+		{"ResolveHead", http.MethodHead, "/resolve/main/info/refs", "", 0, "", http.StatusTeapot},
+		{"UploadPack", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request", permission.OperationReadRepo, "org/name", http.StatusForbidden},
+		{"ReceivePackParams", http.MethodPost, "/git-receive-pack", "application/x-git-receive-pack-request; charset=utf-8", permission.OperationUpdateRepo, "org/name", http.StatusForbidden},
+		{"UploadPackNoType", http.MethodPost, "/git-upload-pack", "", 0, "", http.StatusTeapot},
+		{"UploadPackOtherType", http.MethodPost, "/git-upload-pack", "application/json", 0, "", http.StatusTeapot},
+		{"UploadPackCrossService", http.MethodPost, "/git-upload-pack", "application/x-git-receive-pack-request", 0, "", http.StatusTeapot},
+		{"UploadPackMalformedType", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request; charset", 0, "", http.StatusTeapot},
+		{"UploadPackWrongMethod", http.MethodGet, "/git-upload-pack", "application/x-git-upload-pack-request", 0, "", http.StatusMethodNotAllowed},
+	} {
+		for _, suffix := range []string{".git", ""} {
+			t.Run(row.name+suffix, func(t *testing.T) {
+				var gotOp permission.Operation
+				var gotRepo string
+				var calls, preOpens int
+				handler := backendhttp.NewHandler(
+					backendhttp.WithPermissionHookFunc(func(_ context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
+						gotOp, gotRepo, calls = op, repoName, calls+1
+						return false, nil
+					}),
+					backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
+						preOpens++
+						return nil
+					}),
+					backendhttp.WithNext(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusTeapot)
+					})),
+				)
+				req := httptest.NewRequest(row.method, "/org/name"+suffix+row.path, strings.NewReader("0000"))
+				if row.contentType != "" {
+					req.Header.Set("Content-Type", row.contentType)
+				}
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				wantCalls := 0
+				if row.repo != "" {
+					wantCalls = 1
+				}
+				if rec.Code != row.status || calls != wantCalls || gotRepo != row.repo || gotOp != row.op || preOpens != 0 {
+					t.Fatalf("status=%d calls=%d repo=%q op=%v preOpens=%d; want status=%d calls=%d repo=%q op=%v preOpens=0; body=%s", rec.Code, calls, gotRepo, gotOp, preOpens, row.status, wantCalls, row.repo, row.op, rec.Body.String())
+				}
+			})
+		}
 	}
 }
