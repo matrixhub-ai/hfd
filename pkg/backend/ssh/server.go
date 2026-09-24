@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -104,15 +103,15 @@ func WithBasicAuthValidator(auth authenticate.BasicAuthValidator) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PasswordCallback = func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			id, err := auth.Validate(context.Background(), conn.User(), string(password))
-			if err != nil && !errors.Is(err, authenticate.ErrUnauthenticated) {
+			user, _, ok, err := auth.Validate(context.Background(), conn.User(), string(password))
+			if err != nil {
 				slog.WarnContext(context.Background(), "password validation error", "error", err)
 				return nil, fmt.Errorf("password validation error")
 			}
-			if err != nil || id == nil {
+			if !ok {
 				return nil, fmt.Errorf("invalid username or password")
 			}
-			return grant(id), nil
+			return grant(authenticate.NewIdentity(user, "")), nil
 		}
 	}
 }
@@ -126,15 +125,15 @@ func WithPublicKeyValidator(auth authenticate.PublicKeyValidator) Option {
 	return func(s *Server) {
 		s.config.NoClientAuth = false
 		s.config.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			id, err := auth.Validate(context.Background(), conn.User(), key.Type(), key.Marshal())
-			if err != nil && !errors.Is(err, authenticate.ErrUnauthenticated) {
+			user, _, ok, err := auth.Validate(context.Background(), conn.User(), key.Type(), key.Marshal())
+			if err != nil {
 				slog.WarnContext(context.Background(), "public key validation error", "error", err)
 				return nil, fmt.Errorf("public key validation error")
 			}
-			if err != nil || id == nil {
+			if !ok {
 				return nil, fmt.Errorf("invalid public key")
 			}
-			return grant(id), nil
+			return grant(authenticate.NewIdentity(user, "")), nil
 		}
 	}
 }

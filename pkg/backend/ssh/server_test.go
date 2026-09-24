@@ -1229,12 +1229,12 @@ func TestSSHLFSAuthenticateWithAuthenticator(t *testing.T) {
 		// Validate the signed token can be verified and contains the right subject
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 		batchURL := expectedHref + "/objects/batch"
-		id, err := tokenSignValidator.Validate(context.Background(), http.MethodPost, batchURL, tokenStr)
-		if err != nil || id == nil {
+		user, next, ok, err := tokenSignValidator.Validate(context.Background(), http.MethodPost, batchURL, tokenStr)
+		if err != nil || !ok || next {
 			t.Fatal("Expected signed token to be valid")
 		}
-		if id.Name() != "admin" {
-			t.Errorf("Expected user 'admin', got %q", id.Name())
+		if user != "admin" {
+			t.Errorf("Expected user 'admin', got %q", user)
 		}
 	})
 }

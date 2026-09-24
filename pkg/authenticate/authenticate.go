@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,49 +62,46 @@ func IdentityFrom(ctx context.Context) Identity {
 	return id
 }
 
-// ErrUnauthenticated reports credentials that were presented but rejected.
-var ErrUnauthenticated = errors.New("unauthenticated")
-
-// BasicAuthValidator returns (nil, nil) to try next, (id, nil) to authenticate, ErrUnauthenticated (including wrapped) for 401, or another error for 500.
+// BasicAuthValidator validates username/password credentials: err is a 500, ok authenticates user, next falls through to the next scheme, otherwise 401.
 type BasicAuthValidator interface {
-	Validate(ctx context.Context, username, password string) (Identity, error)
+	Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error)
 }
 
 // BasicAuthValidatorFunc is a helper type to allow using functions as BasicAuthValidators.
-type BasicAuthValidatorFunc func(ctx context.Context, username, password string) (Identity, error)
+type BasicAuthValidatorFunc func(ctx context.Context, username, password string) (user string, next, ok bool, err error)
 
-func (f BasicAuthValidatorFunc) Validate(ctx context.Context, username, password string) (Identity, error) {
+func (f BasicAuthValidatorFunc) Validate(ctx context.Context, username, password string) (user string, next, ok bool, err error) {
 	return f(ctx, username, password)
 }
 
 // TokenValidator validates a bearer token; results follow the BasicAuthValidator contract.
 type TokenValidator interface {
-	Validate(ctx context.Context, token string) (Identity, error)
+	Validate(ctx context.Context, token string) (user string, next, ok bool, err error)
 }
 
 // TokenValidatorFunc is a helper type to allow using functions as TokenValidators.
-type TokenValidatorFunc func(ctx context.Context, token string) (Identity, error)
+type TokenValidatorFunc func(ctx context.Context, token string) (user string, next, ok bool, err error)
 
-func (f TokenValidatorFunc) Validate(ctx context.Context, token string) (Identity, error) {
+func (f TokenValidatorFunc) Validate(ctx context.Context, token string) (user string, next, ok bool, err error) {
 	return f(ctx, token)
 }
 
 // PublicKeyValidator validates an SSH public key for the client-claimed username; results follow the BasicAuthValidator contract.
 type PublicKeyValidator interface {
-	Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error)
+	Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
 }
 
 // PublicKeyValidatorFunc is a helper type to allow using functions as PublicKeyValidators.
-type PublicKeyValidatorFunc func(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error)
+type PublicKeyValidatorFunc func(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error)
 
-func (f PublicKeyValidatorFunc) Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (Identity, error) {
+func (f PublicKeyValidatorFunc) Validate(ctx context.Context, username string, keyType string, marshaledKey []byte) (user string, next, ok bool, err error) {
 	return f(ctx, username, keyType, marshaledKey)
 }
 
-// TokenSignValidator signs method+path-bound tokens for an identity and validates them; Validate follows the BasicAuthValidator contract.
+// TokenSignValidator signs method+path-bound tokens for a username and validates them; Validate follows the BasicAuthValidator contract.
 type TokenSignValidator interface {
-	Sign(ctx context.Context, method, path string, id Identity, expiration time.Duration) (string, error)
-	Validate(ctx context.Context, method, path string, token string) (Identity, error)
+	Sign(ctx context.Context, method, path string, username string, expiration time.Duration) (token string, err error)
+	Validate(ctx context.Context, method, path string, token string) (user string, next, ok bool, err error)
 }
 
 // simpleBasicAuthValidator implements BasicAuthValidator with in-memory credentials.
@@ -122,13 +118,13 @@ func NewSimpleBasicAuthValidator(username, password string) BasicAuthValidator {
 	}
 }
 
-func (a *simpleBasicAuthValidator) Validate(_ context.Context, username, password string) (Identity, error) {
+func (a *simpleBasicAuthValidator) Validate(_ context.Context, username, password string) (string, bool, bool, error) {
 	if a.username != "" &&
 		username == a.username &&
 		password == a.password {
-		return NewIdentity(username, ""), nil
+		return username, false, true, nil
 	}
-	return nil, ErrUnauthenticated
+	return "", false, false, nil
 }
 
 // simplePublicKeyValidator implements PublicKeyValidator with in-memory authorized keys.
@@ -144,15 +140,15 @@ func NewSimplePublicKeyValidator(authorizedKeys map[string]string) PublicKeyVali
 	}
 }
 
-func (a *simplePublicKeyValidator) Validate(_ context.Context, username string, keyType string, marshaledKey []byte) (Identity, error) {
+func (a *simplePublicKeyValidator) Validate(_ context.Context, username string, keyType string, marshaledKey []byte) (string, bool, bool, error) {
 	bound, ok := a.authorizedKeys[string(marshaledKey)]
 	if !ok {
-		return nil, ErrUnauthenticated
+		return "", false, false, nil
 	}
 	if bound == "" {
 		bound = username
 	}
-	return NewIdentity(bound, ""), nil
+	return bound, false, true, nil
 }
 
 // simpleTokenValidator implements TokenValidator with a static token.
@@ -169,20 +165,20 @@ func NewSimpleTokenValidator(username string, token string) TokenValidator {
 	}
 }
 
-func (a *simpleTokenValidator) Validate(_ context.Context, token string) (Identity, error) {
+func (a *simpleTokenValidator) Validate(_ context.Context, token string) (string, bool, bool, error) {
 	if a.token == "" {
-		return nil, nil
+		return "", true, false, nil
 	}
 
 	if strings.HasPrefix(token, signedTokenPrefix) {
-		return nil, nil
+		return "", true, false, nil
 	}
 
 	if token == a.token {
-		return NewIdentity(a.username, ""), nil
+		return a.username, false, true, nil
 	}
 
-	return nil, ErrUnauthenticated
+	return "", false, false, nil
 }
 
 type tokenSignValidator struct {
@@ -198,10 +194,7 @@ func NewTokenSignValidator(key []byte) TokenSignValidator {
 
 const signedTokenPrefix = "sign:"
 
-func (a *tokenSignValidator) Sign(_ context.Context, method, path string, id Identity, expiration time.Duration) (string, error) {
-	if id == nil {
-		return "", errors.New("cannot sign token for nil identity")
-	}
+func (a *tokenSignValidator) Sign(_ context.Context, method, path string, username string, expiration time.Duration) (string, error) {
 	if len(a.key) == 0 {
 		return "", nil
 	}
@@ -214,20 +207,20 @@ func (a *tokenSignValidator) Sign(_ context.Context, method, path string, id Ide
 		path = u.Path
 	}
 
-	token, err := signToken(a.key, id.Name(), time.Now().Add(expiration), method, path)
+	token, err := signToken(a.key, username, time.Now().Add(expiration), method, path)
 	if err != nil {
 		return "", err
 	}
 	return signedTokenPrefix + token, nil
 }
 
-func (a *tokenSignValidator) Validate(_ context.Context, method, path string, token string) (Identity, error) {
+func (a *tokenSignValidator) Validate(_ context.Context, method, path string, token string) (string, bool, bool, error) {
 	if len(a.key) == 0 {
-		return nil, nil
+		return "", true, false, nil
 	}
 
 	if !strings.HasPrefix(token, signedTokenPrefix) {
-		return nil, nil
+		return "", true, false, nil
 	}
 
 	token = strings.TrimPrefix(token, signedTokenPrefix)
@@ -235,16 +228,16 @@ func (a *tokenSignValidator) Validate(_ context.Context, method, path string, to
 	if !strings.HasPrefix(path, "/") {
 		u, err := url.Parse(path)
 		if err != nil {
-			return nil, ErrUnauthenticated
+			return "", false, false, nil
 		}
 		path = u.Path
 	}
 
 	username, ok := verifyToken(a.key, token, method, path)
 	if !ok {
-		return nil, ErrUnauthenticated
+		return "", false, false, nil
 	}
-	return NewIdentity(username, ""), nil
+	return username, false, true, nil
 }
 
 // Authenticators bundles the optional validators for each authentication scheme.
@@ -335,19 +328,21 @@ func BasicAuthHandler(auth BasicAuthValidator, h http.Handler) http.Handler {
 		}
 		username, password, ok := r.BasicAuth()
 		if ok {
-			id, err := auth.Validate(r.Context(), username, password)
-			if errors.Is(err, ErrUnauthenticated) {
-				w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+			user, next, valid, err := auth.Validate(r.Context(), username, password)
 			if err != nil {
 				slog.WarnContext(r.Context(), "basic auth validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if id != nil {
-				r = r.WithContext(WithIdentity(r.Context(), id))
+			if valid {
+				r = r.WithContext(WithIdentity(r.Context(), NewIdentity(user, "")))
+				h.ServeHTTP(w, r)
+				return
+			}
+			if !next {
+				w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 		h.ServeHTTP(w, r)
@@ -367,18 +362,20 @@ func TokenSignValidatorHandler(auth TokenSignValidator, h http.Handler) http.Han
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
-			id, err := auth.Validate(r.Context(), r.Method, r.URL.RequestURI(), token)
-			if errors.Is(err, ErrUnauthenticated) {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+			user, next, valid, err := auth.Validate(r.Context(), r.Method, r.URL.RequestURI(), token)
 			if err != nil {
 				slog.WarnContext(r.Context(), "token sign validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if id != nil {
-				r = r.WithContext(WithIdentity(r.Context(), id))
+			if valid {
+				r = r.WithContext(WithIdentity(r.Context(), NewIdentity(user, "")))
+				h.ServeHTTP(w, r)
+				return
+			}
+			if !next {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 		h.ServeHTTP(w, r)
@@ -398,18 +395,20 @@ func TokenValidatorHandler(auth TokenValidator, h http.Handler) http.Handler {
 			return
 		}
 		if token, ok := parseBearerToken(r); ok {
-			id, err := auth.Validate(r.Context(), token)
-			if errors.Is(err, ErrUnauthenticated) {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+			user, next, valid, err := auth.Validate(r.Context(), token)
 			if err != nil {
 				slog.WarnContext(r.Context(), "token validation error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
-			if id != nil {
-				r = r.WithContext(WithIdentity(r.Context(), id))
+			if valid {
+				r = r.WithContext(WithIdentity(r.Context(), NewIdentity(user, "")))
+				h.ServeHTTP(w, r)
+				return
+			}
+			if !next {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
 			}
 		}
 		h.ServeHTTP(w, r)
