@@ -103,9 +103,13 @@ func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirr
 	}
 	var engine *xetmirror.Mirror
 	if hubURL != "" {
+		upstream, err := xetmirror.StaticUpstream(hubURL, "")
+		if err != nil {
+			t.Fatalf("create xet mirror upstream: %v", err)
+		}
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
-			xetmirror.WithUpstream(hubURL),
+			xetmirror.WithUpstream(upstream),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 			xetmirror.WithClient(client),
 		)

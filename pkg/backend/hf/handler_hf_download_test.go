@@ -50,9 +50,13 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	}
 	var engine *xetmirror.Mirror
 	if upstreamURL != "" {
+		upstream, err := xetmirror.StaticUpstream(upstreamURL, "")
+		if err != nil {
+			t.Fatalf("create xet mirror upstream: %v", err)
+		}
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(wrapped),
-			xetmirror.WithUpstream(upstreamURL),
+			xetmirror.WithUpstream(upstream),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 			xetmirror.WithClient(client),
 		)

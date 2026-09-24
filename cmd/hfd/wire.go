@@ -121,10 +121,13 @@ func buildXETMirror(cfg *config, st *storage.Storage, xetC *xetclient.Client) (*
 	if cfg.PullMirrorURL == "" {
 		return nil, nil
 	}
+	upstream, err := xetmirror.StaticUpstream(strings.TrimSuffix(cfg.PullMirrorURL, "/"), cfg.ProxyToken)
+	if err != nil {
+		return nil, fmt.Errorf("create xet mirror engine: %w", err)
+	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(st.XETStorage()),
-		xetmirror.WithUpstream(strings.TrimSuffix(cfg.PullMirrorURL, "/")),
-		xetmirror.WithUpstreamToken(cfg.ProxyToken),
+		xetmirror.WithUpstream(upstream),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 		xetmirror.WithClient(xetC),
 	)

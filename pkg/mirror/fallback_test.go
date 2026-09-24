@@ -69,9 +69,13 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new xet client: %v", err)
 	}
+	upstream, err := xetmirror.StaticUpstream(srv.URL, "")
+	if err != nil {
+		t.Fatalf("new xet mirror upstream: %v", err)
+	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
-		xetmirror.WithUpstream(srv.URL),
+		xetmirror.WithUpstream(upstream),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
 		xetmirror.WithClient(client),
 	)
