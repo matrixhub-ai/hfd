@@ -6,7 +6,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/go-git/go-git/v6/plumbing/format/gitattributes"
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 
@@ -19,11 +18,23 @@ const GitattributesFileName = ".gitattributes"
 //go:embed gitattributes.txt
 var GitattributesText []byte
 
+// attribute is one assignment on a .gitattributes line: a bare name sets it, name=value gives it
+// a value, and -name or !name clears it (value empty, not set).
+type attribute struct {
+	name, value string
+	set         bool
+}
+
+type attrRule struct {
+	pattern string
+	attrs   []attribute
+}
+
 // GitAttributes represents parsed .gitattributes content and provides
 // methods to check if a file path matches LFS filter patterns.
 type GitAttributes struct {
-	rules  []gitattributes.MatchAttribute // pattern lines in file order
-	macros map[string][]gitattributes.Attribute
+	rules  []attrRule // pattern lines in file order
+	macros map[string][]attribute
 }
 
 // IsLFS returns true if the given file path matches an LFS filter pattern
@@ -36,10 +47,10 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 	// Like git's fill_one: later lines and later attributes win, each attribute is assigned once.
 	known := map[string]bool{}
 	for i := len(g.rules) - 1; i >= 0; i-- {
-		if !matchPattern(g.rules[i].Name, segs) {
+		if !matchPattern(g.rules[i].pattern, segs) {
 			continue
 		}
-		if lfs, ok := g.filter(g.rules[i].Attributes, known); ok {
+		if lfs, ok := g.filter(g.rules[i].attrs, known); ok {
 			return lfs
 		}
 	}
@@ -47,17 +58,17 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 }
 
 // filter resolves whether attrs assign filter=lfs, expanding only set macros as git does.
-func (g *GitAttributes) filter(attrs []gitattributes.Attribute, known map[string]bool) (lfs, ok bool) {
+func (g *GitAttributes) filter(attrs []attribute, known map[string]bool) (lfs, ok bool) {
 	for i := len(attrs) - 1; i >= 0; i-- {
 		a := attrs[i]
-		if known[a.Name()] {
+		if known[a.name] {
 			continue
 		}
-		known[a.Name()] = true
-		if a.Name() == "filter" {
-			return a.IsValueSet() && a.Value() == "lfs", true
+		known[a.name] = true
+		if a.name == "filter" {
+			return a.value == "lfs", true
 		}
-		if macro, isMacro := g.macros[a.Name()]; isMacro && a.IsSet() {
+		if macro, isMacro := g.macros[a.name]; isMacro && a.set {
 			if lfs, ok := g.filter(macro, known); ok {
 				return lfs, true
 			}
@@ -134,16 +145,17 @@ func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
 	if err != nil {
 		return nil, err
 	}
-	ga := &GitAttributes{macros: map[string][]gitattributes.Attribute{}}
+	ga := &GitAttributes{macros: map[string][]attribute{}}
 	for _, line := range strings.Split(string(content), "\n") {
-		// Like git, an overly long or invalid line is skipped without discarding the rest.
-		a, ok := parseAttrLine(line)
-		switch {
-		case !ok || a.Name == "":
-		case a.Pattern == nil:
-			ga.macros[a.Name] = a.Attributes
+		pattern, attrs, ok := parseAttrLine(line)
+		switch macro, isMacro := strings.CutPrefix(pattern, "[attr]"); {
+		case !ok:
+		case isMacro:
+			if validAttrName(macro) {
+				ga.macros[macro] = attrs
+			}
 		default:
-			ga.rules = append(ga.rules, a)
+			ga.rules = append(ga.rules, attrRule{pattern, attrs})
 		}
 	}
 	return ga, nil
@@ -152,16 +164,64 @@ func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
 // maxAttrLine is git's attribute line limit; longer lines are ignored.
 const maxAttrLine = 2048
 
-func parseAttrLine(line string) (a gitattributes.MatchAttribute, ok bool) {
-	// go-git indexes the first field of a line holding only an empty quoted pattern.
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-	if len(line) >= maxAttrLine {
-		return a, false
+// parseAttrLine splits a line into pattern and attributes like git: blank, comment and overly long
+// lines and lines naming an invalid attribute are skipped; a quoted pattern may contain spaces.
+func parseAttrLine(line string) (pattern string, attrs []attribute, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] == '#' || len(line) >= maxAttrLine {
+		return "", nil, false
 	}
-	a, err := gitattributes.ParseAttributesLine(line, nil, true)
-	return a, err == nil
+	rest := line
+	if line[0] == '"' {
+		if end := closingQuote(line); end > 0 {
+			pattern, rest = line[1:end], line[end+1:]
+		}
+	}
+	fields := strings.Fields(rest)
+	if pattern == "" {
+		if len(fields) == 0 {
+			return "", nil, false
+		}
+		pattern, fields = fields[0], fields[1:]
+	}
+	for _, f := range fields {
+		a := attribute{name: f, set: true}
+		if f[0] == '-' || f[0] == '!' {
+			a = attribute{name: f[1:]}
+			a.name, _, _ = strings.Cut(a.name, "=")
+		} else if name, value, found := strings.Cut(f, "="); found {
+			a = attribute{name: name, value: value}
+		}
+		if !validAttrName(a.name) {
+			return "", nil, false
+		}
+		attrs = append(attrs, a)
+	}
+	return pattern, attrs, true
+}
+
+// closingQuote returns the index of the quote closing the quoted pattern at line[0], or 0.
+func closingQuote(line string) int {
+	for i := 1; i < len(line); i++ {
+		switch line[i] {
+		case '\\':
+			i++
+		case '"':
+			return i
+		}
+	}
+	return 0
+}
+
+// validAttrName mirrors git: letters, digits, '-', '.' and '_', not starting with '-'.
+func validAttrName(name string) bool {
+	if name == "" || name[0] == '-' {
+		return false
+	}
+	for _, c := range name {
+		if c != '-' && c != '.' && c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
