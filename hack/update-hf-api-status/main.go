@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/internal/server"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 )
 
@@ -105,10 +106,18 @@ func fetchSpec(url string) (*OpenAPISpec, error) {
 	return &spec, nil
 }
 
-// buildRouter creates the huggingface handler (no storage needed for route
-// inspection) and returns its underlying mux.Router.
+// buildRouter creates the huggingface handler with the catalog callbacks hfd
+// wires (no storage needed for route inspection) and returns its underlying mux.Router.
 func buildRouter() *mux.Router {
-	return backendhf.NewHandler().Router()
+	hooks := &server.Hooks{}
+	return backendhf.NewHandler(
+		backendhf.WithCreateRepoFunc(hooks.CreateRepo),
+		backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
+		backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+		backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
+		backendhf.WithListReposFunc(hooks.ListRepos),
+		backendhf.WithWhoamiFunc(hooks.Whoami),
+	).Router()
 }
 
 // apiEntry is one row in the completion table.

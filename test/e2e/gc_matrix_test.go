@@ -161,12 +161,12 @@ func TestGCLifecycle(t *testing.T) {
 	)
 	preOpen := newMirrorPreOpenHook(proxyMirror)
 	var handler http.Handler
-	handler = backendhf.NewHandler(
+	handler = backendhf.NewHandler(append(catalogOptions(st),
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(proxyMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
 		backendhf.WithPreOpenHookFunc(preOpen),
-	)
+	)...)
 	handler = backendlfs.NewHandler(
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),

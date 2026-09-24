@@ -23,6 +23,7 @@ import (
 
 	"github.com/wzshiming/xet/auth"
 
+	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -164,6 +165,19 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 	}
 }
 
+// catalogOptions enables the six catalog routes with the server defaults like cmd/hfd does.
+func catalogOptions(st *storage.Storage) []backendhf.Option {
+	hooks := &server.Hooks{Storage: st}
+	return []backendhf.Option{
+		backendhf.WithCreateRepoFunc(hooks.CreateRepo),
+		backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
+		backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+		backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
+		backendhf.WithListReposFunc(hooks.ListRepos),
+		backendhf.WithWhoamiFunc(hooks.Whoami),
+	}
+}
+
 // newE2EServer wires the handler chain in pkg/server's order (internal API →
 // xet CAS server → authentication → http → lfs → hf); withMirrorSource
 // installs PullMirrorReadOnly on the git transports. The xet engine ingests
@@ -210,11 +224,11 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		preOpen = newMirrorPreOpenHook(sharedMirror)
 	}
 
-	hfOpts := []backendhf.Option{
+	hfOpts := append(catalogOptions(st),
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
-	}
+	)
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
 	}

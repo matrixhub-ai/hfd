@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -57,9 +58,9 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Collect metadata (tags, cardData, pipeline_tag, etc.) from README.md and config.json.
-	meta := collectRepoMetadata(repo, rev)
+	meta := hfmeta.Collect(repo, rev)
 
-	tags := meta.tags
+	tags := meta.Tags
 	if tags == nil {
 		tags = []string{}
 	}
@@ -74,7 +75,7 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 		Likes:       0,
 		Tags:        tags,
 		Siblings:    siblings,
-		CardData:    meta.cardData,
+		CardData:    meta.CardData,
 		UsedStorage: usedStorage,
 	}
 

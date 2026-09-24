@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +17,11 @@ import (
 	"github.com/wzshiming/xet/auth"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
 )
@@ -89,6 +93,11 @@ func TestNewHTTPHandler(t *testing.T) {
 		CASAuthorizer:  issuer,
 		Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")},
 	}
+	bobToken := &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")}
+	deny := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
+		return false, nil
+	}
+	hooks := &Hooks{Storage: newStorage(t)}
 	cases := []struct {
 		name        string
 		options     Options
@@ -96,6 +105,7 @@ func TestNewHTTPHandler(t *testing.T) {
 		method      string
 		token       string
 		status      int
+		body        string
 		identity    authenticate.Identity
 		defaultNext bool
 	}{
@@ -105,7 +115,15 @@ func TestNewHTTPHandler(t *testing.T) {
 				next.ServeHTTP(w, request.WithContext(authenticate.WithIdentity(request.Context(), authenticate.NewIdentity("alice", ""))))
 			})
 		}}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.NewIdentity("alice", "")},
-		{name: "token before hf", options: Options{Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")}}, path: "/api/whoami-v2", token: "t0k", status: http.StatusOK},
+		{name: "token before hf", options: Options{Authenticators: bobToken, HFOptions: []backendhf.Option{backendhf.WithWhoamiFunc(hooks.Whoami)}},
+			path: "/api/whoami-v2", token: "t0k", status: http.StatusOK, body: `"name":"bob"`},
+		{name: "nil whoami falls to Next", options: Options{Authenticators: bobToken}, path: "/api/whoami-v2", token: "t0k", status: http.StatusTeapot, identity: authenticate.NewIdentity("bob", "")},
+		{name: "nil list falls to Next", path: "/api/models", status: http.StatusTeapot, identity: authenticate.Anonymous},
+		{name: "custom whoami sees identity", options: Options{Authenticators: bobToken, HFOptions: []backendhf.Option{
+			backendhf.WithWhoamiFunc(func(ctx context.Context) (*backendhf.WhoamiResponse, error) {
+				return &backendhf.WhoamiResponse{Name: "custom-" + authenticate.IdentityFrom(ctx).Name()}, nil
+			}),
+		}}, path: "/api/whoami-v2", token: "t0k", status: http.StatusOK, body: `"name":"custom-bob"`},
 		{name: "CAS before user authentication", options: casOptions, path: "/v1/reconstructions/" + fileHash.String(), token: casToken, status: http.StatusNotFound},
 		{name: "CAS token is not a user", options: casOptions, path: "/api/whoami-v2", token: casToken, status: http.StatusUnauthorized},
 		{name: "nil CAS authorizer denies read", path: "/v1/reconstructions/" + fileHash.String(), status: http.StatusUnauthorized},
@@ -115,8 +133,12 @@ func TestNewHTTPHandler(t *testing.T) {
 		{name: "internal usage disabled", path: "/internal/usage", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal usage enabled", options: Options{InternalGC: gc.NewCollector(xsStorage.RepositoriesFS(), xs)}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},
-		{name: "permission denied", options: Options{Permission: func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
-			return false, nil
+		{name: "permission denied", options: Options{Permission: deny, HFOptions: []backendhf.Option{backendhf.WithListReposFunc(hooks.ListRepos)}}, path: "/api/models", status: http.StatusForbidden},
+		{name: "permission denied skips callback", options: Options{Permission: deny, HFOptions: []backendhf.Option{
+			backendhf.WithListReposFunc(func(context.Context, string, backendhf.ListQuery) ([]backendhf.RepoListItem, bool, error) {
+				t.Error("list callback ran despite permission denial")
+				return nil, false, nil
+			}),
 		}}, path: "/api/models", status: http.StatusForbidden},
 	}
 	for _, test := range cases {
@@ -145,6 +167,9 @@ func TestNewHTTPHandler(t *testing.T) {
 			if recorder.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", recorder.Code, test.status, recorder.Body.String())
 			}
+			if !strings.Contains(recorder.Body.String(), test.body) {
+				t.Errorf("body = %s, want containing %s", recorder.Body.String(), test.body)
+			}
 			if !reflect.DeepEqual(gotIdentity, test.identity) {
 				t.Errorf("tail identity = %#v, want %#v", gotIdentity, test.identity)
 			}
@@ -152,6 +177,76 @@ func TestNewHTTPHandler(t *testing.T) {
 				t.Error("access log is empty")
 			}
 		})
+	}
+}
+
+// TestNewHTTPHandlerCatalogLifecycle drives the six catalog routes through the chain with Hooks wired like cmd/hfd.
+func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	st := newStorage(t)
+	hooks := &Hooks{Storage: st}
+	handler := NewHTTPHandler(Options{
+		Storage:        st,
+		Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")},
+		PreReceive:     hooks.PreReceive,
+		PostReceive:    hooks.PostReceive,
+		HFOptions: []backendhf.Option{
+			backendhf.WithCreateRepoFunc(hooks.CreateRepo),
+			backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
+			backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+			backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
+			backendhf.WithListReposFunc(hooks.ListRepos),
+			backendhf.WithWhoamiFunc(hooks.Whoami),
+		},
+	})
+	do := func(t *testing.T, method, path, body string, want int) string {
+		t.Helper()
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer t0k")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != want {
+			t.Fatalf("%s %s: status = %d, want %d: %s", method, path, recorder.Code, want, recorder.Body)
+		}
+		return recorder.Body.String()
+	}
+	repoPath := func(name string) string { return repository.ResolvePath(name) }
+
+	do(t, http.MethodPost, "/api/repos/create", `{"type":"dataset","name":"repo","organization":"org"}`, http.StatusOK)
+	if !repository.IsRepository(st.RepositoriesFS(), repoPath("datasets/org/repo")) {
+		t.Fatal("create did not initialize datasets/org/repo on the storage")
+	}
+	if body := do(t, http.MethodGet, "/api/datasets?author=org", "", http.StatusOK); !strings.Contains(body, `"id":"org/repo"`) {
+		t.Errorf("list = %s, want org/repo", body)
+	}
+	do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
+	do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
+	if !repository.IsRepository(st.RepositoriesFS(), repoPath("datasets/org/moved")) {
+		t.Fatal("move did not rename the repository on the storage")
+	}
+	do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
+	if repository.IsRepository(st.RepositoriesFS(), repoPath("datasets/org/moved")) {
+		t.Fatal("delete left the repository on the storage")
+	}
+	if body := do(t, http.MethodGet, "/api/whoami-v2", "", http.StatusOK); !strings.Contains(body, `"name":"bob"`) {
+		t.Errorf("whoami = %s, want bob", body)
+	}
+	for _, want := range []string{
+		`msg="Create repository" user=bob repo=datasets/org/repo`,
+		`msg="Post-receive hook" user=bob repo=datasets/org/repo`,
+		`msg="List repositories" user=bob repoType=datasets author=org`,
+		`msg="Update repository settings" user=bob repo=datasets/org/repo`,
+		`msg="Move repository" user=bob from=datasets/org/repo to=datasets/org/moved`,
+		`msg="Delete repository" user=bob repo=datasets/org/moved`,
+		`msg=Whoami user=bob`,
+	} {
+		if strings.Count(logs.String(), want) != 1 {
+			t.Errorf("logs = %s\nwant exactly one %q", logs.String(), want)
+		}
 	}
 }
 

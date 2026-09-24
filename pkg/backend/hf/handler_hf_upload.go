@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-git/go-git/v6/plumbing"
@@ -68,7 +67,7 @@ func repoTypePrefix(repoType string) string {
 
 // handleCreateRepo handles POST /api/repos/create
 func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
-	var req createRepoRequest
+	var req CreateRepoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
 		return
@@ -89,60 +88,20 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, email := commitAuthorIdentity(r.Context())
-
-	urlName := "/" + storageName
-
-	repoPath := repository.ResolvePath(storageName)
-	if repoPath == "" {
+	if repository.ResolvePath(storageName) == "" {
 		responseJSON(w, fmt.Errorf("invalid repository name: %q", repoName), http.StatusBadRequest)
 		return
 	}
 
-	// Check if repository already exists
-	if repository.IsRepository(h.storage.RepositoriesFS(), repoPath) {
-		resp := createRepoResponse{
-			URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
-		}
-		responseJSON(w, resp, http.StatusOK)
-		return
-	}
-
-	// Create repository directory
-	if err := h.storage.RepositoriesFS().MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
-		responseJSON(w, fmt.Errorf("failed to create repository directory: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	defaultBranch := "main"
-
-	// Initialize bare repository
-	repo, err := repository.Init(r.Context(), h.storage.RepositoriesFS(), repoPath, defaultBranch)
+	updates, err := h.createRepoFunc(r.Context(), storageName, req)
 	if err != nil {
-		responseJSON(w, fmt.Errorf("failed to initialize repository: %v", err), http.StatusInternalServerError)
+		respondCatalogError(w, err)
 		return
 	}
-
-	// Create initial commit with default .gitattributes
-	commitHash, err := repo.CreateCommit(context.Background(), defaultBranch, "Initial commit", name, email, []repository.CommitOperation{
-		{
-			Type:    repository.CommitOperationAdd,
-			Path:    repository.GitattributesFileName,
-			Content: repository.GitattributesText,
-		},
-	}, "")
-	if err != nil {
-		_ = repo.Remove()
-		responseJSON(w, fmt.Errorf("failed to create initial commit: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	h.afterReceivePack(r.Context(), storageName, []receive.RefUpdate{
-		repo.RefUpdate(receive.ZeroHash, commitHash, "refs/heads/"+defaultBranch),
-	})
+	h.afterReceivePack(r.Context(), storageName, updates)
 
 	resp := createRepoResponse{
-		URL: fmt.Sprintf("%s%s", requestOrigin(r), urlName),
+		URL: fmt.Sprintf("%s/%s", requestOrigin(r), storageName),
 	}
 	responseJSON(w, resp, http.StatusOK)
 }
