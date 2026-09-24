@@ -1,19 +1,26 @@
 package lfs
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 
 	"github.com/git-lfs/git-lfs/v3/lfs"
 )
 
-// LFS pointers are small (typically < 200 bytes) and have a specific format
+// MaxLFSPointerSize is git-lfs's blob size cutoff: only blobs below it are pointer candidates.
 const MaxLFSPointerSize = 1024
 
-// DecodePointer parses an LFS pointer from a reader
-// Returns nil if the content is not a valid LFS pointer
+// DecodePointer parses an LFS pointer from a reader; empty or oversized content is nil, nil, as in git-lfs.
 func DecodePointer(r io.Reader) (*Pointer, error) {
-	ptr, err := lfs.DecodePointer(r)
+	buf, err := io.ReadAll(io.LimitReader(r, MaxLFSPointerSize))
+	if err != nil {
+		return nil, err
+	}
+	if len(buf) == 0 || len(buf) >= MaxLFSPointerSize {
+		return nil, nil
+	}
+	ptr, err := lfs.DecodePointer(bytes.NewReader(buf))
 	if err != nil || ptr == nil {
 		return nil, err
 	}
