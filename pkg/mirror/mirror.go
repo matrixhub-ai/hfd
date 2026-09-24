@@ -59,17 +59,18 @@ type Mirror struct {
 	pushGroup             singleflight.Group
 	background            sync.WaitGroup
 
-	xetStorage     xetstorage.Storage
-	xetClient      *xetclient.Client
-	xetMirror      *xetmirror.Mirror // ingest engine; nil without a pull upstream
-	mint           func(auth.Grant) (string, int64, error)
-	externalURL    string
-	concurrency    int
-	dataDir        string
-	httpClient     *http.Client // LFS batch/upload/verify; no timeout, uploads may run long
+	xetStorage  xetstorage.Storage
+	xetClient   *xetclient.Client
+	xetMirror   *xetmirror.Mirror // ingest engine; nil without a pull upstream
+	mint        func(auth.Grant) (string, int64, error)
+	externalURL string
+	concurrency int
+	dataDir     string
+	httpClient  *http.Client // LFS batch/upload/verify; no timeout, uploads may run long
 
-	oidIndex    sync.Map // oid -> resolveTarget, populated by pull syncs
-	prefetching sync.Map // oid -> struct{}, in-flight prefetch dedupe
+	oidMu       sync.Mutex
+	oidIndex    map[string][]resolveTarget // oid -> targets, most recently registered first
+	prefetching sync.Map                   // oid -> struct{}, in-flight prefetch dedupe
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -187,7 +188,7 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 // assemble the xet stack; the caller (cmd/hfd) builds the client, storage,
 // and mirror engine and injects each piece.
 func NewMirror(opts ...Option) (*Mirror, error) {
-	m := &Mirror{}
+	m := &Mirror{oidIndex: make(map[string][]resolveTarget)}
 	for _, opt := range opts {
 		opt(m)
 	}

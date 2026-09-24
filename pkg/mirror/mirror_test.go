@@ -92,6 +92,20 @@ func forEachRepositoriesFS(t *testing.T, fn func(t *testing.T, fs billy.Filesyst
 // a Mirror over them with the extra options appended.
 func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirror {
 	t.Helper()
+	var upstream xetmirror.UpstreamFunc
+	if hubURL != "" {
+		var err error
+		upstream, err = xetmirror.StaticUpstream(hubURL, "")
+		if err != nil {
+			t.Fatalf("create xet mirror upstream: %v", err)
+		}
+	}
+	return newMirrorWithUpstream(t, upstream, extra...)
+}
+
+// newMirrorWithUpstream is newMirror with a per-repo selector; nil leaves the engine off.
+func newMirrorWithUpstream(t *testing.T, upstream xetmirror.UpstreamFunc, extra ...mirror.Option) *mirror.Mirror {
+	t.Helper()
 	st, err := storage.NewStorage(storage.WithRootDir(newXETDataDir(t)))
 	if err != nil {
 		t.Fatalf("create storage: %v", err)
@@ -102,11 +116,7 @@ func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirr
 		t.Fatalf("create xet client: %v", err)
 	}
 	var engine *xetmirror.Mirror
-	if hubURL != "" {
-		upstream, err := xetmirror.StaticUpstream(hubURL, "")
-		if err != nil {
-			t.Fatalf("create xet mirror upstream: %v", err)
-		}
+	if upstream != nil {
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithUpstream(upstream),

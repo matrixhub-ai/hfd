@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/wzshiming/xet/auth"
 	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // xetNamespace is the single CAS namespace the data plane operates in,
@@ -34,27 +34,57 @@ type resolveTarget struct {
 	size     int64
 }
 
+// The engine appends this name verbatim to hub URLs and hands it to the upstream selector.
+func canonicalRepoName(name string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(repository.ResolvePath(name), "/"), ".git")
+}
+
 // RegisterObject registers the upstream resolve target for an OID so
 // ServeOID (and LFS batch KnowsObject) can serve it, e.g. for revisions
 // outside pull-scan tips.
 func (m *Mirror) RegisterObject(oid, repoName, commit, path string, size int64) {
-	m.oidIndex.Store(oid, resolveTarget{repoName: repoName, commit: commit, path: path, size: size})
+	m.registerTarget(oid, resolveTarget{repoName: canonicalRepoName(repoName), commit: commit, path: path, size: size})
+}
+
+// registerTarget stores an already canonical target; stripping twice would rename a repository ending in .git.
+func (m *Mirror) registerTarget(oid string, t resolveTarget) {
+	m.oidMu.Lock()
+	defer m.oidMu.Unlock()
+	old := m.oidIndex[oid]
+	for _, have := range old {
+		if have == t {
+			return
+		}
+	}
+	// A fresh slice keeps readers iterating the old one unaffected.
+	m.oidIndex[oid] = append([]resolveTarget{t}, old...)
+}
+
+func (m *Mirror) targets(oid string) []resolveTarget {
+	m.oidMu.Lock()
+	defer m.oidMu.Unlock()
+	return m.oidIndex[oid]
 }
 
 // ServeOID serves the object by OID straight from the ingest engine: ready
 // entries are served from storage, in-flight ingests are streamed from the
-// growing spool (ingest-on-miss). It reports false when the OID is
-// unregistered, there is no engine, or the upstream has no file, letting the
-// caller answer its own 404.
+// growing spool (ingest-on-miss). Registered targets are tried in order. It
+// reports false when the OID is unregistered, there is no engine, or no
+// upstream has the file, letting the caller answer its own 404.
 func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bool {
 	if m.xetMirror == nil {
 		return false
 	}
-	v, ok := m.oidIndex.Load(oid)
-	if !ok {
-		return false
+	for _, t := range m.targets(oid) {
+		if m.serveTarget(w, r, oid, t) {
+			return true
+		}
 	}
-	t := v.(resolveTarget)
+	return false
+}
+
+// serveTarget serves the object through one resolve target; false leaves the response unwritten.
+func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) bool {
 	res, err := m.resolve(r.Context(), t)
 	if err != nil {
 		return false
@@ -95,7 +125,7 @@ func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bo
 // the escaped URL path form Resolve shares tasks and entries under.
 func (m *Mirror) resolve(ctx context.Context, t resolveTarget) (*xetmirror.Resolution, error) {
 	return m.xetMirror.Resolve(ctx,
-		escapePath(strings.TrimPrefix(t.repoName, "/")),
+		escapePath(t.repoName),
 		t.commit,
 		escapePath(t.path),
 	)
@@ -187,8 +217,7 @@ func (m *Mirror) KnowsObject(ctx context.Context, oid string) bool {
 	if m.HasObject(ctx, oid) {
 		return true
 	}
-	_, ok := m.oidIndex.Load(oid)
-	return ok
+	return len(m.targets(oid)) > 0
 }
 
 // OpenObject returns a reader over the reconstructed file with the given
@@ -238,8 +267,7 @@ func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string
 		return
 	}
 	for _, oid := range oids {
-		t := targets[oid]
-		m.RegisterObject(oid, t.repoName, t.commit, t.path, t.size)
+		m.registerTarget(oid, targets[oid])
 	}
 	m.background.Go(func() {
 		ctx := context.Background()
@@ -310,7 +338,7 @@ func (m *Mirror) fallbackDownload(ctx context.Context, sourceURL, oid string, si
 // land; abandoning the wait on ctx cancel never cancels the ingest itself.
 func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
 	in, err := m.xetMirror.Ingest(
-		escapePath(strings.TrimPrefix(target.repoName, "/")),
+		escapePath(target.repoName),
 		target.commit,
 		escapePath(target.path),
 	)
