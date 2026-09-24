@@ -22,7 +22,8 @@ var GitattributesText []byte
 // GitAttributes represents parsed .gitattributes content and provides
 // methods to check if a file path matches LFS filter patterns.
 type GitAttributes struct {
-	lines []gitattr.PatternLine
+	lines  []gitattr.PatternLine
+	macros map[string][]*gitattr.Attr
 }
 
 // IsLFS returns true if the given file path matches an LFS filter pattern
@@ -31,21 +32,37 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 	if g == nil {
 		return false
 	}
-	var lfs bool
-	// Like git, matching lines apply in file order and the last filter assignment wins, also within a line.
-	for _, line := range g.lines {
-		if !line.Pattern().Match(filePath) {
+	// Like git's fill_one: later lines and later attributes win, each attribute is assigned once.
+	known := map[string]bool{}
+	for i := len(g.lines) - 1; i >= 0; i-- {
+		if !g.lines[i].Pattern().Match(filePath) {
 			continue
 		}
-		attrs := line.Attrs()
-		for i := len(attrs) - 1; i >= 0; i-- {
-			if attrs[i].K == "filter" {
-				lfs = attrs[i].V == "lfs"
-				break
+		if v, ok := g.filter(g.lines[i].Attrs(), known); ok {
+			return v == "lfs"
+		}
+	}
+	return false
+}
+
+// filter resolves the filter attribute from attrs, expanding only set macros as git does.
+func (g *GitAttributes) filter(attrs []*gitattr.Attr, known map[string]bool) (string, bool) {
+	for i := len(attrs) - 1; i >= 0; i-- {
+		a := attrs[i]
+		if known[a.K] {
+			continue
+		}
+		known[a.K] = true
+		if a.K == "filter" {
+			return a.V, true
+		}
+		if macro, ok := g.macros[a.K]; ok && a.V == "true" {
+			if v, ok := g.filter(macro, known); ok {
+				return v, true
 			}
 		}
 	}
-	return lfs
+	return "", false
 }
 
 var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
@@ -95,10 +112,16 @@ func parseGitAttributesReader(r io.Reader) (ga *GitAttributes, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// Like git, macros apply wherever they are defined: register them all, then expand.
-	mp := gitattr.NewMacroProcessor()
-	mp.ProcessLines(lines, true)
-	return &GitAttributes{lines: mp.ProcessLines(lines, false)}, nil
+	ga = &GitAttributes{macros: map[string][]*gitattr.Attr{}}
+	for _, line := range lines {
+		switch l := line.(type) {
+		case gitattr.PatternLine:
+			ga.lines = append(ga.lines, l)
+		case gitattr.MacroLine:
+			ga.macros[l.Macro()] = l.Attrs()
+		}
+	}
+	return ga, nil
 }
 
 // normalizeAttrTabs turns tabs into spaces outside quoted patterns; gitattr only splits on spaces.
