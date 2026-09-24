@@ -457,6 +457,7 @@ func runHubUploadAndDownload(t *testing.T, s *e2eServer, c hubClient, rt hubRepo
 	files := []hubFile{
 		{"README.md", "# Hub API Matrix\n"},
 		{"data/config.json", "{\"key\": \"value\"}\n"},
+		{"data/empty.txt", ""},
 	}
 
 	if c.py {

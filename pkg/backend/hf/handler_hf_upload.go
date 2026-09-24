@@ -106,6 +106,9 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, resp, http.StatusOK)
 }
 
+// maxRegularFileSize is the Hub's limit for regular (non-LFS) git files.
+const maxRegularFileSize = 10 << 20
+
 // handlePreupload handles POST /api/{repoType}/{repo}/preupload/{rev}
 func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -136,7 +139,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	var respFiles []preuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
-		if gitAttrs.IsLFS(file.Path) {
+		if gitAttrs.IsLFS(file.Path) || file.Size > maxRegularFileSize {
 			uploadMode = "lfs"
 		}
 
