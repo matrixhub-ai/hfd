@@ -78,9 +78,9 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 	// Include authentication headers when a token signer is configured,
 	// so LFS clients can authenticate with the HTTP server.
 	if s.tokenSignValidator != nil {
-		id := authenticate.IdentityFrom(ctx)
+		username := authenticate.IdentityFrom(ctx).Name()
 		batchURL := href + "/objects/batch"
-		if token, err := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, id, time.Duration(resp.ExpiresIn)*time.Second); err != nil {
+		if token, err := s.tokenSignValidator.Sign(ctx, http.MethodPost, batchURL, username, time.Duration(resp.ExpiresIn)*time.Second); err != nil {
 			slog.WarnContext(ctx, "ssh protocol: failed to sign LFS auth token", "error", err)
 		} else if token != "" {
 			resp.Header["Authorization"] = "Bearer " + token

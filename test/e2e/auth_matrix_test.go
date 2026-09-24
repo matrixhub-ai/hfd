@@ -117,7 +117,7 @@ func TestAuthMatrix(t *testing.T) {
 			// A token signed for the exact (method, path) of the request.
 			name: "BearerValid",
 			apply: func(t *testing.T, req *http.Request) {
-				token, err := signer.Sign(req.Context(), req.Method, req.URL.Path, authenticate.NewIdentity(authMatrixUser, ""), time.Hour)
+				token, err := signer.Sign(req.Context(), req.Method, req.URL.Path, authMatrixUser, time.Hour)
 				if err != nil {
 					t.Fatalf("Failed to sign token: %v", err)
 				}

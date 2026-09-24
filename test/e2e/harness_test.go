@@ -259,9 +259,9 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		basic := authenticate.NewSimpleBasicAuthValidator(cfg.authUser, cfg.authPass)
 		if len(cfg.basicUsers) > 0 {
 			primary := basic
-			basic = authenticate.BasicAuthValidatorFunc(func(ctx context.Context, username, password string) (authenticate.Identity, error) {
+			basic = authenticate.BasicAuthValidatorFunc(func(ctx context.Context, username, password string) (string, bool, bool, error) {
 				if pass, ok := cfg.basicUsers[username]; ok && pass == password {
-					return authenticate.NewIdentity(username, ""), nil
+					return username, false, true, nil
 				}
 				return primary.Validate(ctx, username, password)
 			})

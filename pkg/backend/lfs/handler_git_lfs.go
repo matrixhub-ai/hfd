@@ -174,13 +174,13 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 		Actions: make(map[string]*lfsLink),
 	}
 
-	id := authenticate.IdentityFrom(ctx)
+	username := authenticate.IdentityFrom(ctx).Name()
 
 	if download && op == "download" {
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, id, tokenExpiration); err != nil {
+			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodGet, link, username, tokenExpiration); err != nil {
 				slog.WarnContext(ctx, "failed to sign token for LFS download link", "oid", rv.Oid, "error", err)
 			} else if token != "" {
 				header["Authorization"] = "Bearer " + token
@@ -195,7 +195,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 		link := rv.objectsLink()
 		header := map[string]string{"Accept": contentMediaType}
 		if h.tokenSignValidator != nil {
-			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, id, tokenExpiration); err != nil {
+			if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPut, link, username, tokenExpiration); err != nil {
 				slog.WarnContext(ctx, "failed to sign token for LFS upload link", "oid", rv.Oid, "error", err)
 			} else if token != "" {
 				header["Authorization"] = "Bearer " + token
@@ -204,7 +204,7 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 			header["Authorization"] = rv.Authorization
 		}
 		rep.Actions["upload"] = &lfsLink{Href: link, Header: header}
-		rep.Actions["verify"] = h.verifyAction(ctx, rv, id)
+		rep.Actions["verify"] = h.verifyAction(ctx, rv, username)
 	}
 
 	if len(rep.Actions) == 0 {
@@ -216,11 +216,11 @@ func (h *Handler) lfsRepresent(ctx context.Context, op string, rv *lfsRequestVar
 
 // verifyAction builds the post-upload verify action, always served by this
 // server so uploads are checked even when the content goes directly to S3.
-func (h *Handler) verifyAction(ctx context.Context, rv *lfsRequestVars, id authenticate.Identity) *lfsLink {
+func (h *Handler) verifyAction(ctx context.Context, rv *lfsRequestVars, username string) *lfsLink {
 	verifyHeader := make(map[string]string)
 	verifyLink := rv.verifyLink()
 	if h.tokenSignValidator != nil {
-		if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, id, tokenExpiration); err != nil {
+		if token, err := h.tokenSignValidator.Sign(ctx, http.MethodPost, verifyLink, username, tokenExpiration); err != nil {
 			slog.WarnContext(ctx, "failed to sign token for LFS verify link", "oid", rv.Oid, "error", err)
 		} else if token != "" {
 			verifyHeader["Authorization"] = "Bearer " + token
