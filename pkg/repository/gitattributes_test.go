@@ -44,6 +44,11 @@ func TestGitAttributesIsLFS(t *testing.T) {
 		{"bracket negation excludes", "[!a].bin filter=lfs\n", "a.bin", false},
 		{"bracket negation includes", "[!a].bin filter=lfs\n", "b.bin", true},
 		{"bad line does not hide later lines", "\"unbal filter=lfs\n*.bin filter=lfs\n", "model.bin", true},
+		{"trailing comment drops only its line", "*.bin filter=lfs\nREADME.md filter=lfs # c\n", "model.bin", true},
+		{"unset with value drops only its line", "README.md -filter=lfs\n*.bin filter=lfs\n", "model.bin", true},
+		{"empty quoted pattern drops only its line", "*.bin filter=lfs\n\"\"\n", "model.bin", true},
+		{"overly long line is ignored", strings.Repeat("*", 2040) + " filter=lfs\n*.txt filter=lfs\n", "model.bin", false},
+		{"line below the length limit applies", strings.Repeat("*", 2030) + " filter=lfs\n", "model.bin", true},
 		{"macro value true is not set", "[attr]lfs filter=lfs\n*.bin lfs=true\n", "model.bin", false},
 		{"other filter", "*.txt filter=other\n", "a.txt", false},
 	}
@@ -82,7 +87,7 @@ func TestGitAttributesPathologicalCost(t *testing.T) {
 	}{
 		{strings.Repeat("*a", 7) + "*b filter=lfs\n", strings.Repeat("a", 30), false},
 		{strings.Repeat("**/", 10) + "b.bin filter=lfs\n", strings.Repeat("d/", 30) + "a.bin", false},
-		{strings.Repeat("*", 60000) + " filter=lfs\n", "model.bin", true},
+		{strings.Repeat("*", 60000) + " filter=lfs\n", "model.bin", false},
 	} {
 		start := time.Now()
 		ga, err := parseGitAttributesReader(strings.NewReader(tt.content))

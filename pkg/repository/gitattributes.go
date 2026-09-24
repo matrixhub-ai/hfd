@@ -2,7 +2,6 @@ package repository
 
 import (
 	_ "embed"
-	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -68,12 +67,9 @@ func (g *GitAttributes) filter(attrs []gitattributes.Attribute, known map[string
 }
 
 // matchPattern applies gitattributes glob rules to path segments: a slash-less pattern matches the
-// basename, a slash anchors at the root, "**" spans directories (one or more when trailing) and a
-// directory pattern never matches a file. Segments use path.Match, so cost stays linear.
+// basename, a slash anchors at the root and "**" spans directories (one or more when trailing).
+// Segments go through path.Match, which keeps the cost polynomial in the input sizes.
 func matchPattern(pattern string, segs []string) bool {
-	if strings.HasSuffix(pattern, "/") {
-		return false
-	}
 	if !strings.Contains(pattern, "/") {
 		segs = segs[len(segs)-1:]
 	}
@@ -133,24 +129,39 @@ func parseGitAttributes(blob *Blob) (*GitAttributes, error) {
 	return ga, nil
 }
 
-func parseGitAttributesReader(r io.Reader) (ga *GitAttributes, err error) {
-	// go-git indexes the first field of a line holding only an empty quoted pattern.
-	defer func() {
-		if p := recover(); p != nil {
-			ga, err = nil, fmt.Errorf("parse %s: %v", GitattributesFileName, p)
-		}
-	}()
-	attrs, err := gitattributes.ReadAttributes(r, nil, true)
+func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
+	content, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	ga = &GitAttributes{macros: map[string][]gitattributes.Attribute{}}
-	for _, a := range attrs {
-		if a.Pattern == nil {
+	ga := &GitAttributes{macros: map[string][]gitattributes.Attribute{}}
+	for _, line := range strings.Split(string(content), "\n") {
+		// Like git, an overly long or invalid line is skipped without discarding the rest.
+		a, ok := parseAttrLine(line)
+		switch {
+		case !ok || a.Name == "":
+		case a.Pattern == nil:
 			ga.macros[a.Name] = a.Attributes
-		} else {
+		default:
 			ga.rules = append(ga.rules, a)
 		}
 	}
 	return ga, nil
+}
+
+// maxAttrLine is git's attribute line limit; longer lines are ignored.
+const maxAttrLine = 2048
+
+func parseAttrLine(line string) (a gitattributes.MatchAttribute, ok bool) {
+	// go-git indexes the first field of a line holding only an empty quoted pattern.
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	if len(line) >= maxAttrLine {
+		return a, false
+	}
+	a, err := gitattributes.ParseAttributesLine(line, nil, true)
+	return a, err == nil
 }
