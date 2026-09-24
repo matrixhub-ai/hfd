@@ -29,6 +29,7 @@ func TestGitAttributesIsLFS(t *testing.T) {
 		{"same line -filter then macro", "[attr]lfs filter=lfs diff=lfs\n*.bin -filter lfs\n", "model.bin", true},
 		{"same line later filter wins", "*.bin filter=lfs filter=other\n", "model.bin", false},
 		{"unspecified macro keeps filter", "[attr]lfs filter=lfs\n*.bin filter=lfs !lfs\n", "model.bin", true},
+		{"unspecified macro does not expand", "[attr]lfs filter=lfs\n*.bin filter=other !lfs\n", "model.bin", false},
 		{"nested macro", "[attr]a filter=lfs\n[attr]b a\n*.bin b\n", "model.bin", true},
 		{"later -macro blocks expansion", "[attr]lfs filter=lfs\n*.bin lfs\n*.bin -lfs\n", "model.bin", false},
 		{"tab separated", "*.bin\tfilter=lfs\tdiff=lfs\n", "model.bin", true},
