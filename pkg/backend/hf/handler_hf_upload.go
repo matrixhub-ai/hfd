@@ -59,6 +59,8 @@ func repoTypePrefix(repoType string) string {
 		return "datasets"
 	case "space":
 		return "spaces"
+	case "kernel":
+		return "kernels"
 	default:
 		return ""
 	}

@@ -613,8 +613,13 @@ func checkPythonHFHub(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		missing("python3 not available; install python3 with huggingface_hub")
 	}
-	cmd := exec.CommandContext(t.Context(), "python3", "-c", "import huggingface_hub")
+	cmd := exec.CommandContext(t.Context(), "python3", "-c", `import huggingface_hub
+from huggingface_hub import constants
+raise SystemExit(0 if "kernel" in getattr(constants, "REPO_TYPES_WITH_KERNEL", ()) else 3)`)
 	if err := cmd.Run(); err != nil {
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 3 {
+			missing("huggingface_hub lacks kernel repositories; pip install -U huggingface_hub")
+		}
 		missing("huggingface_hub not installed; pip install huggingface_hub")
 	}
 }

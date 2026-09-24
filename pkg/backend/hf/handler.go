@@ -138,33 +138,33 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 
 	// Repository settings, branch, tag, and refs endpoints
 	// These must be registered before the generic model info catch-all route.
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/settings", h.handleRepoSettings).Methods(http.MethodPut)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}", h.handleCreateBranch).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/branch/{rev}", h.handleDeleteBranch).Methods(http.MethodDelete)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}", h.handleCreateTag).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tag/{rev}", h.handleDeleteTag).Methods(http.MethodDelete)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/refs", h.handleListRefs).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commits/{rev}", h.handleListCommits).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/compare/{compare}", h.handleCompare).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/super-squash/{rev}", h.handleSuperSquash).Methods(http.MethodPost)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/settings", h.handleRepoSettings).Methods(http.MethodPut)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/branch/{rev}", h.handleCreateBranch).Methods(http.MethodPost)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/branch/{rev}", h.handleDeleteBranch).Methods(http.MethodDelete)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/tag/{rev}", h.handleCreateTag).Methods(http.MethodPost)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/tag/{rev}", h.handleDeleteTag).Methods(http.MethodDelete)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/refs", h.handleListRefs).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/commits/{rev}", h.handleListCommits).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/compare/{compare}", h.handleCompare).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/super-squash/{rev}", h.handleSuperSquash).Methods(http.MethodPost)
 
 	// xet CAS credential endpoints; decoded revisions may contain slashes (refs/pr/1)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-write-token/{rev:.+}", h.handleXETWriteToken).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/xet-read-token/{rev:.+}", h.handleXETReadToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/xet-write-token/{rev:.+}", h.handleXETWriteToken).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/xet-read-token/{rev:.+}", h.handleXETReadToken).Methods(http.MethodGet)
 
-	// API endpoints for all repo types (models, datasets, spaces)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/preupload/{rev}", h.handlePreupload).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/commit/{rev}", h.handleCommit).Methods(http.MethodPost)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/treesize/{revpath:.*}", h.handleTreeSize).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/tree/{revpath:.*}", h.handleTree).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
-	r.HandleFunc("/api/{repoType:models|datasets|spaces}", h.handleList).Methods(http.MethodGet)
+	// API endpoints for all repo types
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/preupload/{rev}", h.handlePreupload).Methods(http.MethodPost)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/commit/{rev}", h.handleCommit).Methods(http.MethodPost)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/treesize/{revpath:.*}", h.handleTreeSize).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/tree/{revpath:.*}", h.handleTree).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/revision/{rev}", h.handleInfoRevision).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
+	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}", h.handleList).Methods(http.MethodGet)
 
-	// File download endpoints - datasets and spaces use a type prefix, models use the root
-	r.HandleFunc("/{repoType:datasets|spaces}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+	// File download endpoints - non-model types use a type prefix, models use the root
+	r.HandleFunc("/{repoType:datasets|spaces|kernels}/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 	r.HandleFunc("/{namespace}/{repo}/resolve/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
-	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
+	r.HandleFunc("/api/resolve-cache/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/{revpath:.*}", h.handleResolve).Methods(http.MethodGet, http.MethodHead)
 }
 
 type repoInformation struct {
@@ -189,7 +189,7 @@ func getRepoInformation(r *http.Request) repoInformation {
 
 	var repoName string
 	switch repoType {
-	case "datasets", "spaces":
+	case "datasets", "spaces", "kernels":
 		repoName = repoType + "/" + fullName
 	default:
 		repoName = fullName

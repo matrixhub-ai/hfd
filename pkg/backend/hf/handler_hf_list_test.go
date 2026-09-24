@@ -24,8 +24,8 @@ func TestHandleListPermission(t *testing.T) {
 		{"Author", "?author=alice", "alice"},
 		{"EncodedAuthor", "?author=my%20org%2Fteam&limit=1", "my org/team"},
 	}
-	seedRepo := map[string]string{"models": "alice/hidden-repo.git", "datasets": "datasets/alice/hidden-repo.git"}
-	for _, repoType := range []string{"models", "datasets"} {
+	seedRepo := map[string]string{"models": "alice/hidden-repo.git", "datasets": "datasets/alice/hidden-repo.git", "kernels": "kernels/alice/hidden-repo.git"}
+	for _, repoType := range []string{"models", "datasets", "kernels"} {
 		for _, tc := range authors {
 			t.Run(repoType+"/"+tc.name, func(t *testing.T) {
 				dataDir := t.TempDir()
@@ -889,7 +889,7 @@ func TestHandleListRepoIDIsPath(t *testing.T) {
 	server, dataDir := setupTestServer(t)
 	endpoint := server.URL
 
-	for _, p := range []string{"org/a/b.git", "ns.git/repo.git", "datasets/org/a/b.git", "datasets/alice/ds.git"} {
+	for _, p := range []string{"org/a/b.git", "ns.git/repo.git", "datasets/org/a/b.git", "datasets/alice/ds.git", "kernels/org/k.git"} {
 		if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(p)), "main"); err != nil {
 			t.Fatalf("Init(%s): %v", p, err)
 		}
@@ -904,9 +904,12 @@ func TestHandleListRepoIDIsPath(t *testing.T) {
 		{"/api/models?author=org", []string{"org/a/b"}},
 		{"/api/datasets", []string{"alice/ds", "org/a/b"}},
 		{"/api/datasets?author=org", []string{"org/a/b"}},
+		{"/api/kernels", []string{"org/k"}},
+		{"/api/kernels?author=org", []string{"org/k"}},
 		// The author is a walk root: it must stay one element inside its own type.
 		{"/api/models?author=datasets", nil},
 		{"/api/models?author=datasets%2Forg", nil},
+		{"/api/models?author=kernels", nil},
 		{"/api/models?author=..", nil},
 		{"/api/models?author=.", nil},
 	}

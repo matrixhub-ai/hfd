@@ -130,9 +130,11 @@ func TestXETTokenGate(t *testing.T) {
 		{"/api/models/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "org/repo"},
 		{"/api/datasets/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "datasets/org/repo"},
 		{"/api/spaces/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "spaces/org/repo"},
+		{"/api/kernels/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "kernels/org/repo"},
 		{"/api/models/org/repo/xet-read-token/main", permission.OperationReadRepo, "org/repo"},
 		{"/api/datasets/org/repo/xet-read-token/main", permission.OperationReadRepo, "datasets/org/repo"},
 		{"/api/spaces/org/repo/xet-read-token/main", permission.OperationReadRepo, "spaces/org/repo"},
+		{"/api/kernels/org/repo/xet-read-token/main", permission.OperationReadRepo, "kernels/org/repo"},
 		// Encoded spellings decode to one permission identity.
 		{"/api/models/org/priv%61te/xet-read-token/main", permission.OperationReadRepo, "org/private"},
 		{"/api/models/or%67/repo/xet-write-token/main", permission.OperationUpdateRepo, "org/repo"},
@@ -158,6 +160,8 @@ func TestXETTokenGate(t *testing.T) {
 		for _, path := range []string{
 			"/api/models/org/repo/xet-write-token/main",
 			"/api/models/org/repo/xet-read-token/main",
+			"/api/kernels/org/repo/xet-write-token/main",
+			"/api/kernels/org/repo/xet-read-token/main",
 		} {
 			rec := serveGet(h, path)
 			if rec.Code != tt.code || !json.Valid(rec.Body.Bytes()) || hasToken(rec) {
