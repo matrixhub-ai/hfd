@@ -5,13 +5,20 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,6 +274,330 @@ func testMirrorRefFilter(t *testing.T, ssh bool) {
 		if tag == "v1.0" {
 			t.Error("v1.0 tag should not be mirrored, but found it")
 		}
+	}
+}
+
+const gatePrefix = 128 * 1024
+
+// gatedUpstream strips xet Link headers so the engine fetches plain bytes, and holds object bodies after gatePrefix.
+type gatedUpstream struct {
+	url       string
+	gets      atomic.Int32
+	delivered atomic.Int64
+	held      chan struct{}
+	heldOnce  sync.Once
+	gate      chan struct{}
+	release   func()
+}
+
+func newGatedUpstream(t *testing.T, origin *e2eServer, oid string) *gatedUpstream {
+	t.Helper()
+	target, err := url.Parse(origin.httpURL)
+	if err != nil {
+		t.Fatalf("parse origin URL: %v", err)
+	}
+	g := &gatedUpstream{held: make(chan struct{}), gate: make(chan struct{})}
+	g.release = sync.OnceFunc(func() { close(g.gate) })
+	srv := httptest.NewServer(&httputil.ReverseProxy{
+		// The inbound Host is kept so the origin's redirects point back through the gate.
+		Rewrite:       func(r *httputil.ProxyRequest) { r.SetURL(target); r.Out.Host = r.In.Host },
+		FlushInterval: -1,
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Link")
+			resp.Header.Del("X-Xet-Hash")
+			p := resp.Request.URL.Path
+			if resp.Request.Method == http.MethodGet && resp.StatusCode/100 == 2 &&
+				(strings.HasSuffix(p, "/"+oid) || strings.HasSuffix(p, "/"+transferMatrixFile)) {
+				g.gets.Add(1)
+				resp.Body = &gatedBody{ReadCloser: resp.Body, ctx: resp.Request.Context(), g: g}
+			}
+			return nil
+		},
+	})
+	t.Cleanup(srv.Close)
+	g.url = srv.URL
+	return g
+}
+
+type gatedBody struct {
+	io.ReadCloser
+	ctx context.Context
+	g   *gatedUpstream
+}
+
+func (b *gatedBody) Read(p []byte) (int, error) {
+	allow := gatePrefix - b.g.delivered.Load()
+	if allow <= 0 {
+		b.g.heldOnce.Do(func() { close(b.g.held) })
+		select {
+		case <-b.g.gate:
+		case <-b.ctx.Done():
+			return 0, b.ctx.Err()
+		}
+		return b.ReadCloser.Read(p)
+	}
+	if int64(len(p)) > allow {
+		p = p[:allow]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.g.delivered.Add(int64(n))
+	return n, err
+}
+
+func negotiateLFSDownload(t *testing.T, s *e2eServer, repoID, oid string, size int) lfsBatchAction {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	body := fmt.Sprintf(`{"operation":"download","objects":[{"oid":%q,"size":%d}]}`, oid, size)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.httpURL+"/"+repoID+".git/info/lfs/objects/batch", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build batch request: %v", err)
+	}
+	req.Header.Set("Accept", "application/vnd.git-lfs+json")
+	req.Header.Set("Content-Type", "application/vnd.git-lfs+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("batch request: %v", err)
+	}
+	defer resp.Body.Close()
+	var batch struct {
+		Objects []struct {
+			Oid     string                    `json:"oid"`
+			Actions map[string]lfsBatchAction `json:"actions"`
+			Error   *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"objects"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch status=%d decode=%v", resp.StatusCode, err)
+	}
+	if len(batch.Objects) != 1 || batch.Objects[0].Oid != oid || batch.Objects[0].Error != nil {
+		t.Fatalf("batch objects = %+v, want %s without error", batch.Objects, oid)
+	}
+	download, ok := batch.Objects[0].Actions["download"]
+	if !ok {
+		t.Fatalf("batch response has no download action: %+v", batch.Objects[0].Actions)
+	}
+	return download
+}
+
+func ingested(t *testing.T, s *e2eServer, oid string) bool {
+	t.Helper()
+	raw, err := hex.DecodeString(oid)
+	if err != nil || len(raw) != sha256.Size {
+		t.Fatalf("bad oid %q: %v", oid, err)
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], raw)
+	_, err = s.storage.XETStorage().GetFileHashBySHA256(t.Context(), "default", digest)
+	return err == nil
+}
+
+func waitIngested(t *testing.T, s *e2eServer, oid string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !ingested(t, s, oid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("object %s never got indexed after the upstream was released", oid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func readExact(t *testing.T, r io.Reader, want []byte) []byte {
+	t.Helper()
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(r, got); err != nil {
+		t.Fatalf("read %d bytes: %v", len(want), err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("read %d bytes: content mismatch", len(want))
+	}
+	return got
+}
+
+func checkObjectHeaders(t *testing.T, resp *http.Response, size int64, oid string) {
+	t.Helper()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength != size ||
+		resp.Header.Get("X-Linked-Size") != fmt.Sprint(size) || resp.Header.Get("X-Linked-Etag") != `"`+oid+`"` {
+		t.Fatalf("status=%d Content-Length=%d headers=%v, want 200 with size %d and etag %s", resp.StatusCode, resp.ContentLength, resp.Header, size, oid)
+	}
+}
+
+func checkRange(t *testing.T, resp *http.Response, start, end, size int64) {
+	t.Helper()
+	want := fmt.Sprintf("bytes %d-%d/%d", start, end, size)
+	if resp.StatusCode != http.StatusPartialContent || resp.Header.Get("Content-Range") != want {
+		t.Fatalf("range status=%d Content-Range=%q, want 206 %q", resp.StatusCode, resp.Header.Get("Content-Range"), want)
+	}
+}
+
+func streamingHead(t *testing.T, objectURL string, size int64) http.Header {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, objectURL, nil)
+	if err != nil {
+		t.Fatalf("build HEAD request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD resolve: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.ContentLength != size || resp.Header.Get("X-Linked-Size") != fmt.Sprint(size) {
+		t.Fatalf("HEAD status=%d Content-Length=%d headers=%v, want 200 with size %d", resp.StatusCode, resp.ContentLength, resp.Header, size)
+	}
+	return resp.Header
+}
+
+func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServer, repoID, objectURL string, header map[string]string, data []byte, oid string) {
+	t.Helper()
+	size := int64(len(data))
+	get := func(ctx context.Context, rng string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
+		if err != nil {
+			t.Fatalf("build GET request: %v", err)
+		}
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		if rng != "" {
+			req.Header.Set("Range", rng)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s range %q: %v (upstream object downloads = %d)", objectURL, rng, err, up.gets.Load())
+		}
+		return resp
+	}
+	prefix := data[:gatePrefix/2]
+
+	ctxA, cancelA := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelA()
+	a := get(ctxA, "")
+	defer func() { _ = a.Body.Close() }()
+	checkObjectHeaders(t, a, size, oid)
+	readExact(t, a.Body, prefix)
+
+	ctxB, cancelB := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelB()
+	b := get(ctxB, "")
+	defer func() { _ = b.Body.Close() }()
+	checkObjectHeaders(t, b, size, oid)
+	gotB := readExact(t, b.Body, prefix)
+
+	select {
+	case <-up.held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upstream body never reached the gate")
+	}
+	if n := up.gets.Load(); n != 1 {
+		t.Fatalf("upstream object downloads = %d, want 1", n)
+	}
+	if ingested(t, proxy, oid) {
+		t.Fatal("object indexed while the upstream is still held")
+	}
+	if cold := streamingHead(t, objectURL, size); cold.Get("X-Xet-Hash") != "" || cold.Get("Link") != "" {
+		t.Fatalf("cold HEAD advertised xet metadata: %v", cold)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	r1 := get(ctx, "bytes=0-1023")
+	checkRange(t, r1, 0, 1023, size)
+	rangeData, err := io.ReadAll(r1.Body)
+	_ = r1.Body.Close()
+	if err != nil || !bytes.Equal(rangeData, data[:1024]) {
+		t.Fatalf("prefix range: err=%v, got %d bytes, want 1024", err, len(rangeData))
+	}
+
+	start, end := int64(gatePrefix-1024), int64(gatePrefix+1023)
+	r2 := get(ctx, fmt.Sprintf("bytes=%d-%d", start, end))
+	defer func() { _ = r2.Body.Close() }()
+	checkRange(t, r2, start, end, size)
+	readExact(t, r2.Body, data[start:gatePrefix])
+
+	// A leaves while the upstream is still held; B and the straddling range stay attached.
+	cancelA()
+	up.release()
+
+	rest, err := io.ReadAll(b.Body)
+	if err != nil || !bytes.Equal(append(gotB, rest...), data) {
+		t.Fatalf("reader B after release: err=%v, got %d bytes, want %d", err, len(gotB)+len(rest), size)
+	}
+	tail, err := io.ReadAll(r2.Body)
+	if err != nil || !bytes.Equal(tail, data[gatePrefix:end+1]) {
+		t.Fatalf("straddling range tail: err=%v, got %d bytes, want %d", err, len(tail), end+1-gatePrefix)
+	}
+
+	waitIngested(t, proxy, oid)
+	if warm := streamingHead(t, proxy.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile, size); warm.Get("X-Xet-Hash") == "" || !strings.Contains(warm.Get("Link"), "xet-reconstruction-info") {
+		t.Fatalf("warm HEAD lacks xet metadata: %v", warm)
+	}
+	ctxW, cancelW := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelW()
+	w := get(ctxW, "")
+	defer func() { _ = w.Body.Close() }()
+	got, err := io.ReadAll(w.Body)
+	if err != nil || w.StatusCode != http.StatusOK || !bytes.Equal(got, data) {
+		t.Fatalf("warm read: status=%d err=%v bytes=%d", w.StatusCode, err, len(got))
+	}
+	if n := up.gets.Load(); n != 1 {
+		t.Fatalf("upstream object downloads = %d after release, want 1", n)
+	}
+}
+
+func TestMirrorStreamingMatrix(t *testing.T) {
+	rows := []struct {
+		name string
+		git  bool
+		ssh  bool
+	}{
+		{name: "HFResolve"},
+		{name: "GitHTTP", git: true},
+		{name: "GitSSH", git: true, ssh: true},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			const repoID = "stream-org/stream-repo"
+			data := make([]byte, 4*gatePrefix)
+			if _, err := rand.New(rand.NewSource(1)).Read(data); err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(data)
+			oid := hex.EncodeToString(sum[:])
+
+			origin := newE2EServer(t)
+			origin.createRepo(t, "stream-org", "stream-repo")
+			pushViaXetBatch(t, origin, repoID, data)
+			up := newGatedUpstream(t, origin, oid)
+			opts := []e2eOption{withMirrorSource(up.url)}
+			if row.ssh {
+				opts = append(opts, withSSH())
+			}
+			proxy := newE2EServer(t, opts...)
+			// Registered after the proxy so it runs before the mirror and server waits (LIFO).
+			t.Cleanup(up.release)
+
+			objectURL := proxy.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile
+			var header map[string]string
+			if row.git {
+				remote, env := mirrorProxyRemote(proxy, row.ssh, repoID)
+				dir := filepath.Join(t.TempDir(), "clone")
+				runGit(t, "", append(append([]string{}, env...), "GIT_LFS_SKIP_SMUDGE=1"), "clone", remote, dir)
+				pointer, err := os.ReadFile(filepath.Join(dir, transferMatrixFile))
+				if err != nil || !strings.Contains(string(pointer), "oid sha256:"+oid) {
+					t.Fatalf("cloned pointer = %q (%v), want pointer to %s", pointer, err, oid)
+				}
+				action := negotiateLFSDownload(t, proxy, repoID, oid, len(data))
+				objectURL, header = action.Href, action.Header
+			}
+			verifyStreamWhileIngesting(t, up, proxy, repoID, objectURL, header, data, oid)
+		})
 	}
 }
 
