@@ -3,6 +3,7 @@ package repository
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitAttributesIsLFS(t *testing.T) {
@@ -36,6 +37,14 @@ func TestGitAttributesIsLFS(t *testing.T) {
 		{"quoted pattern then tab", "\"my model.bin\"\tfilter=lfs\n", "my model.bin", true},
 		{"root anchored matches root", "/model.bin filter=lfs\n", "model.bin", true},
 		{"root anchored skips subdir", "/model.bin filter=lfs\n", "sub/model.bin", false},
+		{"doublestar backtracks", "**/foo/bar/** filter=lfs\n", "foo/bar/foo/baz", true},
+		{"trailing doublestar needs content", "**/foo/bar/** filter=lfs\n", "foo/bar", false},
+		{"in-segment doublestar", "a**b filter=lfs\n", "dir/axyb", true},
+		{"directory pattern never matches", "dir/ filter=lfs\n", "dir/x.bin", false},
+		{"bracket negation excludes", "[!a].bin filter=lfs\n", "a.bin", false},
+		{"bracket negation includes", "[!a].bin filter=lfs\n", "b.bin", true},
+		{"bad line does not hide later lines", "\"unbal filter=lfs\n*.bin filter=lfs\n", "model.bin", true},
+		{"macro value true is not set", "[attr]lfs filter=lfs\n*.bin lfs=true\n", "model.bin", false},
 		{"other filter", "*.txt filter=other\n", "a.txt", false},
 	}
 	for _, tt := range tests {
@@ -56,10 +65,35 @@ func TestGitAttributesMalformedPattern(t *testing.T) {
 		"model.[bin filter=lfs\n",
 		"model.[[:alpha filter=lfs\n",
 		"model.[a- filter=lfs\n",
+		"\"\"\n",
 	} {
 		ga, _ := parseGitAttributesReader(strings.NewReader(content))
 		if ga.IsLFS("model.bin") {
 			t.Errorf("%q: IsLFS(model.bin) = true, want false", content)
+		}
+	}
+}
+
+// Both inputs come from repository writers and upload clients, so matching must stay cheap.
+func TestGitAttributesPathologicalCost(t *testing.T) {
+	for _, tt := range []struct {
+		content, path string
+		want          bool
+	}{
+		{strings.Repeat("*a", 7) + "*b filter=lfs\n", strings.Repeat("a", 30), false},
+		{strings.Repeat("**/", 10) + "b.bin filter=lfs\n", strings.Repeat("d/", 30) + "a.bin", false},
+		{strings.Repeat("*", 60000) + " filter=lfs\n", "model.bin", true},
+	} {
+		start := time.Now()
+		ga, err := parseGitAttributesReader(strings.NewReader(tt.content))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if got := ga.IsLFS(tt.path); got != tt.want {
+			t.Errorf("IsLFS(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+		if d := time.Since(start); d > 200*time.Millisecond {
+			t.Errorf("pattern of %d bytes took %v", len(tt.content), d)
 		}
 	}
 }

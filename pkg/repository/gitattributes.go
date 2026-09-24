@@ -4,9 +4,10 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 
-	"github.com/git-lfs/git-lfs/v3/git/gitattr"
+	"github.com/go-git/go-git/v6/plumbing/format/gitattributes"
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 
@@ -22,8 +23,8 @@ var GitattributesText []byte
 // GitAttributes represents parsed .gitattributes content and provides
 // methods to check if a file path matches LFS filter patterns.
 type GitAttributes struct {
-	lines  []gitattr.PatternLine
-	macros map[string][]*gitattr.Attr
+	rules  []gitattributes.MatchAttribute // pattern lines in file order
+	macros map[string][]gitattributes.Attribute
 }
 
 // IsLFS returns true if the given file path matches an LFS filter pattern
@@ -32,37 +33,72 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 	if g == nil {
 		return false
 	}
+	segs := strings.Split(filePath, "/")
 	// Like git's fill_one: later lines and later attributes win, each attribute is assigned once.
 	known := map[string]bool{}
-	for i := len(g.lines) - 1; i >= 0; i-- {
-		if !g.lines[i].Pattern().Match(filePath) {
+	for i := len(g.rules) - 1; i >= 0; i-- {
+		if !matchPattern(g.rules[i].Name, segs) {
 			continue
 		}
-		if v, ok := g.filter(g.lines[i].Attrs(), known); ok {
-			return v == "lfs"
+		if lfs, ok := g.filter(g.rules[i].Attributes, known); ok {
+			return lfs
 		}
 	}
 	return false
 }
 
-// filter resolves the filter attribute from attrs, expanding only set macros as git does.
-func (g *GitAttributes) filter(attrs []*gitattr.Attr, known map[string]bool) (string, bool) {
+// filter resolves whether attrs assign filter=lfs, expanding only set macros as git does.
+func (g *GitAttributes) filter(attrs []gitattributes.Attribute, known map[string]bool) (lfs, ok bool) {
 	for i := len(attrs) - 1; i >= 0; i-- {
 		a := attrs[i]
-		if known[a.K] {
+		if known[a.Name()] {
 			continue
 		}
-		known[a.K] = true
-		if a.K == "filter" {
-			return a.V, true
+		known[a.Name()] = true
+		if a.Name() == "filter" {
+			return a.IsValueSet() && a.Value() == "lfs", true
 		}
-		if macro, ok := g.macros[a.K]; ok && a.V == "true" {
-			if v, ok := g.filter(macro, known); ok {
-				return v, true
+		if macro, isMacro := g.macros[a.Name()]; isMacro && a.IsSet() {
+			if lfs, ok := g.filter(macro, known); ok {
+				return lfs, true
 			}
 		}
 	}
-	return "", false
+	return false, false
+}
+
+// matchPattern applies gitattributes glob rules to path segments: a slash-less pattern matches the
+// basename, a slash anchors at the root, "**" spans directories (one or more when trailing) and a
+// directory pattern never matches a file. Segments use path.Match, so cost stays linear.
+func matchPattern(pattern string, segs []string) bool {
+	if strings.HasSuffix(pattern, "/") {
+		return false
+	}
+	if !strings.Contains(pattern, "/") {
+		segs = segs[len(segs)-1:]
+	}
+	pat := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	if n := len(pat); n > 1 && pat[n-1] == "**" {
+		pat = append(pat[:n-1], "*", "**")
+	}
+	// matched[j] reports whether the pattern segments so far match segs[:j].
+	matched := make([]bool, len(segs)+1)
+	matched[0] = true
+	for _, p := range pat {
+		if p == "**" {
+			for j := 1; j <= len(segs); j++ {
+				matched[j] = matched[j] || matched[j-1]
+			}
+			continue
+		}
+		p = strings.ReplaceAll(strings.ReplaceAll(p, "**", "*"), "[!", "[^")
+		for j := len(segs); j > 0; j-- {
+			ok, _ := path.Match(p, segs[j-1])
+			matched[j] = matched[j-1] && ok
+		}
+		matched[0] = false
+	}
+	return matched[len(segs)]
 }
 
 var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
@@ -98,42 +134,23 @@ func parseGitAttributes(blob *Blob) (*GitAttributes, error) {
 }
 
 func parseGitAttributesReader(r io.Reader) (ga *GitAttributes, err error) {
-	// wildmatch panics on malformed patterns such as an unclosed "[:class".
+	// go-git indexes the first field of a line holding only an empty quoted pattern.
 	defer func() {
 		if p := recover(); p != nil {
 			ga, err = nil, fmt.Errorf("parse %s: %v", GitattributesFileName, p)
 		}
 	}()
-	content, err := io.ReadAll(r)
+	attrs, err := gitattributes.ReadAttributes(r, nil, true)
 	if err != nil {
 		return nil, err
 	}
-	lines, _, err := gitattr.ParseLines(strings.NewReader(normalizeAttrTabs(string(content))))
-	if err != nil {
-		return nil, err
-	}
-	ga = &GitAttributes{macros: map[string][]*gitattr.Attr{}}
-	for _, line := range lines {
-		switch l := line.(type) {
-		case gitattr.PatternLine:
-			ga.lines = append(ga.lines, l)
-		case gitattr.MacroLine:
-			ga.macros[l.Macro()] = l.Attrs()
+	ga = &GitAttributes{macros: map[string][]gitattributes.Attribute{}}
+	for _, a := range attrs {
+		if a.Pattern == nil {
+			ga.macros[a.Name] = a.Attributes
+		} else {
+			ga.rules = append(ga.rules, a)
 		}
 	}
 	return ga, nil
-}
-
-// normalizeAttrTabs turns tabs into spaces outside quoted patterns; gitattr only splits on spaces.
-func normalizeAttrTabs(content string) string {
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		start := 0
-		if strings.HasPrefix(line, `"`) {
-			start = strings.LastIndex(line, `"`)
-		}
-		lines[i] = line[:start] + strings.ReplaceAll(line[start:], "\t", " ")
-	}
-	return strings.Join(lines, "\n")
 }
