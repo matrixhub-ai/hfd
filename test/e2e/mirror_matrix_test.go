@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -279,7 +281,7 @@ func testMirrorRefFilter(t *testing.T, ssh bool) {
 
 const gatePrefix = 128 * 1024
 
-// gatedUpstream strips xet Link headers so the engine fetches plain bytes, and holds object bodies after gatePrefix.
+// gatedUpstream strips xet Link headers so the engine fetches plain bytes, holds object bodies after gatePrefix, and records the requests it saw.
 type gatedUpstream struct {
 	url       string
 	gets      atomic.Int32
@@ -288,35 +290,82 @@ type gatedUpstream struct {
 	heldOnce  sync.Once
 	gate      chan struct{}
 	release   func()
+
+	mu      sync.Mutex
+	paths   []string
+	auths   map[string]int // resolve requests per Authorization value
+	objects int            // requests naming the object by file name or OID
 }
 
-func newGatedUpstream(t *testing.T, origin *e2eServer, oid string) *gatedUpstream {
+// newGatedUpstream proxies origin; withhold answers object requests with 404 instead.
+func newGatedUpstream(t *testing.T, origin *e2eServer, oid string, withhold bool) *gatedUpstream {
 	t.Helper()
 	target, err := url.Parse(origin.httpURL)
 	if err != nil {
 		t.Fatalf("parse origin URL: %v", err)
 	}
-	g := &gatedUpstream{held: make(chan struct{}), gate: make(chan struct{})}
+	g := &gatedUpstream{held: make(chan struct{}), gate: make(chan struct{}), auths: make(map[string]int)}
 	g.release = sync.OnceFunc(func() { close(g.gate) })
-	srv := httptest.NewServer(&httputil.ReverseProxy{
+	isObject := func(p string) bool {
+		return strings.HasSuffix(p, "/"+oid) || strings.HasSuffix(p, "/"+transferMatrixFile)
+	}
+	proxy := &httputil.ReverseProxy{
 		// The inbound Host is kept so the origin's redirects point back through the gate.
 		Rewrite:       func(r *httputil.ProxyRequest) { r.SetURL(target); r.Out.Host = r.In.Host },
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("Link")
 			resp.Header.Del("X-Xet-Hash")
-			p := resp.Request.URL.Path
-			if resp.Request.Method == http.MethodGet && resp.StatusCode/100 == 2 &&
-				(strings.HasSuffix(p, "/"+oid) || strings.HasSuffix(p, "/"+transferMatrixFile)) {
+			if resp.Request.Method == http.MethodGet && resp.StatusCode/100 == 2 && isObject(resp.Request.URL.Path) {
 				g.gets.Add(1)
 				resp.Body = &gatedBody{ReadCloser: resp.Body, ctx: resp.Request.Context(), g: g}
 			}
 			return nil
 		},
-	})
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		object := isObject(r.URL.Path)
+		g.mu.Lock()
+		g.paths = append(g.paths, r.URL.Path)
+		if object {
+			g.objects++
+		}
+		if strings.Contains(r.URL.Path, "/resolve/") {
+			g.auths[r.Header.Get("Authorization")]++
+		}
+		g.mu.Unlock()
+		if withhold && object {
+			http.NotFound(w, r)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	g.url = srv.URL
 	return g
+}
+
+// authValues lists the distinct Authorization headers seen on resolve requests.
+func (g *gatedUpstream) authValues() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Sorted(maps.Keys(g.auths))
+}
+
+// pathContaining returns the first recorded request path containing frag, or "".
+func (g *gatedUpstream) pathContaining(frag string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if i := slices.IndexFunc(g.paths, func(p string) bool { return strings.Contains(p, frag) }); i >= 0 {
+		return g.paths[i]
+	}
+	return ""
+}
+
+func (g *gatedUpstream) objectRequests() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.objects
 }
 
 type gatedBody struct {
@@ -453,9 +502,10 @@ func streamingHead(t *testing.T, objectURL string, size int64) http.Header {
 	return resp.Header
 }
 
-func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServer, repoID, objectURL string, header map[string]string, data []byte, oid string) {
+func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServer, repoID, objectURL string, header map[string]string, data []byte, oid string, alias bool) {
 	t.Helper()
 	size := int64(len(data))
+	hfURL := proxy.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile
 	get := func(ctx context.Context, rng string) *http.Response {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
@@ -504,6 +554,29 @@ func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServe
 	if cold := streamingHead(t, objectURL, size); cold.Get("X-Xet-Hash") != "" || cold.Get("Link") != "" {
 		t.Fatalf("cold HEAD advertised xet metadata: %v", cold)
 	}
+	if alias {
+		// The HF route names the repository without the transport's .git suffix and must join the running ingest.
+		streamingHead(t, hfURL, size)
+		ctxH, cancelH := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancelH()
+		req, err := http.NewRequestWithContext(ctxH, http.MethodGet, hfURL, nil)
+		if err != nil {
+			t.Fatalf("build GET request: %v", err)
+		}
+		h, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v (upstream object downloads = %d)", hfURL, err, up.gets.Load())
+		}
+		defer func() { _ = h.Body.Close() }()
+		checkObjectHeaders(t, h, size, oid)
+		got := make([]byte, len(prefix))
+		if _, err := io.ReadFull(h.Body, got); err != nil || !bytes.Equal(got, prefix) {
+			t.Fatalf("HF alias read: err=%v (upstream object downloads = %d), want the held ingest's prefix", err, up.gets.Load())
+		}
+		if n := up.gets.Load(); n != 1 {
+			t.Fatalf("upstream object downloads = %d after the HF alias request, want 1", n)
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -535,7 +608,7 @@ func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServe
 	}
 
 	waitIngested(t, proxy, oid)
-	if warm := streamingHead(t, proxy.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile, size); warm.Get("X-Xet-Hash") == "" || !strings.Contains(warm.Get("Link"), "xet-reconstruction-info") {
+	if warm := streamingHead(t, hfURL, size); warm.Get("X-Xet-Hash") == "" || !strings.Contains(warm.Get("Link"), "xet-reconstruction-info") {
 		t.Fatalf("warm HEAD lacks xet metadata: %v", warm)
 	}
 	ctxW, cancelW := context.WithTimeout(t.Context(), 10*time.Second)
@@ -553,13 +626,14 @@ func verifyStreamWhileIngesting(t *testing.T, up *gatedUpstream, proxy *e2eServe
 
 func TestMirrorStreamingMatrix(t *testing.T) {
 	rows := []struct {
-		name string
-		git  bool
-		ssh  bool
+		name  string
+		git   bool
+		ssh   bool
+		alias bool // the git transport's .git name and the HF name must share one ingest
 	}{
 		{name: "HFResolve"},
-		{name: "GitHTTP", git: true},
-		{name: "GitSSH", git: true, ssh: true},
+		{name: "GitHTTP", git: true, alias: true},
+		{name: "GitSSH", git: true, ssh: true, alias: true},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -574,7 +648,7 @@ func TestMirrorStreamingMatrix(t *testing.T) {
 			origin := newE2EServer(t)
 			origin.createRepo(t, "stream-org", "stream-repo")
 			pushViaXetBatch(t, origin, repoID, data)
-			up := newGatedUpstream(t, origin, oid)
+			up := newGatedUpstream(t, origin, oid, false)
 			opts := []e2eOption{withMirrorSource(up.url)}
 			if row.ssh {
 				opts = append(opts, withSSH())
@@ -596,8 +670,160 @@ func TestMirrorStreamingMatrix(t *testing.T) {
 				action := negotiateLFSDownload(t, proxy, repoID, oid, len(data))
 				objectURL, header = action.Href, action.Header
 			}
-			verifyStreamWhileIngesting(t, up, proxy, repoID, objectURL, header, data, oid)
+			verifyStreamWhileIngesting(t, up, proxy, repoID, objectURL, header, data, oid, row.alias)
 		})
+	}
+}
+
+// seedLFSOrigin stands up a plain origin holding repoID with data as its LFS file and returns it with the object's OID.
+func seedLFSOrigin(t *testing.T, repoID string, data []byte) (*e2eServer, string) {
+	t.Helper()
+	origin := newE2EServer(t)
+	org, name, _ := strings.Cut(repoID, "/")
+	origin.createRepo(t, org, name)
+	pushViaXetBatch(t, origin, repoID, data)
+	sum := sha256.Sum256(data)
+	return origin, hex.EncodeToString(sum[:])
+}
+
+// newUpstreamProxy stands up a pull-through proxy whose hubs come from fn, with the SSH transport when ssh is set.
+func newUpstreamProxy(t *testing.T, ssh bool, fn upstreamMap) *e2eServer {
+	t.Helper()
+	opts := []e2eOption{withMirrorSources(fn)}
+	if ssh {
+		opts = append(opts, withSSH())
+	}
+	return newE2EServer(t, opts...)
+}
+
+// clonePointer clones repoID through the proxy without smudging and checks the pointer names oid.
+func clonePointer(t *testing.T, proxy *e2eServer, ssh bool, repoID, oid string) (dir string, env []string) {
+	t.Helper()
+	remote, env := mirrorProxyRemote(proxy, ssh, repoID)
+	dir = filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", append(append([]string{}, env...), "GIT_LFS_SKIP_SMUDGE=1"), "clone", remote, dir)
+	pointer, err := os.ReadFile(filepath.Join(dir, transferMatrixFile))
+	if err != nil || !strings.Contains(string(pointer), "oid sha256:"+oid) {
+		t.Fatalf("cloned pointer = %q (%v), want pointer to %s", pointer, err, oid)
+	}
+	return dir, env
+}
+
+// TestMirrorUpstreamMatrix drives one proxy over two hubs selected per repository, on both transports.
+func TestMirrorUpstreamMatrix(t *testing.T) {
+	for _, protocol := range []struct {
+		name string
+		ssh  bool
+	}{{name: "HTTP"}, {name: "SSH", ssh: true}} {
+		t.Run(protocol.name, func(t *testing.T) {
+			t.Run("PerRepoUpstream", func(t *testing.T) { testMirrorPerRepoUpstream(t, protocol.ssh) })
+			t.Run("Remap", func(t *testing.T) { testMirrorRemap(t, protocol.ssh) })
+		})
+	}
+}
+
+// testMirrorPerRepoUpstream: each pull-through reaches only its own hub with its own bearer.
+func testMirrorPerRepoUpstream(t *testing.T, ssh bool) {
+	dataA, dataB := makeBinaryData(64*1024, 1), makeBinaryData(64*1024, 2)
+	originA, oidA := seedLFSOrigin(t, "org/a", dataA)
+	originB, oidB := seedLFSOrigin(t, "org/b", dataB)
+	pa := newGatedUpstream(t, originA, oidA, false)
+	pa.release()
+	pb := newGatedUpstream(t, originB, oidB, false)
+	pb.release()
+	hubs := map[string]struct{ url, token string }{"org/a": {pa.url, "tok-a"}, "org/b": {pb.url, "tok-b"}}
+	proxy := newUpstreamProxy(t, ssh, func(repoName string) (string, string, bool) {
+		hub, ok := hubs[repoName]
+		return hub.url, hub.token, ok
+	})
+
+	for _, repo := range []struct {
+		id, oid string
+		data    []byte
+	}{{"org/a", oidA, dataA}, {"org/b", oidB, dataB}} {
+		clonePointer(t, proxy, ssh, repo.id, repo.oid)
+		action := negotiateLFSDownload(t, proxy, repo.id, repo.oid, len(repo.data))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, action.Href, nil)
+		if err != nil {
+			t.Fatalf("build LFS download request: %v", err)
+		}
+		for k, v := range action.Header {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("LFS download %s: %v", action.Href, err)
+		}
+		got, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, repo.data) {
+			t.Fatalf("LFS download of %s: status=%d err=%v bytes=%d, want %d bytes", repo.id, resp.StatusCode, err, len(got), len(repo.data))
+		}
+		if got := mustGet(t, proxy.httpURL+"/"+repo.id+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, repo.data) {
+			t.Fatalf("HF resolve of %s returned %d bytes, want %d", repo.id, len(got), len(repo.data))
+		}
+	}
+	if got := pa.authValues(); !slices.Equal(got, []string{"Bearer tok-a"}) {
+		t.Fatalf("hub A saw Authorization %q, want only Bearer tok-a", got)
+	}
+	if got := pb.authValues(); !slices.Equal(got, []string{"Bearer tok-b"}) {
+		t.Fatalf("hub B saw Authorization %q, want only Bearer tok-b", got)
+	}
+	if p := pa.pathContaining("org/b"); p != "" {
+		t.Fatalf("hub A saw %s, want org/a traffic only", p)
+	}
+	if p := pb.pathContaining("org/a"); p != "" {
+		t.Fatalf("hub B saw %s, want org/b traffic only", p)
+	}
+}
+
+// testMirrorRemap: after a runtime remap the next pull-through ingests from the new hub.
+func testMirrorRemap(t *testing.T, ssh bool) {
+	const repoID = "org/a"
+	data := makeBinaryData(64*1024, 3)
+	originA, oid := seedLFSOrigin(t, repoID, data)
+	originB, _ := seedLFSOrigin(t, repoID, data)
+	pa := newGatedUpstream(t, originA, oid, true)
+	pa.release()
+	pb := newGatedUpstream(t, originB, oid, false)
+	pb.release()
+	var mu sync.Mutex
+	hub := pa
+	proxy := newUpstreamProxy(t, ssh, func(repoName string) (string, string, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return hub.url, "", repoName == repoID
+	})
+	resolveURL := proxy.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile
+
+	dir, env := clonePointer(t, proxy, ssh, repoID, oid)
+	resp, err := http.Get(resolveURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", resolveURL, err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s status = %d while hub A withholds the object, want 404", resolveURL, resp.StatusCode)
+	}
+	if ingested(t, proxy, oid) {
+		t.Fatal("object indexed although hub A withheld it")
+	}
+	proxy.mirror.Wait() // the failed prefetches must finish before hub A's requests are counted
+	before := pa.objectRequests()
+
+	mu.Lock()
+	hub = pb
+	mu.Unlock()
+	runGit(t, dir, env, "fetch", "origin")
+	waitIngested(t, proxy, oid)
+	if got := mustGet(t, resolveURL); !bytes.Equal(got, data) {
+		t.Fatalf("HF resolve after the remap returned %d bytes, want %d", len(got), len(data))
+	}
+	if pb.objectRequests() == 0 {
+		t.Fatal("hub B never saw an object request after the remap")
+	}
+	if n := pa.objectRequests(); n != before {
+		t.Fatalf("hub A object requests grew from %d to %d after the remap", before, n)
 	}
 }
 
@@ -626,7 +852,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 
 	// Data-plane-only mirror: no pull upstream, no push destination; it
 	// provides the CAS server, token issuer, and xet storage for LFS content.
-	destMirror, destXET := newTestMirror(t, destStorage, "",
+	destMirror, destXET := newTestMirror(t, destStorage, nil,
 		mirror.WithRepositoriesFS(destStorage.RepositoriesFS()),
 	)
 
@@ -672,7 +898,7 @@ func TestXETPushMirror_E2E(t *testing.T) {
 	// ------------------------------------------------------------------ //
 	sourceStorage := newTestStorage(t, newDataDir(t, "xet-mirror-source"))
 
-	sharedMirror, srcXET := newTestMirror(t, sourceStorage, "",
+	sharedMirror, srcXET := newTestMirror(t, sourceStorage, nil,
 		mirror.WithMirrorDestinationFunc(func(_ context.Context, name string) (string, bool, error) {
 			return destServer.URL + "/" + name, true, nil
 		}),

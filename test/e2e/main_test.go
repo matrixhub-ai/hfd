@@ -145,8 +145,19 @@ func (x *xetStack) casServer(next http.Handler) http.Handler {
 	)
 }
 
-// newTestMirror shares st's xet storage and caches, waiting for background work on cleanup.
-func newTestMirror(t *testing.T, st *storage.Storage, upstreamURL string, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
+// staticUpstream sends every repository to one hub without a token.
+func staticUpstream(t *testing.T, rawURL string) xetmirror.UpstreamFunc {
+	t.Helper()
+	upstream, err := xetmirror.StaticUpstream(rawURL, "")
+	if err != nil {
+		t.Fatalf("create xet mirror upstream: %v", err)
+	}
+	return upstream
+}
+
+// newTestMirror shares st's xet storage and caches, waiting for background
+// work on cleanup; a nil upstream leaves the ingest engine off.
+func newTestMirror(t *testing.T, st *storage.Storage, upstream xetmirror.UpstreamFunc, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
 	t.Helper()
 	xs, xetDir := st.XETStorage(), st.XETDir()
 	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(xetDir, "chunks")))
@@ -158,11 +169,7 @@ func newTestMirror(t *testing.T, st *storage.Storage, upstreamURL string, gitOpt
 		t.Fatalf("create issuer: %v", err)
 	}
 	var engine *xetmirror.Mirror
-	if upstreamURL != "" {
-		upstream, err := xetmirror.StaticUpstream(upstreamURL, "")
-		if err != nil {
-			t.Fatalf("create xet mirror upstream: %v", err)
-		}
+	if upstream != nil {
 		engine, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithUpstream(upstream),

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wzshiming/xet/auth"
+	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -46,22 +48,23 @@ type e2eServer struct {
 	sshEnv  []string
 	storage *storage.Storage
 	issuer  *auth.Issuer
+	mirror  *mirror.Mirror
 }
 
 type e2eConfig struct {
-	ssh          bool
-	sshLFSURL    bool
-	internalAPI  bool
-	wraps        []func(http.Handler) http.Handler
-	authUser     string
-	authPass     string
-	basicUsers   map[string]string
-	apiHooks     bool
-	preReceive   receive.PreReceiveHookFunc
-	postReceive  receive.PostReceiveHookFunc
-	permission   permission.PermissionHookFunc
-	mirrorSource string
-	refFilter    mirror.RefFilterFunc
+	ssh           bool
+	sshLFSURL     bool
+	internalAPI   bool
+	wraps         []func(http.Handler) http.Handler
+	authUser      string
+	authPass      string
+	basicUsers    map[string]string
+	apiHooks      bool
+	preReceive    receive.PreReceiveHookFunc
+	postReceive   receive.PostReceiveHookFunc
+	permission    permission.PermissionHookFunc
+	mirrorSources upstreamMap
+	refFilter     mirror.RefFilterFunc
 }
 
 type e2eOption func(*e2eConfig)
@@ -124,7 +127,39 @@ func withAPIHooks() e2eOption {
 // upstream: opening an unknown repository fetches it on demand via the
 // pre-open hook, on HTTP and SSH alike, and pushes to it are refused.
 func withMirrorSource(upstreamURL string) e2eOption {
-	return func(c *e2eConfig) { c.mirrorSource = upstreamURL }
+	return withMirrorSources(func(string) (string, string, bool) { return upstreamURL, "", true })
+}
+
+// withMirrorSources selects the hub and bearer token per canonical repository name for git and xet alike.
+func withMirrorSources(fn func(repoName string) (baseURL, token string, ok bool)) e2eOption {
+	return func(c *e2eConfig) { c.mirrorSources = fn }
+}
+
+// upstreamMap maps a canonical repository name to its hub base URL and bearer token.
+type upstreamMap func(repoName string) (baseURL, token string, ok bool)
+
+// sourceFunc serves hfd's git sync, which passes the raw access name (org/a, org/a.git or /org/a.git).
+func (fn upstreamMap) sourceFunc(ctx context.Context, repoName string) (string, bool, error) {
+	name := strings.TrimSuffix(strings.TrimPrefix(repoName, "/"), ".git")
+	baseURL, _, ok := fn(name)
+	return strings.TrimSuffix(baseURL, "/") + "/" + name, ok, nil
+}
+
+// upstreamFunc serves the xet engine, which asks by escaped canonical name.
+func (fn upstreamMap) upstreamFunc(ctx context.Context, repo string) (*url.URL, string, error) {
+	name, err := url.PathUnescape(repo)
+	if err != nil {
+		return nil, "", err
+	}
+	baseURL, token, ok := fn(name)
+	if !ok {
+		return nil, "", fmt.Errorf("no upstream for %q: %w", name, xetmirror.ErrUpstreamNotFound)
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, "", err
+	}
+	return u, token, nil
 }
 
 // withRefFilter narrows which upstream refs withMirrorSource mirrors.
@@ -197,16 +232,15 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	dataDir := newDataDir(t, "e2e-server-data")
 	st := newTestStorage(t, dataDir)
 
-	engineUpstream := cfg.mirrorSource
-	if engineUpstream == "" {
+	var engineUpstream xetmirror.UpstreamFunc
+	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
+	if cfg.mirrorSources != nil {
+		engineUpstream = cfg.mirrorSources.upstreamFunc
+		mirrorOpts = append(mirrorOpts, mirror.WithMirrorSourceFunc(cfg.mirrorSources.sourceFunc))
+	} else {
 		notFound := httptest.NewServer(http.NotFoundHandler())
 		t.Cleanup(notFound.Close)
-		engineUpstream = notFound.URL
-	}
-
-	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
-	if cfg.mirrorSource != "" {
-		mirrorOpts = append(mirrorOpts, mirror.WithMirrorSourceFunc(newMirrorSourceFunc(cfg.mirrorSource)))
+		engineUpstream = staticUpstream(t, notFound.URL)
 	}
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
@@ -219,7 +253,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 
 	perm := cfg.permission
 	var preOpen func(context.Context, string, bool) error
-	if cfg.mirrorSource != "" {
+	if cfg.mirrorSources != nil {
 		perm = permission.All(permission.PullMirrorReadOnly(sharedMirror), cfg.permission)
 		preOpen = newMirrorPreOpenHook(sharedMirror)
 	}
@@ -305,6 +339,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		httpURL: httpServer.URL,
 		storage: st,
 		issuer:  xet.issuer,
+		mirror:  sharedMirror,
 	}
 	if !cfg.ssh {
 		return s

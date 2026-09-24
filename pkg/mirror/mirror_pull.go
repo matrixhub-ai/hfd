@@ -124,6 +124,7 @@ func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL 
 	var oids []string
 	targets := make(map[string]resolveTarget)
 	seenCommits := make(map[string]struct{})
+	name := canonicalRepoName(repoName)
 	for _, commit := range refs {
 		if _, ok := seenCommits[commit]; ok {
 			continue
@@ -140,7 +141,7 @@ func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL 
 			if _, ok := targets[oid]; ok {
 				continue
 			}
-			targets[oid] = resolveTarget{repoName: repoName, commit: commit, path: f.Path, size: f.Pointer.Size()}
+			targets[oid] = resolveTarget{repoName: name, commit: commit, path: f.Path, size: f.Pointer.Size()}
 			oids = append(oids, oid)
 		}
 	}
