@@ -146,10 +146,10 @@ func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
 		return nil, err
 	}
 	ga := &GitAttributes{macros: map[string][]attribute{}}
-	for _, line := range strings.Split(string(content), "\n") {
+	for _, line := range strings.Split(strings.TrimPrefix(string(content), "\ufeff"), "\n") {
 		pattern, attrs, ok := parseAttrLine(line)
 		switch macro, isMacro := strings.CutPrefix(pattern, "[attr]"); {
-		case !ok:
+		case !ok || len(attrs) == 0:
 		case isMacro:
 			if validAttrName(macro) {
 				ga.macros[macro] = attrs
@@ -164,11 +164,18 @@ func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
 // maxAttrLine is git's attribute line limit; longer lines are ignored.
 const maxAttrLine = 2048
 
-// parseAttrLine splits a line into pattern and attributes like git: blank, comment and overly long
-// lines and lines naming an invalid attribute are skipped; a quoted pattern may contain spaces.
+// attrBlanks are the only separators git recognizes in .gitattributes.
+const attrBlanks = " \t\r\n"
+
+// parseAttrLine splits a line into pattern and attributes like git: blank, comment, overly long and
+// negative-pattern lines and lines naming an invalid attribute are skipped; a quoted pattern may
+// contain spaces.
 func parseAttrLine(line string) (pattern string, attrs []attribute, ok bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || line[0] == '#' || len(line) >= maxAttrLine {
+	if len(line) >= maxAttrLine {
+		return "", nil, false
+	}
+	line = strings.Trim(line, attrBlanks)
+	if line == "" || line[0] == '#' {
 		return "", nil, false
 	}
 	rest := line
@@ -177,12 +184,15 @@ func parseAttrLine(line string) (pattern string, attrs []attribute, ok bool) {
 			pattern, rest = line[1:end], line[end+1:]
 		}
 	}
-	fields := strings.Fields(rest)
+	fields := strings.FieldsFunc(rest, func(r rune) bool { return strings.ContainsRune(attrBlanks, r) })
 	if pattern == "" {
 		if len(fields) == 0 {
 			return "", nil, false
 		}
 		pattern, fields = fields[0], fields[1:]
+	}
+	if pattern[0] == '!' {
+		return "", nil, false
 	}
 	for _, f := range fields {
 		a := attribute{name: f, set: true}
@@ -213,9 +223,10 @@ func closingQuote(line string) int {
 	return 0
 }
 
-// validAttrName mirrors git: letters, digits, '-', '.' and '_', not starting with '-'.
+// validAttrName mirrors git: letters, digits, '-', '.' and '_', not starting with '-' or the
+// reserved "builtin_" prefix.
 func validAttrName(name string) bool {
-	if name == "" || name[0] == '-' {
+	if name == "" || name[0] == '-' || strings.HasPrefix(name, "builtin_") {
 		return false
 	}
 	for _, c := range name {
