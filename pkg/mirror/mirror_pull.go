@@ -42,7 +42,7 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
+		if err := m.pullMirrorLFS(ctx, repo, repoName, opt.SourceURL); err != nil {
 			return nil, err
 		}
 		return repo, nil
@@ -100,7 +100,7 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
+		if err := m.pullMirrorLFS(ctx, repo, repoName, opt.SourceURL); err != nil {
 			return nil, err
 		}
 		return repo, nil
@@ -108,10 +108,8 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 	return err
 }
 
-// pullMirrorLFS scans the tips of all local refs for LFS pointers and
-// prefetches the referenced objects through the xet data plane, keyed by the
-// immutable commit each pointer was seen at.
-func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL string) error {
+// Excluded pointers remain registered at immutable commits for lazy reads.
+func (m *Mirror) pullMirrorLFS(ctx context.Context, repo *repository.Repository, repoName, sourceURL string) error {
 	if m.xetMirror == nil {
 		return nil
 	}
@@ -123,6 +121,7 @@ func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL 
 
 	var oids []string
 	targets := make(map[string]resolveTarget)
+	eager := make(map[string]struct{})
 	seenCommits := make(map[string]struct{})
 	for _, commit := range refs {
 		if _, ok := seenCommits[commit]; ok {
@@ -137,10 +136,19 @@ func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL 
 		}
 		for _, f := range files {
 			oid := f.Pointer.OID()
-			if _, ok := targets[oid]; ok {
+			t := resolveTarget{repoName: repoName, commit: commit, path: f.Path, size: f.Pointer.Size()}
+			if _, ok := targets[oid]; !ok {
+				targets[oid] = t
+			}
+			if m.lfsIngestFilterFunc != nil && !m.lfsIngestFilterFunc(ctx, repoName, commit, f.Path, t.size) {
 				continue
 			}
-			targets[oid] = resolveTarget{repoName: repoName, commit: commit, path: f.Path, size: f.Pointer.Size()}
+			if _, ok := eager[oid]; ok {
+				continue
+			}
+			eager[oid] = struct{}{}
+			// Prefer an admitted path for shared-OID prefetch.
+			targets[oid] = t
 			oids = append(oids, oid)
 		}
 	}
