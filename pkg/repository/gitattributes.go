@@ -2,9 +2,10 @@ package repository
 
 import (
 	_ "embed"
-	"strings"
+	"fmt"
+	"io"
 
-	"github.com/go-git/go-git/v6/plumbing/format/gitattributes"
+	"github.com/git-lfs/git-lfs/v3/git/gitattr"
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
 
@@ -20,22 +21,28 @@ var GitattributesText []byte
 // GitAttributes represents parsed .gitattributes content and provides
 // methods to check if a file path matches LFS filter patterns.
 type GitAttributes struct {
-	matcher gitattributes.Matcher
+	lines []gitattr.PatternLine
 }
 
 // IsLFS returns true if the given file path matches an LFS filter pattern
 // defined in the .gitattributes file.
 func (g *GitAttributes) IsLFS(filePath string) bool {
-	if g == nil || g.matcher == nil {
+	if g == nil {
 		return false
 	}
-	path := strings.Split(filePath, "/")
-	results, matched := g.matcher.Match(path, []string{"filter"})
-	if !matched {
-		return false
+	var lfs bool
+	// Like git, matching lines apply in file order and the last filter assignment wins.
+	for _, line := range g.lines {
+		if !line.Pattern().Match(filePath) {
+			continue
+		}
+		for _, attr := range line.Attrs() {
+			if attr.K == "filter" {
+				lfs = attr.V == "lfs"
+			}
+		}
 	}
-	attr, ok := results["filter"]
-	return ok && attr.IsValueSet() && attr.Value() == "lfs"
+	return lfs
 }
 
 var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
@@ -63,9 +70,23 @@ func parseGitAttributes(blob *Blob) (*GitAttributes, error) {
 	}
 	defer reader.Close()
 
-	attrs, err := gitattributes.ReadAttributes(reader, nil, true)
+	ga, err := parseGitAttributesReader(reader)
 	if err != nil {
 		return nil, nil
 	}
-	return &GitAttributes{matcher: gitattributes.NewMatcher(attrs)}, nil
+	return ga, nil
+}
+
+func parseGitAttributesReader(r io.Reader) (ga *GitAttributes, err error) {
+	// wildmatch panics on malformed patterns such as an unclosed "[:class".
+	defer func() {
+		if p := recover(); p != nil {
+			ga, err = nil, fmt.Errorf("parse %s: %v", GitattributesFileName, p)
+		}
+	}()
+	lines, _, err := gitattr.ParseLines(r)
+	if err != nil {
+		return nil, err
+	}
+	return &GitAttributes{lines: gitattr.NewMacroProcessor().ProcessLines(lines, true)}, nil
 }
