@@ -11,7 +11,7 @@ import (
 // MaxLFSPointerSize is git-lfs's blob size cutoff: only blobs below it are pointer candidates.
 const MaxLFSPointerSize = 1024
 
-// DecodePointer parses an LFS pointer from a reader; empty or oversized content is nil, nil, as in git-lfs.
+// DecodePointer parses an LFS pointer from a reader; empty or oversized content is nil, nil, matching git-lfs skipping size-0 pointers and blobs at its cutoff.
 func DecodePointer(r io.Reader) (*Pointer, error) {
 	buf, err := io.ReadAll(io.LimitReader(r, MaxLFSPointerSize))
 	if err != nil {

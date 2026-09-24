@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/git-lfs/git-lfs/v3/git/gitattr"
 	"github.com/matrixhub-ai/hfd/internal/lru"
@@ -31,14 +32,16 @@ func (g *GitAttributes) IsLFS(filePath string) bool {
 		return false
 	}
 	var lfs bool
-	// Like git, matching lines apply in file order and the last filter assignment wins.
+	// Like git, matching lines apply in file order and the last filter assignment wins, also within a line.
 	for _, line := range g.lines {
 		if !line.Pattern().Match(filePath) {
 			continue
 		}
-		for _, attr := range line.Attrs() {
-			if attr.K == "filter" {
-				lfs = attr.V == "lfs"
+		attrs := line.Attrs()
+		for i := len(attrs) - 1; i >= 0; i-- {
+			if attrs[i].K == "filter" {
+				lfs = attrs[i].V == "lfs"
+				break
 			}
 		}
 	}
@@ -84,9 +87,30 @@ func parseGitAttributesReader(r io.Reader) (ga *GitAttributes, err error) {
 			ga, err = nil, fmt.Errorf("parse %s: %v", GitattributesFileName, p)
 		}
 	}()
-	lines, _, err := gitattr.ParseLines(r)
+	content, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	return &GitAttributes{lines: gitattr.NewMacroProcessor().ProcessLines(lines, true)}, nil
+	lines, _, err := gitattr.ParseLines(strings.NewReader(normalizeAttrTabs(string(content))))
+	if err != nil {
+		return nil, err
+	}
+	// Like git, macros apply wherever they are defined: register them all, then expand.
+	mp := gitattr.NewMacroProcessor()
+	mp.ProcessLines(lines, true)
+	return &GitAttributes{lines: mp.ProcessLines(lines, false)}, nil
+}
+
+// normalizeAttrTabs turns tabs into spaces outside quoted patterns; gitattr only splits on spaces.
+func normalizeAttrTabs(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		start := 0
+		if strings.HasPrefix(line, `"`) {
+			start = strings.LastIndex(line, `"`)
+		}
+		lines[i] = line[:start] + strings.ReplaceAll(line[start:], "\t", " ")
+	}
+	return strings.Join(lines, "\n")
 }
