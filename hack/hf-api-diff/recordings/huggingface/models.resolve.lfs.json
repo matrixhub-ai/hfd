@@ -1,0 +1,55 @@
+{
+  "request": {
+    "name": "models.resolve.lfs",
+    "method": "GET",
+    "path": "/wzshiming/gpt2/resolve/main/64-8bits.tflite",
+    "file": true
+  },
+  "response": {
+    "status": 302,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Cache-Control": "no-store",
+      "Content-Length": "994",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Link": "</api/models/wzshiming/gpt2/xet-read-token/ae329b6937f31305a0d6c6779f6cd4072cc4097e>; rel=\"xet-auth\", <https://cas-server.xethub.hf.co/v1/reconstructions/f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03>; rel=\"xet-reconstruction-info\"",
+      "Location": "https://us.aws.cdn.hf.co/xet-bridge-us/6ab2b9f6148b5cae56d6e842/f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03?Expires&Hash-Algorithm&Key-Pair-Id&Policy&Signature&X-Xet-Cas-Uid&response-content-disposition&user_id",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin, Accept",
+      "X-Hf-Warning": "unauthenticated; Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.",
+      "X-Linked-Etag": "\"c966da3b74697803352ca7c6f2f220e7090a557b619de9da0c6b34d89f7825c1\"",
+      "X-Linked-Size": "125162496",
+      "X-Powered-By": "huggingface-moon",
+      "X-Repo-Commit": "ae329b6937f31305a0d6c6779f6cd4072cc4097e",
+      "X-Xet-Hash": "f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03"
+    }
+  },
+  "hops": [
+    {
+      "status": 302,
+      "location": "https://us.aws.cdn.hf.co/xet-bridge-us/6ab2b9f6148b5cae56d6e842/f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03?Expires&Hash-Algorithm&Key-Pair-Id&Policy&Signature&X-Xet-Cas-Uid&response-content-disposition&user_id"
+    }
+  ],
+  "final": {
+    "status": 200,
+    "headers": {
+      "Accept-Ranges": "bytes",
+      "Access-Control-Allow-Headers": "Content-Range, Content-Type, Content-Disposition, ETag",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "*",
+      "Content-Disposition": "inline; filename*=UTF-8''64-8bits.tflite; filename=\"64-8bits.tflite\";",
+      "Content-Length": "125162496",
+      "Content-Type": "application/octet-stream",
+      "Etag": "\"f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03\"",
+      "Vary": "origin, access-control-request-method, access-control-request-headers",
+      "X-Hf-Cdn-Pop": "aws-ap-southeast-1"
+    },
+    "sha256": "c966da3b74697803352ca7c6f2f220e7090a557b619de9da0c6b34d89f7825c1",
+    "size": 125162496
+  }
+}

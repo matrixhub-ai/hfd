@@ -1,0 +1,36 @@
+{
+  "request": {
+    "name": "models.xet-read-token",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/xet-read-token/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "490",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"1ea-hAc/fpgSAgsucYZclBRCSEBmhmI\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon",
+      "X-Xet-Access-Token": "[redacted]",
+      "X-Xet-Cas-Url": "https://cas-server.xethub.hf.co",
+      "X-Xet-Token-Expiration": "1790103777"
+    },
+    "json": {
+      "accessToken": "[redacted]",
+      "casUrl": "https://cas-server.xethub.hf.co",
+      "exp": 1790103777
+    },
+    "size": 490
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "request": {
+    "name": "datasets.refs",
+    "method": "GET",
+    "path": "/api/datasets/wzshiming/fixtures_image_utils/refs",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "136",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"88-2gKnnM4PeubqxPDVPsj00Q2ke3M\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "tags": [],
+      "branches": [
+        {
+          "name": "main",
+          "ref": "refs/heads/main",
+          "targetCommit": "ba937e465960aa8dc41a6126458531ccc65cef76"
+        }
+      ],
+      "converts": []
+    },
+    "sha256": "eb07de58005daaca54e035e2c3a43b64e36f69464a021ed15ea71a7178876c1f",
+    "size": 136
+  }
+}

@@ -1,11 +1,17 @@
 package hf
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/osfs"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // createRepoAndCommit creates a repo and commits a file, returning the commit SHA.
@@ -1116,5 +1122,67 @@ func TestHuggingFaceListCommitsDatasets(t *testing.T) {
 	}
 	if len(commits) != 2 {
 		t.Fatalf("Expected 2 commits, got %d", len(commits))
+	}
+}
+
+func TestHuggingFaceListCommitsMessage(t *testing.T) {
+	ctx := context.Background()
+	server, dataDir := setupTestServer(t)
+	repositories := osfs.New(filepath.Join(dataDir, "repositories"))
+
+	messages := []struct{ raw, title, message string }{
+		{"", "", ""},
+		{"upload flax model", "upload flax model", ""},
+		{"upload flax model\n", "upload flax model", "\n"},
+		{"Duplicate from a/b\n\n\nCo-authored-by: A <a@b.c>\n", "Duplicate from a/b", "\n\n\nCo-authored-by: A <a@b.c>\n"},
+		{"fix\n\nfix\n", "fix", "\n\nfix\n"},
+	}
+	for _, tt := range []struct{ repoType, repoName string }{
+		{"models", "org/repo"},
+		{"datasets", "datasets/org/repo"},
+		{"spaces", "spaces/org/repo"},
+	} {
+		t.Run(tt.repoType, func(t *testing.T) {
+			repo, err := repository.Init(ctx, repositories, repository.ResolvePath(tt.repoName), "main")
+			if err != nil {
+				t.Fatalf("init repo: %v", err)
+			}
+			ids := make([]string, len(messages))
+			for i, m := range messages {
+				ids[i], err = repo.CreateCommit(ctx, "main", m.raw, "Test", "test@test.com",
+					[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "file.txt", Content: []byte(m.raw)}}, "")
+				if err != nil {
+					t.Fatalf("create commit %q: %v", m.raw, err)
+				}
+			}
+
+			response, err := http.Get(server.URL + "/api/" + tt.repoType + "/org/repo/commits/main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", response.StatusCode)
+			}
+			var commits []commitInfo
+			if err := json.NewDecoder(response.Body).Decode(&commits); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			raw, err := repo.Commits("main", &repository.CommitsOptions{Limit: len(messages)})
+			if err != nil || len(commits) != len(messages) || len(raw) != len(messages) {
+				t.Fatalf("got %d commits over HTTP, %d from repo (err %v), want %d", len(commits), len(raw), err, len(messages))
+			}
+			// Both listings are newest first.
+			for i, m := range messages {
+				got, c := commits[len(messages)-1-i], raw[len(messages)-1-i]
+				if got.ID != ids[i] || got.Title != m.title || got.Message != m.message {
+					t.Errorf("commit %q: got id %q title %q message %q, want id %q title %q message %q",
+						m.raw, got.ID, got.Title, got.Message, ids[i], m.title, m.message)
+				}
+				if c.Message() != m.raw {
+					t.Errorf("repository message = %q, want raw %q", c.Message(), m.raw)
+				}
+			}
+		})
 	}
 }

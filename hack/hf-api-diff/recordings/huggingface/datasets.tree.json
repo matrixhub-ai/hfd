@@ -1,0 +1,325 @@
+{
+  "request": {
+    "name": "datasets.tree",
+    "method": "GET",
+    "path": "/api/datasets/wzshiming/fixtures_image_utils/tree/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "6337",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"18c1-vYItE/5Kqswe8NhcCoLDStQHhpc\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": [
+      {
+        "type": "file",
+        "oid": "946250c785b2c4794b463a8d4ea26053ddb6dc80",
+        "size": 1943,
+        "path": ".gitattributes"
+      },
+      {
+        "type": "file",
+        "oid": "94af15ae5c7ac2865b07d7f557f1c2a551aa9b09",
+        "size": 8978,
+        "path": "PROVENANCE.md"
+      },
+      {
+        "type": "file",
+        "oid": "072da2918ce4d084616646eca739fdc36b534a96",
+        "size": 365,
+        "path": "README.md"
+      },
+      {
+        "type": "file",
+        "oid": "dc63ba9644a173077f429a1f2322528f3aa15e41",
+        "size": 244308,
+        "lfs": {
+          "oid": "897b555f5767393e2f5da3bfad9deac8fb8a4af9d882ce1aff9b89234e0d513f",
+          "size": 244308,
+          "pointerSize": 131
+        },
+        "xetHash": "628d66b7400a2ddea6cac1b824b11f459a4903ea0e370a11930712eb561798c5",
+        "path": "ai2d-demo-2.png"
+      },
+      {
+        "type": "file",
+        "oid": "668fe2a98140f7db88695f1a525b057b305008c2",
+        "size": 358906,
+        "lfs": {
+          "oid": "6d3a69a5d4fb0ceb97f76b4ac13f0c797c8a0ebe3f343265baee28bd981ecc3a",
+          "size": 358906,
+          "pointerSize": 131
+        },
+        "xetHash": "d21fc316931892f4994c6d9474fc351953920f9dbe83c5f361bf138fe761b4b9",
+        "path": "ai2d-demo.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "64f4f4fec3cdb158e97384086f383b5385ebebf3",
+        "size": 142480,
+        "lfs": {
+          "oid": "2070aff92b7dee3228fb49b6e2ba2557c53d9aedf3f7e1b01fac47c9755c1552",
+          "size": 142480,
+          "pointerSize": 131
+        },
+        "xetHash": "bf3b1734cdae3e0d472d205332160479e05ce1d41d9513a03d6b1fc5a86d71d0",
+        "path": "australia.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "14721a88bb6ac2b717708297518fff64a28e7fc9",
+        "size": 5373297,
+        "lfs": {
+          "oid": "8b21ba78250f852ca5990063866b1ace6432521d0251bde7f8de783b22c99a6d",
+          "size": 5373297,
+          "pointerSize": 132
+        },
+        "xetHash": "90d86706dd89ba5541d5bc75acc38d0e1aa60ec2509651c2afbe38fa3f973544",
+        "path": "bee.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "f92d1863bb63fe2b5dd97ba3ba184a5988f89a76",
+        "size": 2289891,
+        "lfs": {
+          "oid": "fc417c899e94f8df465b7541c5a70f0eebb85c414d06345f0b290c061eccc84c",
+          "size": 2289891,
+          "pointerSize": 132
+        },
+        "xetHash": "3e77b6e4aa4bf576015e653e6adeac4ae9507202c98c125edf513e27fbf1d81f",
+        "path": "candy.JPG"
+      },
+      {
+        "type": "file",
+        "oid": "442a184c7f27bac71654598b665fda05486b8bb2",
+        "size": 39080,
+        "path": "car.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "9856b346e04c6a0220dbddf6738dfde1bc1236f7",
+        "size": 3893356,
+        "lfs": {
+          "oid": "c6ae6440e3862dd9768cd9f7098b783ac980629dd7bc1fe69c10b39fca5a84cd",
+          "size": 3893356,
+          "pointerSize": 132
+        },
+        "xetHash": "ba9f39b57bca33098e92294b8f6cf7e2196074cbee6777ba71a73d6012f16014",
+        "path": "car.png"
+      },
+      {
+        "type": "file",
+        "oid": "94532c0299e97bc2f3100a915df8682ad7db50c4",
+        "size": 109026,
+        "path": "cat-rotated.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "e131e8ecdf32c3f751ab0f7b2e5f002683babda2",
+        "size": 173131,
+        "path": "cats.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "92f01f8b50fc6d714cd42d1441a637f7aa864127",
+        "size": 694498,
+        "lfs": {
+          "oid": "cf6f3c4befa148732c7453e0de5afab00f682427435fead2d88b07a9615cdac2",
+          "size": 694498,
+          "pointerSize": 131
+        },
+        "xetHash": "0d9116bd9024fc8c445534d31969ac4f2e0271ce9a3c61fd1e0f185846533f09",
+        "path": "coco_sample.png"
+      },
+      {
+        "type": "file",
+        "oid": "2c58b2b384c4301be0ea35e33de242b77cb1e0ca",
+        "size": 389597,
+        "lfs": {
+          "oid": "ef279be66cb83fc26e12313a4ff830d4f24cbed4eb9f3882f7c2245b96fbcc86",
+          "size": 389597,
+          "pointerSize": 131
+        },
+        "xetHash": "d807d8b3e26f086a1cbf318ea4ee899a4033b8a7046e005bdc6ce805b2cea5ab",
+        "path": "compel-neg.png"
+      },
+      {
+        "type": "file",
+        "oid": "6e39fafa37e6bfce790e158e3167615cb1c05b03",
+        "size": 2743,
+        "path": "fixtures_image_utils.py"
+      },
+      {
+        "type": "file",
+        "oid": "1524748142fcf1ab0de48451094d455582e0df30",
+        "size": 198109,
+        "path": "lena.png"
+      },
+      {
+        "type": "file",
+        "oid": "b3561af9d03d722fd6e96a4b78acf78cbb94285d",
+        "size": 207553,
+        "path": "parrots.png"
+      },
+      {
+        "type": "file",
+        "oid": "9a1d3eea0aab88e7223ba62a1a0e8f80439e3e7f",
+        "size": 18513,
+        "path": "picsum_17_150x500.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "f6744201df5943a868dfbd7fb174d39f4260dcbf",
+        "size": 13831,
+        "path": "picsum_231_200x300.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "9aa9a40e9e3acab2c789d19f807d06afefd909fb",
+        "size": 9266,
+        "path": "picsum_237_200x200.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "c50a9b2336af3786783814c23267901809328b3e",
+        "size": 10839,
+        "path": "picsum_237_200x300.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "c162088a8828c4b85a80b3b2d0b06f85ed9863b1",
+        "size": 23774,
+        "path": "picsum_237_400x300.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "088573df9d4f825b91adc6167940c3f1355a3c3a",
+        "size": 9203,
+        "path": "picsum_247_200x200.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "113a77a2d72e2db1f159bf2df507c2a248fdebcf",
+        "size": 56308,
+        "path": "pipeline-cat-chonk.jpeg"
+      },
+      {
+        "type": "file",
+        "oid": "409e5d07c2020d179cfef1eb432c63fee63ec4f5",
+        "size": 21390,
+        "path": "provenance.jsonl"
+      },
+      {
+        "type": "file",
+        "oid": "a2f8ad8038a7123c9be297ade3b37f6a4b722a95",
+        "size": 1853544,
+        "lfs": {
+          "oid": "58716693a6c0733358e66e64d7064a5a845424280bb55f9b5fa137b1af8c92fe",
+          "size": 1853544,
+          "pointerSize": 132
+        },
+        "xetHash": "4feed501e2b50998c80ab5c0c19b5af954b00ad501d8e0a010c06369df1ab2df",
+        "path": "receipt_00008.png"
+      },
+      {
+        "type": "file",
+        "oid": "dee2751a2c6e65b0f24dc9536fbd2ae7aa0eb95e",
+        "size": 764037,
+        "path": "selena.jpeg"
+      },
+      {
+        "type": "file",
+        "oid": "901726b97d9c1231fb248c651f9262fa3dc51369",
+        "size": 103645,
+        "lfs": {
+          "oid": "ec1e7dc759b7cfbbd70ecff48b712c2829e02ec37db92655d3285f048e274f18",
+          "size": 103645,
+          "pointerSize": 131
+        },
+        "xetHash": "9adc71509dcc3795628bd185b6eace1265ab285dc2377997b24c52bc4a9dc530",
+        "path": "snowman.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "ca0b4ad5c2a05bbeb4c6aee3ee4dbbd96fcfc606",
+        "size": 1357598,
+        "lfs": {
+          "oid": "b97825997df04bd823207fd145331ffc3c3b62ec4e3a3adaac83c93debe87bdf",
+          "size": 1357598,
+          "pointerSize": 132
+        },
+        "xetHash": "c8cf2d125474b1cae4d84a88a9439f6135588505ca8fad3d129aeb0f78e15935",
+        "path": "snowman.png"
+      },
+      {
+        "type": "file",
+        "oid": "e7752d16525dff567bdf27483e44e91f86e9a3ec",
+        "size": 180700,
+        "lfs": {
+          "oid": "033627d104beb7efcad86cbe42d06d937d6d6ca49d413a59117513f422f5f431",
+          "size": 180700,
+          "pointerSize": 131
+        },
+        "xetHash": "a2b729f43f9af9a285a12f83a34a40cf7b8944286a13b722b67c0550c2cce984",
+        "path": "temple-bar-dublin-world-famous-irish-pub.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "f897c0566b7db0a01c0c82953d45f9edbfc00fa5",
+        "size": 92460,
+        "path": "tree.png"
+      },
+      {
+        "type": "file",
+        "oid": "a9421c79105deacce3b88230f15c062ea0e2ec96",
+        "size": 80024,
+        "path": "two_dogs.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "11659034e3ed6e279c4a363b76187261d536f0d3",
+        "size": 1427184,
+        "lfs": {
+          "oid": "3e98bbbfd2b6c2c8427efa438c59d7191d06ae6ec9b595db76946a5b1bf1f2be",
+          "size": 1427184,
+          "pointerSize": 132
+        },
+        "xetHash": "21e49ef8fa6083b6c378634ac7ea13d0bbee7e10ae0dd3461b1982423d0b3bb6",
+        "path": "unsplash_1552053831-71594a27632d.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "4b8d4b789cb98b272af2fc3ac41c08d149a25311",
+        "size": 1042263,
+        "lfs": {
+          "oid": "c1e745567911025b716ce943d4ef8734f94c829401298616e92bb182e48a5a24",
+          "size": 1042263,
+          "pointerSize": 132
+        },
+        "xetHash": "20c55e2247bf6538ebb67c0652f0ac81c841297ae21f71a4d28d35cf2ced37f9",
+        "path": "unsplash_1617258683320-61900b281ced.jpg"
+      },
+      {
+        "type": "file",
+        "oid": "887ab742a715baa22c71e369333175211b817273",
+        "size": 7364,
+        "path": "vla_pi0.jpg"
+      }
+    ],
+    "sha256": "458e6ad85c6628fac5de80945ca4e39a5f3cf4604ef45318b48690ab3a67cdaa",
+    "size": 6337
+  }
+}

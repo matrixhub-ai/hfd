@@ -69,7 +69,7 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 		commitInfos = append(commitInfos, commitInfo{
 			ID:      c.Hash().String(),
 			Title:   c.Title(),
-			Message: c.Message(),
+			Message: strings.TrimPrefix(c.Message(), c.Title()),
 			Authors: []commitAuthor{{User: c.Author().Name()}},
 			Date:    c.Author().When().UTC().Format(repository.TimeFormat),
 		})

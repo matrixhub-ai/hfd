@@ -1,0 +1,34 @@
+{
+  "request": {
+    "name": "models.notfound",
+    "method": "GET",
+    "path": "/api/models/wzshiming/does-not-exist",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "41",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"29-dEMcHWfJi78ZR1aqzb1ELAhp3Us\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "Www-Authenticate": "Bearer realm=\"Authentication required\", charset=\"UTF-8\"",
+      "X-Error-Message": "Invalid username or password.",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "error": "Invalid username or password."
+    },
+    "sha256": "65842e3d84e6b7f62a470c85204e80b953bb8f944e9b69813130a9d7f3eaa1d8",
+    "size": 41
+  }
+}

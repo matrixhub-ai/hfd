@@ -1,0 +1,113 @@
+{
+  "request": {
+    "name": "models.paths-info",
+    "method": "POST",
+    "path": "/api/models/wzshiming/gpt2/paths-info/main",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": "{\"paths\":[\"config.json\",\"64-8bits.tflite\",\"does-not-exist.txt\"],\"expand\":true}",
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "2195",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"893-I2D3KP3B+wd/122qriuEgUig9pg\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": [
+      {
+        "type": "file",
+        "oid": "10c66461e4c109db5a2196bff4bb59be30396ed8",
+        "size": 665,
+        "path": "config.json",
+        "lastCommit": {
+          "id": "ae329b6937f31305a0d6c6779f6cd4072cc4097e",
+          "title": "Duplicate from openai-community/gpt2",
+          "date": "2026-09-22T17:25:10.000Z"
+        },
+        "securityFileStatus": {
+          "status": "safe",
+          "protectAiScan": {
+            "status": "safe",
+            "message": "This file has no security findings.",
+            "reportLink": "https://insights-db.paloaltonetworks.com/models/wzshiming/gpt2/ae329b6937f31305a0d6c6779f6cd4072cc4097e/files?blob-id=10c66461e4c109db5a2196bff4bb59be30396ed8&utm_source=huggingface"
+          },
+          "avScan": {
+            "status": "safe",
+            "message": "No security issues detected",
+            "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+          },
+          "pickleImportScan": {
+            "status": "unscanned",
+            "pickleImports": [],
+            "version": "0.0.0"
+          },
+          "virusTotalScan": {
+            "status": "unscanned"
+          },
+          "jFrogScan": {
+            "status": "unscanned",
+            "message": "Not a machine-learning model"
+          }
+        }
+      },
+      {
+        "type": "file",
+        "oid": "90e59f00f62c654b1a88a5f127dff14df4611cdc",
+        "size": 125162496,
+        "lfs": {
+          "oid": "c966da3b74697803352ca7c6f2f220e7090a557b619de9da0c6b34d89f7825c1",
+          "size": 125162496,
+          "pointerSize": 134
+        },
+        "xetHash": "f39b58dcd1ec07aaa95eb0c2f827a00dfac2404728b60d273ab3687f73311e03",
+        "path": "64-8bits.tflite",
+        "lastCommit": {
+          "id": "ae329b6937f31305a0d6c6779f6cd4072cc4097e",
+          "title": "Duplicate from openai-community/gpt2",
+          "date": "2026-09-22T17:25:10.000Z"
+        },
+        "securityFileStatus": {
+          "status": "safe",
+          "protectAiScan": {
+            "status": "safe",
+            "message": "This file has no security findings.",
+            "reportLink": "https://insights-db.paloaltonetworks.com/models/wzshiming/gpt2/ae329b6937f31305a0d6c6779f6cd4072cc4097e/files?blob-id=90e59f00f62c654b1a88a5f127dff14df4611cdc&utm_source=huggingface"
+          },
+          "avScan": {
+            "status": "safe",
+            "message": "No security issues detected",
+            "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+          },
+          "pickleImportScan": {
+            "status": "unscanned",
+            "pickleImports": [],
+            "version": "0.0.0"
+          },
+          "virusTotalScan": {
+            "status": "safe",
+            "message": "0/76 engines detect it as malicious.",
+            "reportLink": "https://www.virustotal.com/gui/file/c966da3b74697803352ca7c6f2f220e7090a557b619de9da0c6b34d89f7825c1?utm_source=huggingface"
+          },
+          "jFrogScan": {
+            "status": "unscanned",
+            "message": "Not a machine-learning model"
+          }
+        }
+      }
+    ],
+    "sha256": "5f611f0464c5e74bcc02c5833520bc4671f4b7d0efbb48f4dac33e26fbcf5327",
+    "size": 2195
+  }
+}

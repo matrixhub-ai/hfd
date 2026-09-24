@@ -1,0 +1,33 @@
+{
+  "request": {
+    "name": "models.treesize",
+    "method": "GET",
+    "path": "/api/models/wzshiming/gpt2/treesize/main",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "file": false
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "30",
+      "Content-Type": "application/json; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"1e-8N5Ba0r3Bo4Aqr6Lo59aJAP7YjA\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "json": {
+      "path": "/",
+      "size": 5632417295
+    },
+    "sha256": "e9c044bf9d274105525fefc5fd5b1613a5e2718f5882eb9dc49f2eef8780cdd3",
+    "size": 30
+  }
+}

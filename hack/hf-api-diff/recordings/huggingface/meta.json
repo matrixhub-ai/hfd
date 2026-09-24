@@ -1,0 +1,11 @@
+{
+  "tool": "hf-api-diff",
+  "base": "https://huggingface.co",
+  "recordedAt": "2026-09-22T18:47:21Z",
+  "fixture": {
+    "model": "wzshiming/gpt2",
+    "dataset": "wzshiming/fixtures_image_utils",
+    "space": "wzshiming/hello_world",
+    "lfsFile": "64-8bits.tflite"
+  }
+}

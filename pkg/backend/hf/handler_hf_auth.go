@@ -10,7 +10,10 @@ import (
 func (h *Handler) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	id := authenticate.IdentityFrom(r.Context())
 	if authenticate.IsAnonymous(id) {
-		responseJSON(w, map[string]string{"error": "Unauthorized"}, http.StatusUnauthorized)
+		const denied = "Invalid username or password."
+		w.Header().Set("X-Error-Message", denied)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Authentication required", charset="UTF-8"`)
+		responseJSON(w, denied, http.StatusUnauthorized)
 		return
 	}
 

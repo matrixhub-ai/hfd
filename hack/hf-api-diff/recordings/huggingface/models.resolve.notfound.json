@@ -1,0 +1,50 @@
+{
+  "request": {
+    "name": "models.resolve.notfound",
+    "method": "GET",
+    "path": "/wzshiming/gpt2/resolve/main/does-not-exist.txt",
+    "file": true
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "15",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"f-mY2VvLxuxB7KhsoOdQTlMTccuAQ\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Error-Code": "EntryNotFound",
+      "X-Error-Message": "Entry not found",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "text": "Entry not found",
+    "sha256": "f36668ddf22403a332f978057d527cf285b01468bc3431b04094a7bafa6aba59",
+    "size": 15
+  },
+  "final": {
+    "status": 404,
+    "headers": {
+      "Access-Control-Allow-Origin": "https://huggingface.co",
+      "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+      "Access-Control-Max-Age": "86400",
+      "Content-Length": "15",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Etag": "W/\"f-mY2VvLxuxB7KhsoOdQTlMTccuAQ\"",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+      "Vary": "Origin",
+      "X-Error-Code": "EntryNotFound",
+      "X-Error-Message": "Entry not found",
+      "X-Powered-By": "huggingface-moon"
+    },
+    "text": "Entry not found",
+    "sha256": "f36668ddf22403a332f978057d527cf285b01468bc3431b04094a7bafa6aba59",
+    "size": 15
+  }
+}
