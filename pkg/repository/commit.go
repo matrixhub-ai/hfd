@@ -99,18 +99,26 @@ func (c *Commit) Title() string {
 	return title
 }
 
-// Diff returns the diff of the commit compared to its parent commit, or an empty string if this is the initial commit with no parents.
+// Diff returns the diff of the commit compared to its first parent, or to the empty tree for the initial commit.
 func (c *Commit) Diff() (string, error) {
-	if c.commit.NumParents() == 0 {
-		return "", nil // No parents, so no diff
-	}
-
-	parent, err := c.commit.Parent(0)
+	to, err := c.commit.Tree()
 	if err != nil {
-		return "", fmt.Errorf("failed to get parent commit: %w", err)
+		return "", fmt.Errorf("failed to get commit tree: %w", err)
 	}
 
-	patch, err := parent.Patch(c.commit)
+	from := &object.Tree{}
+	if c.commit.NumParents() > 0 {
+		parent, err := c.commit.Parent(0)
+		if err != nil {
+			return "", fmt.Errorf("failed to get parent commit: %w", err)
+		}
+		from, err = parent.Tree()
+		if err != nil {
+			return "", fmt.Errorf("failed to get parent tree: %w", err)
+		}
+	}
+
+	patch, err := from.Patch(to)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate patch: %w", err)
 	}
