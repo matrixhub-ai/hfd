@@ -73,6 +73,18 @@ type RepoListItem struct {
 	PipelineTag   string   `json:"pipeline_tag,omitempty"`
 	LibraryName   string   `json:"library_name,omitempty"`
 	ModelID       string   `json:"modelId,omitempty"`
+	LastModified  string   `json:"lastModified,omitempty"`
+	UsedStorage   int64    `json:"usedStorage,omitempty"`
+}
+
+// RepoStorageInfo is one entry of the settings/repositories listing consumed by huggingface_hub's RepoStorageInfo.
+type RepoStorageInfo struct {
+	RepoID         string  `json:"id"`
+	Type           string  `json:"type"`
+	UpdatedAt      string  `json:"updatedAt"`
+	Visibility     string  `json:"visibility"`
+	Storage        int64   `json:"storage"`
+	StoragePercent float64 `json:"storagePercent"`
 }
 
 // repoInfo represents the info response for HuggingFace API

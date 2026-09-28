@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -61,6 +63,132 @@ func TestHandleListPermission(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestHandleListUserReposPermission pins that the settings/repositories forms stop at the first denied type.
+func TestHandleListUserReposPermission(t *testing.T) {
+	tests := []struct {
+		name, target, author string
+	}{
+		{"User", "/api/settings/repositories", ""},
+		{"Organization", "/api/organizations/alice/settings/repositories", "alice"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			for _, p := range []string{"alice/hidden-repo.git", "datasets/alice/hidden-repo.git"} {
+				if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(p)), "main"); err != nil {
+					t.Fatalf("Init(%s): %v", p, err)
+				}
+			}
+			var gotOp permission.Operation
+			var gotRepo string
+			var gotCtx permission.Context
+			calls := 0
+			hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+				calls++
+				gotOp, gotRepo, gotCtx = op, repoName, opCtx
+				return false, nil
+			}
+			st := newStorage(t, dataDir)
+			handler := hf.NewHandler(append(catalogOptions(st),
+				hf.WithStorage(st),
+				hf.WithPermissionHookFunc(hook),
+			)...)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tc.target, nil))
+			if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "hidden-repo") {
+				t.Errorf("status=%d, want 403 with no repositories enumerated; body=%s", response.Code, response.Body.String())
+			}
+			if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
+				t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
+			}
+			want := permission.Context{Author: tc.author}
+			if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != "models" || gotCtx != want {
+				t.Errorf("hook calls=%d, op=%s, repo=%q, ctx=%+v; want 1, list_repos, \"models\", %+v", calls, gotOp, gotRepo, gotCtx, want)
+			}
+		})
+	}
+}
+
+// TestHandleListUserRepos pins the `hf repos list` listing over the server defaults: every type in one
+// id-sorted page, the organization form scoped to its namespace, and storage shares summing to 100.
+func TestHandleListUserRepos(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	for _, body := range []string{
+		`{"type":"model","name":"alpha","organization":"user-a"}`,
+		`{"type":"model","name":"beta","organization":"user-b"}`,
+		`{"type":"dataset","name":"data","organization":"user-a"}`,
+		`{"type":"space","name":"demo","organization":"user-b"}`,
+		`{"type":"kernel","name":"kern","organization":"user-a"}`,
+	} {
+		resp, err := http.Post(endpoint+"/api/repos/create", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("Failed to create repo: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("create %s: status %d", body, resp.StatusCode)
+		}
+	}
+
+	list := func(t *testing.T, path string) ([]hf.RepoStorageInfo, string) {
+		t.Helper()
+		resp, err := http.Get(endpoint + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status %d: %s", path, resp.StatusCode, body)
+		}
+		if link := resp.Header.Get("Link"); link != "" {
+			t.Errorf("GET %s: Link = %q, want none", path, link)
+		}
+		var infos []hf.RepoStorageInfo
+		if err := json.Unmarshal(body, &infos); err != nil {
+			t.Fatalf("GET %s: decode: %v: %s", path, err, body)
+		}
+		return infos, strings.TrimSpace(string(body))
+	}
+	idsAndShares := func(t *testing.T, infos []hf.RepoStorageInfo) []string {
+		t.Helper()
+		var got []string
+		var percent float64
+		for _, info := range infos {
+			got = append(got, info.RepoID+" "+info.Type)
+			percent += info.StoragePercent
+			if info.Visibility != "public" || info.Storage <= 0 {
+				t.Errorf("%s: visibility=%q storage=%d, want public with positive storage", info.RepoID, info.Visibility, info.Storage)
+			}
+			updated, err := time.Parse(repository.TimeFormat, info.UpdatedAt)
+			if err != nil || len(info.UpdatedAt) != len(repository.TimeFormat) || !strings.HasSuffix(info.UpdatedAt, "Z") || time.Since(updated) < 0 || time.Since(updated) > time.Hour {
+				t.Errorf("%s: updatedAt=%q (%v), want a recent %s timestamp", info.RepoID, info.UpdatedAt, err, repository.TimeFormat)
+			}
+		}
+		if math.Abs(percent-100) > 1e-6 {
+			t.Errorf("storagePercent sum = %v, want 100", percent)
+		}
+		return got
+	}
+
+	infos, _ := list(t, "/api/settings/repositories")
+	want := []string{"user-a/alpha model", "user-a/data dataset", "user-a/kern kernel", "user-b/beta model", "user-b/demo space"}
+	if got := idsAndShares(t, infos); !slices.Equal(got, want) {
+		t.Errorf("settings/repositories = %v, want %v", got, want)
+	}
+
+	infos, _ = list(t, "/api/organizations/user-a/settings/repositories")
+	if got := idsAndShares(t, infos); !slices.Equal(got, want[:3]) {
+		t.Errorf("organizations/user-a = %v, want %v", got, want[:3])
+	}
+
+	if _, body := list(t, "/api/organizations/nobody/settings/repositories"); body != "[]" {
+		t.Errorf("organizations/nobody = %s, want []", body)
 	}
 }
 
@@ -822,6 +950,60 @@ func TestHandleListModelsExpand(t *testing.T) {
 	}
 	if len(item.Tags) == 0 {
 		t.Error("Expected tags to be populated")
+	}
+}
+
+// TestHandleListModelsExpandStorage pins that lastModified and usedStorage appear only when expanded.
+func TestHandleListModelsExpandStorage(t *testing.T) {
+	server, _ := setupTestServer(t)
+	endpoint := server.URL
+
+	resp, err := http.Post(endpoint+"/api/repos/create", "application/json",
+		strings.NewReader(`{"type":"model","name":"storage-test","organization":"org"}`))
+	if err != nil {
+		t.Fatalf("Failed to create repo: %v", err)
+	}
+	resp.Body.Close()
+
+	ndjson := `{"key":"header","value":{"summary":"init"}}` + "\n" +
+		`{"key":"file","value":{"content":"# Test\n","path":"README.md","encoding":"utf-8"}}` + "\n"
+	resp, err = http.Post(endpoint+"/api/models/org/storage-test/commit/main", "application/x-ndjson", strings.NewReader(ndjson))
+	if err != nil {
+		t.Fatalf("Failed to commit: %v", err)
+	}
+	resp.Body.Close()
+
+	tests := []struct {
+		query                             string
+		wantLastModified, wantUsedStorage bool
+	}{
+		{"", false, false},
+		{"?expand=lastModified&expand=usedStorage", true, true},
+		{"?expand[]=usedStorage", false, true},
+	}
+	for _, tc := range tests {
+		resp, err := http.Get(endpoint + "/api/models" + tc.query)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.query, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", tc.query, resp.StatusCode, body)
+		}
+		if strings.Contains(string(body), "lastModified") != tc.wantLastModified || strings.Contains(string(body), "usedStorage") != tc.wantUsedStorage {
+			t.Errorf("%s: body = %s; want lastModified=%v usedStorage=%v", tc.query, body, tc.wantLastModified, tc.wantUsedStorage)
+		}
+		var items []hf.RepoListItem
+		if err := json.Unmarshal(body, &items); err != nil || len(items) != 1 {
+			t.Fatalf("%s: items = %s, err = %v; want one model", tc.query, body, err)
+		}
+		if (items[0].UsedStorage > 0) != tc.wantUsedStorage {
+			t.Errorf("%s: usedStorage = %d, want positive=%v", tc.query, items[0].UsedStorage, tc.wantUsedStorage)
+		}
+		if _, err := time.Parse(repository.TimeFormat, items[0].LastModified); (err == nil) != tc.wantLastModified {
+			t.Errorf("%s: lastModified = %q (%v), want present=%v", tc.query, items[0].LastModified, err, tc.wantLastModified)
+		}
 	}
 }
 

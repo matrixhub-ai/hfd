@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -149,6 +150,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "SnapshotDownload", supported: pyOnly, run: runHubSnapshotDownload},
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
 		{name: "ListRepos", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubListRepos},
+		{name: "ListUserRepos", supported: anyClientAnyType, run: runHubListUserRepos},
 		{name: "TreeSize", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && modelCellOnly(c, rt) }, run: runHubTreeSize},
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
 		{name: "Tag", supported: anyClientAnyType, run: runHubTag},
@@ -753,6 +755,97 @@ repos = list(paginate(os.environ["HF_ENDPOINT"] + "/api/%s", params={"author": n
 assert [repo["id"] for repo in repos] == want, f"Link pagination: {repos!r}, want {want!r}"
 `, namespace, rt.apiPrefix, rt.apiPrefix)
 	runPyScript(t, s.httpURL, script)
+}
+
+// runHubListUserRepos: `hf repos list` / list_user_repos read
+// /api/settings/repositories, or /api/organizations/{ns}/settings/repositories
+// with a namespace; the CLI applies --type/--search/--limit client-side.
+func runHubListUserRepos(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	ns := "user-repos-" + rt.arg + "-org"
+	want := []string{ns + "/alpha", ns + "/beta"}
+	seeded := time.Now().UTC()
+	for _, name := range []string{"alpha", "beta"} {
+		hubSeedFiles(t, s, rt, ns+"/"+name, []hubFile{{"README.md", "# " + name + "\n"}}, "Seed "+name)
+	}
+
+	if c.py {
+		requirePythonHFHubAttr(t, "list_user_repos")
+		script := hubPyAPI + fmt.Sprintf(`from datetime import datetime, timedelta, timezone
+ns, repo_type = %q, %q
+want = [ns + "/alpha", ns + "/beta"]
+repos = list(api.list_user_repos(namespace=ns))
+ids = [r.id for r in repos]
+assert ids == want, f"namespace listing {ids!r}, want {want!r}"
+for r in repos:
+    assert r.type == repo_type, f"{r.id} type {r.type!r}, want {repo_type!r}"
+    assert r.visibility == "public", f"{r.id} visibility {r.visibility!r}, want 'public'"
+    assert r.storage > 0, f"{r.id} storage {r.storage!r}, want > 0"
+    assert r.updated_at.tzinfo is not None, f"{r.id} updated_at {r.updated_at!r} is naive"
+    age = datetime.now(timezone.utc) - r.updated_at
+    assert age < timedelta(hours=1), f"{r.id} updated_at {r.updated_at.isoformat()} is {age} old"
+percent = sum(r.storage_percent for r in repos)
+assert abs(percent - 100) < 1e-6, f"storage_percent sums to {percent!r}, want 100"
+everything = list(api.list_user_repos())
+all_ids = {r.id for r in everything}
+assert all(w in all_ids for w in want), f"unscoped listing {sorted(all_ids)!r} lacks {want!r}"
+for r in everything:
+    assert r.type in {"model", "dataset", "space", "kernel"}, f"{r.id} type {r.type!r}"
+`, ns, rt.arg)
+		runPyScript(t, s.httpURL, script)
+		return
+	}
+
+	type cliRepo struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Updated    string `json:"updated"`
+		Visibility string `json:"visibility"`
+		Storage    string `json:"storage"`
+		Percent    string `json:"%_of_total"`
+	}
+	ids := func(repos []cliRepo) []string {
+		out := make([]string, 0, len(repos))
+		for _, r := range repos {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+
+	var scoped []cliRepo
+	// --limit 0 lifts the CLI's default cap of 30 rows.
+	runHFCmdJSON(t, s.httpURL, &scoped, "repos", "list", "--namespace", ns, "--format", "json", "--limit", "0")
+	if got := ids(scoped); !slices.Equal(got, want) {
+		t.Fatalf("hf repos list --namespace %s ids = %v, want %v", ns, got, want)
+	}
+	// The commit's UTC date is the seeding day or, across midnight, the listing day.
+	dates := []string{seeded.Format("2006-01-02"), time.Now().UTC().Format("2006-01-02")}
+	for _, r := range scoped {
+		if r.Type != rt.arg || r.Visibility != "public" || !slices.Contains(dates, r.Updated) || r.Storage == "" || !strings.HasSuffix(r.Percent, "%") {
+			t.Errorf("hf repos list row %+v, want type %q, visibility public, updated in %v, storage and %%_of_total set", r, rt.arg, dates)
+		}
+	}
+	if rt.arg != "model" {
+		return
+	}
+
+	var all []cliRepo
+	runHFCmdJSON(t, s.httpURL, &all, "repos", "list", "--format", "json", "--limit", "0")
+	for _, id := range want {
+		if !slices.Contains(ids(all), id) {
+			t.Errorf("hf repos list ids %v lack %s", ids(all), id)
+		}
+	}
+	for _, r := range all {
+		if !slices.Contains([]string{"model", "dataset", "space", "kernel"}, r.Type) {
+			t.Errorf("hf repos list %s type = %q", r.ID, r.Type)
+		}
+	}
+
+	var filtered []cliRepo
+	runHFCmdJSON(t, s.httpURL, &filtered, "repos", "list", "--type", "model", "--search", ns, "--format", "json")
+	if got := ids(filtered); !slices.Equal(got, want) {
+		t.Errorf("hf repos list --type model --search %s ids = %v, want %v", ns, got, want)
+	}
 }
 
 // runHubTreeSize (py only, model): exact directory/root byte totals,

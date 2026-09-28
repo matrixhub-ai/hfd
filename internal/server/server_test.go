@@ -119,6 +119,7 @@ func TestNewHTTPHandler(t *testing.T) {
 			path: "/api/whoami-v2", token: "t0k", status: http.StatusOK, body: `"name":"bob"`},
 		{name: "nil whoami falls to Next", options: Options{Authenticators: bobToken}, path: "/api/whoami-v2", token: "t0k", status: http.StatusTeapot, identity: authenticate.NewIdentity("bob", "")},
 		{name: "nil list falls to Next", path: "/api/models", status: http.StatusTeapot, identity: authenticate.Anonymous},
+		{name: "nil list falls to Next for settings", path: "/api/settings/repositories", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "custom whoami sees identity", options: Options{Authenticators: bobToken, HFOptions: []backendhf.Option{
 			backendhf.WithWhoamiFunc(func(ctx context.Context) (*backendhf.WhoamiResponse, error) {
 				return &backendhf.WhoamiResponse{Name: "custom-" + authenticate.IdentityFrom(ctx).Name()}, nil
@@ -222,6 +223,12 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 	}
 	if body := do(t, http.MethodGet, "/api/datasets?author=org", "", http.StatusOK); !strings.Contains(body, `"id":"org/repo"`) {
 		t.Errorf("list = %s, want org/repo", body)
+	}
+	if body := do(t, http.MethodGet, "/api/settings/repositories", "", http.StatusOK); !strings.Contains(body, `"id":"org/repo"`) || !strings.Contains(body, `"type":"dataset"`) {
+		t.Errorf("settings/repositories = %s, want org/repo as a dataset", body)
+	}
+	if body := do(t, http.MethodGet, "/api/organizations/other/settings/repositories", "", http.StatusOK); strings.TrimSpace(body) != "[]" {
+		t.Errorf("organizations/other/settings/repositories = %s, want []", body)
 	}
 	do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
 	do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)

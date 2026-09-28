@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -221,7 +222,7 @@ func (h *Hooks) UpdateRepoSettings(ctx context.Context, repoName string, _ backe
 	return err
 }
 
-// ListRepos returns the repositories of repoType matching query, sorted and paged.
+// ListRepos returns the repositories of repoType matching query, sorted and paged; lastModified and usedStorage are filled only when query.Expand asks for them.
 func (h *Hooks) ListRepos(ctx context.Context, repoType string, query backendhf.ListQuery) ([]backendhf.RepoListItem, bool, error) {
 	slog.InfoContext(ctx, "List repositories", "user", authenticate.IdentityFrom(ctx).Name(), "repoType", repoType, "author", query.Author, "search", query.Search)
 	isModel := repoType == "models"
@@ -298,6 +299,8 @@ func listRepoItems(ctx context.Context, fs billy.Filesystem, baseDir string, isM
 	}
 
 	var items []backendhf.RepoListItem
+	wantLastModified := slices.Contains(query.Expand, "lastModified")
+	wantUsedStorage := slices.Contains(query.Expand, "usedStorage")
 	for _, root := range roots {
 		// An unreadable directory ends this namespace's walk; the others still get listed.
 		_ = repository.Walk(ctx, fs, root, func(path string) error {
@@ -319,6 +322,14 @@ func listRepoItems(ctx context.Context, fs billy.Filesystem, baseDir string, isM
 				item.Tags = meta.Tags
 				item.PipelineTag = meta.PipelineTag
 				item.LibraryName = meta.LibraryName
+				if wantLastModified {
+					if commits, err := repo.Commits("", &repository.CommitsOptions{Limit: 1}); err == nil && len(commits) > 0 {
+						item.LastModified = commits[0].Committer().When().UTC().Format(repository.TimeFormat)
+					}
+				}
+				if wantUsedStorage {
+					item.UsedStorage, _ = repo.DiskUsage(ctx)
+				}
 			}
 
 			if len(query.FilterTags) > 0 && !matchesAllTags(item.Tags, query.FilterTags) {

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,7 +24,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// catalogRequests lists the six catalog endpoints with a valid body each.
+// catalogRequests lists the catalog endpoints with a valid body each.
 var catalogRequests = []struct {
 	method, target, body string
 }{
@@ -31,6 +33,8 @@ var catalogRequests = []struct {
 	{http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved"}`},
 	{http.MethodPut, "/api/models/org/repo/settings", `{"private":true}`},
 	{http.MethodGet, "/api/models?author=org", ""},
+	{http.MethodGet, "/api/settings/repositories", ""},
+	{http.MethodGet, "/api/organizations/org/settings/repositories", ""},
 	{http.MethodGet, "/api/whoami-v2", ""},
 }
 
@@ -79,6 +83,8 @@ var catalogRoutes = map[string]string{
 	"/api/repos/move":   http.MethodPost,
 	"/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/settings": http.MethodPut,
 	"/api/{repoType:models|datasets|spaces|kernels}":                             http.MethodGet,
+	"/api/settings/repositories":                                                 http.MethodGet,
+	"/api/organizations/{namespace}/settings/repositories":                       http.MethodGet,
 	"/api/whoami-v2": http.MethodGet,
 }
 
@@ -115,11 +121,20 @@ func TestCatalogRouteRegistration(t *testing.T) {
 		t.Errorf("bare handler registers catalog routes %v, want none", got)
 	}
 	if got := registeredCatalogRoutes(t, NewHandler((&catalogFakes{}).options()...)); fmt.Sprint(got) != fmt.Sprint(catalogRoutes) {
-		t.Errorf("all six callbacks register %v, want all of %v", got, catalogRoutes)
+		t.Errorf("all callbacks register %v, want all of %v", got, catalogRoutes)
 	}
 	one := NewHandler(WithWhoamiFunc(func(context.Context) (*WhoamiResponse, error) { return nil, nil }))
 	if got := registeredCatalogRoutes(t, one); len(got) != 1 || got["/api/whoami-v2"] != http.MethodGet {
 		t.Errorf("whoami-only handler registers %v, want only /api/whoami-v2", got)
+	}
+	list := NewHandler(WithListReposFunc(func(context.Context, string, ListQuery) ([]RepoListItem, bool, error) { return nil, false, nil }))
+	wantList := map[string]string{
+		"/api/{repoType:models|datasets|spaces|kernels}":       http.MethodGet,
+		"/api/settings/repositories":                           http.MethodGet,
+		"/api/organizations/{namespace}/settings/repositories": http.MethodGet,
+	}
+	if got := registeredCatalogRoutes(t, list); fmt.Sprint(got) != fmt.Sprint(wantList) {
+		t.Errorf("list-only handler registers %v, want %v", got, wantList)
 	}
 }
 
@@ -207,7 +222,7 @@ func TestCatalogCallbackArguments(t *testing.T) {
 		{"Settings", http.MethodPut, "/api/spaces/org/repo/settings", `{"private":true,"gated":"auto"}`,
 			"settings spaces/org/repo true auto", "permission update_repo spaces/org/repo {Ref: DestRepo: Author:}", ""},
 		{"List", http.MethodGet, "/api/datasets?search=llm&author=org&filter=a&filter=b&sort=likes&limit=2&cursor=" + cursor, "",
-			"list datasets {Search:llm Author:org FilterTags:[a b] SortField:likes Limit:2 Offset:3}",
+			"list datasets {Search:llm Author:org FilterTags:[a b] SortField:likes Expand:[] Limit:2 Offset:3}",
 			"permission list_repos datasets {Ref: DestRepo: Author:org}", `[]`},
 		{"Whoami", http.MethodGet, "/api/whoami-v2", "", "whoami alice", "", `"name":"custom-alice"`},
 	}
@@ -237,6 +252,113 @@ func TestCatalogCallbackArguments(t *testing.T) {
 	}
 }
 
+// TestCatalogListUserReposArguments pins that the settings/repositories forms gate and then call the
+// list callback once per repository type, in order, with the namespace as author.
+func TestCatalogListUserReposArguments(t *testing.T) {
+	tests := []struct {
+		name, target, author string
+		id                   authenticate.Identity
+	}{
+		{"User", "/api/settings/repositories", "", alice},
+		{"Organization", "/api/organizations/org/settings/repositories", "org", alice},
+		{"Anonymous", "/api/settings/repositories", "", authenticate.Anonymous},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fakes := &catalogFakes{}
+			var hooks []string
+			h := newCatalogHandler(t, fakes, nil, &hooks)
+			rec := serveAs(h, http.MethodGet, tc.target, "", tc.id)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+			}
+			var wantCalls, wantHooks []string
+			for _, repoType := range []string{"models", "datasets", "spaces", "kernels"} {
+				wantCalls = append(wantCalls, fmt.Sprintf("list %s %+v", repoType, ListQuery{Author: tc.author, Expand: []string{"lastModified", "usedStorage"}}))
+				wantHooks = append(wantHooks, "permission list_repos "+repoType+" {Ref: DestRepo: Author:"+tc.author+"}")
+			}
+			if fmt.Sprint(fakes.calls) != fmt.Sprint(wantCalls) {
+				t.Errorf("callback calls = %q, want %q", fakes.calls, wantCalls)
+			}
+			if fmt.Sprint(hooks) != fmt.Sprint(wantHooks) {
+				t.Errorf("hook calls = %q, want %q", hooks, wantHooks)
+			}
+			if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+				t.Errorf("body = %s, want []", body)
+			}
+			if link := rec.Header().Get("Link"); link != "" {
+				t.Errorf("Link = %q, want none", link)
+			}
+		})
+	}
+}
+
+// TestCatalogListUserReposResponse pins the RepoStorageInfo shape huggingface_hub's RepoStorageInfo(**item) needs.
+func TestCatalogListUserReposResponse(t *testing.T) {
+	fakes := &catalogFakes{items: []RepoListItem{
+		{RepoID: "org/a", LastModified: "2026-01-02T03:04:05.000Z", UsedStorage: 300},
+		{RepoID: "org/b", Private: true, UsedStorage: 100},
+	}}
+	var hooks []string
+	h := newCatalogHandler(t, fakes, nil, &hooks)
+	rec := serveAs(h, http.MethodGet, "/api/settings/repositories", "", alice)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil || len(raw) == 0 {
+		t.Fatalf("body = %s, err = %v; want a non-empty array", rec.Body, err)
+	}
+	if keys, want := slices.Sorted(maps.Keys(raw[0])), []string{"id", "storage", "storagePercent", "type", "updatedAt", "visibility"}; !slices.Equal(keys, want) {
+		t.Errorf("keys = %v, want %v", keys, want)
+	}
+	var infos []RepoStorageInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &infos); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The fake returns both items for every type, so each id appears once per type (sorted by id, then type) and the total is 1600.
+	var want []RepoStorageInfo
+	for _, id := range []string{"org/a", "org/b"} {
+		for _, typ := range []string{"dataset", "kernel", "model", "space"} {
+			info := RepoStorageInfo{RepoID: id, Type: typ, UpdatedAt: "2026-01-02T03:04:05.000Z", Visibility: "public", Storage: 300, StoragePercent: 18.75}
+			if id == "org/b" {
+				info = RepoStorageInfo{RepoID: id, Type: typ, UpdatedAt: "0001-01-01T00:00:00.000Z", Visibility: "private", Storage: 100, StoragePercent: 6.25}
+			}
+			want = append(want, info)
+		}
+	}
+	if len(infos) != len(want) {
+		t.Fatalf("entries = %+v, want %+v", infos, want)
+	}
+	for i := range want {
+		if math.Abs(infos[i].StoragePercent-want[i].StoragePercent) > 1e-9 {
+			t.Errorf("entry %d storagePercent = %v, want %v", i, infos[i].StoragePercent, want[i].StoragePercent)
+		}
+		infos[i].StoragePercent = want[i].StoragePercent
+		if infos[i] != want[i] {
+			t.Errorf("entry %d = %+v, want %+v", i, infos[i], want[i])
+		}
+	}
+}
+
+func TestParseListQueryExpand(t *testing.T) {
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{"", nil},
+		{"?expand=lastModified&expand=usedStorage", []string{"lastModified", "usedStorage"}},
+		{"?expand[]=a&expand[]=b", []string{"a", "b"}},
+		{"?expand=a,b,,c", []string{"a", "b", "c"}},
+		{"?expand=", nil},
+	}
+	for _, tc := range tests {
+		if got := parseListQuery(httptest.NewRequest(http.MethodGet, "/api/models"+tc.query, nil)).Expand; !slices.Equal(got, tc.want) {
+			t.Errorf("%q: Expand = %v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
 // TestCatalogCallbackSkipped pins that gates run before the callback and never reach it.
 func TestCatalogCallbackSkipped(t *testing.T) {
 	tests := []struct {
@@ -251,6 +373,9 @@ func TestCatalogCallbackSkipped(t *testing.T) {
 		{"SettingsDenied", http.MethodPut, "/api/models/org/repo/settings", `{}`, alice, permission.ErrDenied, http.StatusForbidden},
 		{"ListDenied", http.MethodGet, "/api/models", "", alice, permission.ErrDenied, http.StatusForbidden},
 		{"ListHookError", http.MethodGet, "/api/models", "", alice, errors.New("boom"), http.StatusInternalServerError},
+		{"ListUserReposDenied", http.MethodGet, "/api/settings/repositories", "", alice, permission.ErrDenied, http.StatusForbidden},
+		{"ListOrgReposDenied", http.MethodGet, "/api/organizations/org/settings/repositories", "", alice, permission.ErrDenied, http.StatusForbidden},
+		{"ListUserReposHookError", http.MethodGet, "/api/settings/repositories", "", alice, errors.New("boom"), http.StatusInternalServerError},
 		{"CreateMalformed", http.MethodPost, "/api/repos/create", `{not json`, alice, nil, http.StatusBadRequest},
 		{"DeleteMalformed", http.MethodDelete, "/api/repos/delete", `{not json`, alice, nil, http.StatusBadRequest},
 		{"MoveMalformed", http.MethodPost, "/api/repos/move", `{not json`, alice, nil, http.StatusBadRequest},
