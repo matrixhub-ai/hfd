@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/storage/memory"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 var errUnreadable = errors.New("blob content unreadable")
@@ -160,5 +161,26 @@ func TestScanLFSPointersExcept(t *testing.T) {
 	cancel()
 	if _, err := readable.ScanLFSPointersExcept(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("scan with cancelled context: got %v, want context.Canceled", err)
+	}
+}
+
+// As in git-lfs, an empty blob is not a pointer and candidates stay below MaxLFSPointerSize.
+func TestScanLFSPointersSizeBounds(t *testing.T) {
+	st := memory.NewStorage()
+	r, err := git.Init(st, git.WithDefaultBranch(plumbing.NewBranchReferenceName("main")))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	kept, dropped := pointerText(strings.Repeat("c", 64), 5), pointerText(strings.Repeat("d", 64), 4)
+	storeBlob(t, st, "")
+	storeBlob(t, st, dropped+strings.Repeat(" ", lfs.MaxLFSPointerSize-len(dropped)))
+	storeBlob(t, st, kept+strings.Repeat(" ", lfs.MaxLFSPointerSize-1-len(kept)))
+
+	ptrs, err := (&Repository{repo: r}).ScanLFSPointersExcept(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(ptrs) != 1 || ptrs[0].OID() != strings.Repeat("c", 64) {
+		t.Fatalf("scan = %v, want only the pointer below the cutoff", ptrs)
 	}
 }

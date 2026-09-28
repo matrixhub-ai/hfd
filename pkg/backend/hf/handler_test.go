@@ -260,7 +260,7 @@ func TestHuggingFacePreupload(t *testing.T) {
 	resp.Body.Close()
 
 	// Test preupload
-	preuploadBody := `{"files":[{"path":"README.md","size":20,"sample":""},{"path":"large.bin","size":20000000,"sample":""}]}`
+	preuploadBody := `{"files":[{"path":"README.md","size":20,"sample":""},{"path":"large.bin","size":20000000,"sample":""},{"path":"notes.txt","size":10485761,"sample":""},{"path":"small.txt","size":10485760,"sample":""}]}`
 	resp, err = http.Post(endpoint+"/api/models/test-user/test-model/preupload/main", "application/json", strings.NewReader(preuploadBody))
 	if err != nil {
 		t.Fatalf("Failed to preupload: %v", err)
@@ -277,14 +277,20 @@ func TestHuggingFacePreupload(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if len(result.Files) != 2 {
-		t.Fatalf("Expected 2 files, got %d", len(result.Files))
+	if len(result.Files) != 4 {
+		t.Fatalf("Expected 4 files, got %d", len(result.Files))
 	}
 	if result.Files[0].UploadMode != "regular" {
 		t.Errorf("Expected regular mode for README.md, got %s", result.Files[0].UploadMode)
 	}
 	if result.Files[1].UploadMode != "lfs" {
 		t.Errorf("Expected lfs mode for large.bin, got %s", result.Files[1].UploadMode)
+	}
+	if result.Files[2].UploadMode != "lfs" {
+		t.Errorf("Expected lfs mode for notes.txt above the 10 MiB regular limit, got %s", result.Files[2].UploadMode)
+	}
+	if result.Files[3].UploadMode != "regular" {
+		t.Errorf("Expected regular mode for small.txt at exactly 10 MiB, got %s", result.Files[3].UploadMode)
 	}
 }
 

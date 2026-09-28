@@ -67,7 +67,7 @@ func (r *Repository) parseLFS(hash Hash) (*lfs.Pointer, error) {
 		return nil, err
 	}
 
-	if blob.Size > lfs.MaxLFSPointerSize {
+	if blob.Size >= lfs.MaxLFSPointerSize {
 		return nil, nil
 	}
 

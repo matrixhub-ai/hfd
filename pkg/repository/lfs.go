@@ -36,7 +36,7 @@ func (r *Repository) ScanLFSPointersExcept(ctx context.Context, ignored []plumbi
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, ok := skip[obj.Hash]; ok || obj.Size > lfs.MaxLFSPointerSize {
+		if _, ok := skip[obj.Hash]; ok || obj.Size >= lfs.MaxLFSPointerSize {
 			return nil
 		}
 

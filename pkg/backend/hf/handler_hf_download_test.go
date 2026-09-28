@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -266,6 +267,61 @@ func TestResolveLFSZeroSize(t *testing.T) {
 	}
 	if got := rec.Result().Header.Get("X-Linked-Size"); got != "0" {
 		t.Fatalf("X-Linked-Size = %q, want 0", got)
+	}
+}
+
+// TestResolveEmptyRegularFile pins that an empty blob is a regular file, not
+// the EmptyPointer git-lfs decodes from zero-length input: resolve serves it
+// with its Git ETag and the tree entry has no lfs block, mirror or not.
+func TestResolveEmptyRegularFile(t *testing.T) {
+	const emptyBlob = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+
+	st, _ := newLFSRepo(t, map[string]string{"empty.txt": ""})
+	m, _ := newXETDataPlane(t, "", nil)
+
+	handlers := []struct {
+		name string
+		h    *Handler
+	}{
+		{"NoMirror", NewHandler(WithStorage(st))},
+		{"Mirror", NewHandler(WithStorage(st), WithMirror(m))},
+	}
+	for _, tc := range handlers {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(method, func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					tc.h.ServeHTTP(rec, httptest.NewRequest(method, "/org/repo/resolve/main/empty.txt", nil))
+					if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+						t.Fatalf("status = %d, body = %q, want 200 with empty body", rec.Code, rec.Body.String())
+					}
+					hd := rec.Result().Header
+					if got, want := hd.Get("ETag"), `"`+emptyBlob+`"`; got != want || hd.Get("Content-Length") != "0" {
+						t.Fatalf("ETag = %q, Content-Length = %q, want %s and 0", got, hd.Get("Content-Length"), want)
+					}
+					for _, k := range []string{"X-Linked-Etag", "X-Linked-Size", "X-Xet-Hash", "Link"} {
+						if got := hd.Get(k); got != "" {
+							t.Fatalf("%s = %q, want unset", k, got)
+						}
+					}
+				})
+			}
+
+			t.Run("Tree", func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				tc.h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/models/org/repo/tree/main", nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200", rec.Code)
+				}
+				var entries []treeEntry
+				if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+					t.Fatalf("decode tree: %v", err)
+				}
+				if len(entries) != 1 || entries[0].Path != "empty.txt" || entries[0].Size != 0 || entries[0].LFS != nil {
+					t.Fatalf("tree = %s, want one empty.txt entry of size 0 without lfs", rec.Body.String())
+				}
+			})
+		})
 	}
 }
 
