@@ -27,12 +27,13 @@ type ListReposFunc func(ctx context.Context, repoType string, q ListQuery) ([]Re
 // WhoamiFunc describes the authenticated caller.
 type WhoamiFunc func(ctx context.Context) (*WhoamiResponse, error)
 
-// ListQuery is the parsed repository list query; Offset comes from the cursor.
+// ListQuery is the parsed repository list query; Offset comes from the cursor and Expand names the optional properties requested.
 type ListQuery struct {
 	Search     string
 	Author     string
 	FilterTags []string
 	SortField  string
+	Expand     []string
 	Limit      int
 	Offset     int
 }

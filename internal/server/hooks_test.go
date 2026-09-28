@@ -111,6 +111,34 @@ func TestHooksCatalogDefaults(t *testing.T) {
 		t.Errorf("ListRepos models = %+v, %v; want none", items, err)
 	}
 	logs.Reset()
+	items, _, err = hooks.ListRepos(ctx, "datasets", backendhf.ListQuery{Author: "org", Expand: []string{"lastModified", "usedStorage"}})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("ListRepos expanded = %+v, %v; want both org datasets", items, err)
+	}
+	otherCommits, err := other.Commits("main", nil)
+	if err != nil || len(otherCommits) != 1 {
+		t.Fatalf("other commits = %v, %v; want one", otherCommits, err)
+	}
+	wantModified := map[string]string{
+		"org/moved": commits[0].Committer().When().UTC().Format(repository.TimeFormat),
+		"org/other": otherCommits[0].Committer().When().UTC().Format(repository.TimeFormat),
+	}
+	for _, item := range items {
+		if item.LastModified == "" || item.LastModified != wantModified[item.RepoID] || item.UsedStorage <= 0 {
+			t.Errorf("expanded %s = lastModified %q usedStorage %d; want %q and positive usage", item.RepoID, item.LastModified, item.UsedStorage, wantModified[item.RepoID])
+		}
+	}
+	logged(t, `msg="List repositories" user=alice repoType=datasets author=org search=""`)
+	items, _, err = hooks.ListRepos(ctx, "datasets", backendhf.ListQuery{Author: "org"})
+	if err != nil || len(items) != 2 {
+		t.Fatalf("ListRepos plain = %+v, %v; want both org datasets", items, err)
+	}
+	for _, item := range items {
+		if item.LastModified != "" || item.UsedStorage != 0 {
+			t.Errorf("plain %s = lastModified %q usedStorage %d; want neither without Expand", item.RepoID, item.LastModified, item.UsedStorage)
+		}
+	}
+	logs.Reset()
 
 	if err := hooks.DeleteRepo(ctx, "datasets/org/missing"); !errors.Is(err, repository.ErrRepositoryNotExists) || !strings.Contains(err.Error(), `"datasets/org/missing"`) {
 		t.Errorf("DeleteRepo missing = %v, want a named ErrRepositoryNotExists", err)

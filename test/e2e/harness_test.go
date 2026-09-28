@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -598,10 +599,10 @@ func requireUpDownMatrixTools(t *testing.T) {
 	missing("hf_xet (xet-core) not available to the hf CLI; pip install hf_xet\nhf env:\n%s", out)
 }
 
-// runHFCmdXet runs the hf CLI against endpoint with xet-core enabled or
-// disabled. HF_HOME is isolated per call so nothing is served from cache. A
-// watchdog kills hung invocations so a stuck client fails fast with output.
-func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string {
+// hfEnv is the hf CLI environment for endpoint with xet-core enabled or
+// disabled: HF_HOME is isolated per call so nothing is served from cache and
+// debug logging is on so failures carry the client's view.
+func hfEnv(t *testing.T, endpoint string, xet bool) []string {
 	t.Helper()
 	base := testEnv()
 	env := make([]string, 0, len(base)+6)
@@ -621,16 +622,44 @@ func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string
 	if !xet {
 		env = append(env, "HF_HUB_DISABLE_XET=1")
 	}
+	return env
+}
+
+// runHFCmdXet runs the hf CLI against endpoint with xet-core enabled or
+// disabled. A watchdog kills hung invocations so a stuck client fails fast
+// with output.
+func runHFCmdXet(t *testing.T, endpoint string, xet bool, args ...string) string {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "hf", args...)
-	cmd.Env = env
+	cmd.Env = hfEnv(t, endpoint, xet)
 	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("hf %s failed (%v): %v\nOutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
 	}
 	return string(output)
+}
+
+// runHFCmdJSON runs the hf CLI (xet disabled) and decodes its stdout into v.
+// It exists because runHFCmdXet's CombinedOutput interleaves the debug log
+// with the `--format json` document; here stderr is kept apart.
+func runHFCmdJSON(t *testing.T, endpoint string, v any, args ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "hf", args...)
+	cmd.Env = hfEnv(t, endpoint, false)
+	cmd.WaitDelay = 10 * time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("hf %s failed (%v): %v\nStdout: %s\nStderr: %s", strings.Join(args, " "), ctx.Err(), err, stdout.Bytes(), stderr.Bytes())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), v); err != nil {
+		t.Fatalf("hf %s: decode stdout: %v\nStdout: %s\nStderr: %s", strings.Join(args, " "), err, stdout.Bytes(), stderr.Bytes())
+	}
 }
 
 // runHFCmd runs the hf CLI against endpoint with xet disabled: runHFCmdXet's
@@ -668,6 +697,28 @@ raise SystemExit(0 if "kernel" in getattr(constants, "REPO_TYPES_WITH_KERNEL", (
 	if err := cmd.Run(); err != nil {
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 3 {
 			missing("huggingface_hub lacks kernel repositories; pip install -U huggingface_hub")
+		}
+		missing("huggingface_hub not installed; pip install huggingface_hub")
+	}
+}
+
+// requirePythonHFHubAttr is checkPythonHFHub plus a gate on HfApi having
+// attr, for rows driving accessors newer than the installed huggingface_hub.
+func requirePythonHFHubAttr(t *testing.T, attr string) {
+	t.Helper()
+	checkPythonHFHub(t)
+	missing := func(format string, args ...any) {
+		t.Helper()
+		if os.Getenv("CI") != "" {
+			t.Fatalf(format, args...)
+		}
+		t.Skipf(format, args...)
+	}
+	cmd := exec.CommandContext(t.Context(), "python3", "-c",
+		"import huggingface_hub, sys; sys.exit(0 if hasattr(huggingface_hub.HfApi, sys.argv[1]) else 3)", attr)
+	if err := cmd.Run(); err != nil {
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 3 {
+			missing("huggingface_hub lacks HfApi.%s; pip install -U huggingface_hub", attr)
 		}
 		missing("huggingface_hub not installed; pip install huggingface_hub")
 	}

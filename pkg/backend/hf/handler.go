@@ -178,6 +178,9 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}", h.handleInfoRevision).Methods(http.MethodGet)
 	if h.listReposFunc != nil {
 		r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}", h.handleList).Methods(http.MethodGet)
+		// `hf repos list` (HfApi.list_user_repos) reads these two forms.
+		r.HandleFunc("/api/settings/repositories", h.handleListUserRepos).Methods(http.MethodGet)
+		r.HandleFunc("/api/organizations/{namespace}/settings/repositories", h.handleListUserRepos).Methods(http.MethodGet)
 	}
 
 	// File download endpoints - non-model types use a type prefix, models use the root

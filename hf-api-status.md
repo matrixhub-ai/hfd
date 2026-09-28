@@ -274,7 +274,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/organizations/{name}/service-accounts/{serviceAccountId}/tokens/{tokenId}/rotate` | [service-accounts](https://huggingface.co/spaces/huggingface/openapi#tag/service-accounts/POST/api/organizations/{name}/service-accounts/{serviceAccountId}/tokens/{tokenId}/rotate) | Rotate service-account token |
 | ❌ | `GET` | `/api/organizations/{name}/settings/network-security` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/settings/network-security) | Network security settings |
 | ❌ | `PATCH` | `/api/organizations/{name}/settings/network-security` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/PATCH/api/organizations/{name}/settings/network-security) | Update network security |
-| ❌ | `GET` | `/api/organizations/{name}/settings/repositories` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/settings/repositories) | List organization repositories |
+| ✅ | `GET` | `/api/organizations/{name}/settings/repositories` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/settings/repositories) | List organization repositories |
 | ❌ | `PUT` | `/api/organizations/{name}/settings/sso/credentials` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/PUT/api/organizations/{name}/settings/sso/credentials) | Rotate SSO credentials |
 | ❌ | `GET` | `/api/organizations/{name}/settings/tokens` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/settings/tokens) | Member access tokens |
 | ❌ | `POST` | `/api/organizations/{name}/settings/tokens/{tokenId}/revoke` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/POST/api/organizations/{name}/settings/tokens/{tokenId}/revoke) | Revoke member token |
@@ -323,7 +323,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `GET` | `/api/settings/metrics/live` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/settings/metrics/live) | Stream metrics |
 | ❌ | `PATCH` | `/api/settings/notifications` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/PATCH/api/settings/notifications) | Update notification settings |
 | ❌ | `POST` | `/api/settings/papers/claim` | [papers](https://huggingface.co/spaces/huggingface/openapi#tag/papers/POST/api/settings/papers/claim) | Claim paper authorship |
-| ❌ | `GET` | `/api/settings/repositories` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/settings/repositories) | List user repositories |
+| ✅ | `GET` | `/api/settings/repositories` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/settings/repositories) | List user repositories |
 | ❌ | `PATCH` | `/api/settings/watch` | [notifications](https://huggingface.co/spaces/huggingface/openapi#tag/notifications/PATCH/api/settings/watch) | Update watch settings |
 | ❌ | `GET` | `/api/settings/webhooks` | [webhooks](https://huggingface.co/spaces/huggingface/openapi#tag/webhooks/GET/api/settings/webhooks) | List webhooks |
 | ❌ | `POST` | `/api/settings/webhooks` | [webhooks](https://huggingface.co/spaces/huggingface/openapi#tag/webhooks/POST/api/settings/webhooks) | Create webhook |
