@@ -18,7 +18,6 @@ import (
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
-	xethf "github.com/wzshiming/xet/client/hf"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 )
@@ -267,10 +266,7 @@ func TestAuthenticatedTransferMatrix(t *testing.T) {
 		if err := json.Unmarshal(body, &token); err != nil || token.AccessToken == "" || token.CASURL == "" {
 			t.Fatalf("decode CAS token: %v\nbody: %s", err, body)
 		}
-		fileHash, _, err := xethf.ResolveDownload(t.Context(), nil, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile)
-		if err != nil {
-			t.Fatalf("resolve file hash: %v\n%s", err, rec.dump())
-		}
+		_, fileHash := resolveXetFile(t, s, repoID)
 		route := fmt.Sprintf("%s/v1/reconstructions/%s", token.CASURL, fileHash)
 		request(t, http.MethodGet, route, nil, http.Header{
 			"Authorization": {"Bearer " + token.AccessToken},
@@ -549,12 +545,14 @@ func TestLFSBatchTokenBoundToOID(t *testing.T) {
 	oidA := fmt.Sprintf("%x", sha256.Sum256(dataA))
 	oidB := fmt.Sprintf("%x", sha256.Sum256(dataB))
 	upload, _ := negotiateXetUpload(t, s, repoID, oidA, len(dataA))
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+	xc, err := xetclient.NewClient(
+		xetclient.WithCache(xetclient.NewCache(t.TempDir(), 0, 0)),
+		xetclient.WithUpstreamProvider(xetclient.StaticUpstreamProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])),
+	)
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
 	}
-	provider := xetclient.StaticAuthProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])
-	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(dataB)); err == nil {
+	if _, err := xc.UploadFile(t.Context(), bytes.NewReader(dataB)); err == nil {
 		t.Fatal("upload of other content succeeded with the token for oidA")
 	}
 	resp, err := http.Get(s.httpURL + "/objects/" + oidB)
@@ -565,7 +563,7 @@ func TestLFSBatchTokenBoundToOID(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("other object status = %d, want 404", resp.StatusCode)
 	}
-	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(dataA)); err != nil {
+	if _, err := xc.UploadFile(t.Context(), bytes.NewReader(dataA)); err != nil {
 		t.Fatalf("xet upload: %v", err)
 	}
 	verifyObjectsEndpoint(t, s, oidA, dataA)

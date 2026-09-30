@@ -36,14 +36,10 @@ type hookCall struct {
 func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
 	t.Helper()
 	st := newStorage(t, t.TempDir())
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("new xet client: %v", err)
-	}
 	xs := st.XETStorage()
 	m, err := mirror.NewMirror(append([]mirror.Option{
 		mirror.WithXETStorage(xs),
-		mirror.WithXETClient(client),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
 	}, opts...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)

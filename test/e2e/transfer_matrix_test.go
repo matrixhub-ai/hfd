@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wzshiming/xet"
 	xetclient "github.com/wzshiming/xet/client"
 	xethf "github.com/wzshiming/xet/client/hf"
 )
@@ -232,12 +233,14 @@ func pushViaXetBatch(t *testing.T, s *e2eServer, repoID string, data []byte) {
 	runGit(t, dir, env, "push", "origin", "main")
 
 	upload, verify := negotiateXetUpload(t, s, repoID, oid, len(data))
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+	xc, err := xetclient.NewClient(
+		xetclient.WithCache(xetclient.NewCache(t.TempDir(), 0, 0)),
+		xetclient.WithUpstreamProvider(xetclient.StaticUpstreamProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])),
+	)
 	if err != nil {
 		t.Fatalf("create xet client: %v", err)
 	}
-	provider := xetclient.StaticAuthProvider(upload.Header["X-Xet-Cas-Url"], upload.Header["X-Xet-Access-Token"])
-	if _, err := xc.UploadFileWithAuthProvider(t.Context(), provider, bytes.NewReader(data)); err != nil {
+	if _, err := xc.UploadFile(t.Context(), bytes.NewReader(data)); err != nil {
 		t.Fatalf("xet upload: %v", err)
 	}
 
@@ -381,29 +384,37 @@ func verifyHFResolvePlain(t *testing.T, s *e2eServer, repoID, oid string, want [
 	}
 }
 
+// resolveXetFile resolves the matrix file's xet hash through the hub resolve
+// route and returns the client bound to that repository for CAS downloads.
+func resolveXetFile(t *testing.T, s *e2eServer, repoID string) (*xethf.Client, xet.FileHash) {
+	t.Helper()
+	repo, file, err := xethf.ParseResolveURL(s.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile)
+	if err != nil {
+		t.Fatalf("parse resolve URL: %v", err)
+	}
+	hc, err := xethf.NewClient(repo, xethf.WithClientOptions(xetclient.WithCache(xetclient.NewCache(t.TempDir(), 0, 0))))
+	if err != nil {
+		t.Fatalf("create xet hub client: %v", err)
+	}
+	rf, err := hc.Resolve(t.Context(), file)
+	if err != nil {
+		t.Fatalf("resolve xet download: %v", err)
+	}
+	return hc, rf.Hash
+}
+
 // verifyHFResolveXet downloads through the xet protocol the way xet-capable
 // hub clients do: Link headers to token and reconstruction info, then chunk
 // fetches through the CAS.
 func verifyHFResolveXet(t *testing.T, s *e2eServer, repoID string, want []byte) {
 	t.Helper()
-	resolveURL := s.httpURL + "/" + repoID + "/resolve/main/" + transferMatrixFile
-	// nil client: the xet metadata rides on the 302 itself, so redirects
-	// must not be followed.
-	fileHash, provider, err := xethf.ResolveDownload(t.Context(), nil, resolveURL)
-	if err != nil {
-		t.Fatalf("resolve xet download: %v", err)
-	}
-
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
-	if err != nil {
-		t.Fatalf("create xet client: %v", err)
-	}
+	hc, fileHash := resolveXetFile(t, s, repoID)
 	f, err := os.Create(filepath.Join(t.TempDir(), "xet-read"))
 	if err != nil {
 		t.Fatalf("create download file: %v", err)
 	}
 	defer f.Close()
-	if err := xc.DownloadFileWithAuthProvider(t.Context(), provider, fileHash, f); err != nil {
+	if err := hc.DownloadFile(t.Context(), fileHash, f); err != nil {
 		t.Fatalf("xet download: %v", err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {

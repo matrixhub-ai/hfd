@@ -53,16 +53,13 @@ func run(ctx context.Context, cfg *config) error {
 	}
 
 	// Phase 3: xet/mirror layer.
-	xetC, err := buildXETClient(cfg, st)
-	if err != nil {
-		return fmt.Errorf("prepare XET client: %w", err)
-	}
-	engine, err := buildXETMirror(cfg, st, xetC)
+	cache := buildXETCache(cfg, st)
+	engine, err := buildXETMirror(cfg, st, cache)
 	if err != nil {
 		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
 	// The mirror is built with the hooks and the hooks call back into the mirror.
-	sharedMirror, err := buildMirror(ctx, cfg, st, hooks, xetC, engine, issuer.Sign)
+	sharedMirror, err := buildMirror(ctx, cfg, st, hooks, cache, engine, issuer.Sign)
 	if err != nil {
 		return fmt.Errorf("prepare mirror: %w", err)
 	}

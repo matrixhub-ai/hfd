@@ -55,11 +55,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("new storage: %v", err)
 	}
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("new xet client: %v", err)
-	}
-	m, err := mirror.NewMirror(mirror.WithXETStorage(xs), mirror.WithXETClient(client), mirror.WithDataDir(st.XETDir()))
+	m, err := mirror.NewMirror(mirror.WithXETStorage(xs), mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)), mirror.WithDataDir(st.XETDir()))
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}

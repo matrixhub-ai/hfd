@@ -97,39 +97,26 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 	return storage.NewStorage(opts...)
 }
 
-// buildXETClient applies proxy tuning to the storage-rooted chunk cache.
-func buildXETClient(cfg *config, st *storage.Storage) (*xetclient.Client, error) {
-	clientOpts := []xetclient.Options{
-		xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")),
-	}
-	if cfg.ProxyConcurrencyPerFile > 0 {
-		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyConcurrencyPerFile))
-	}
-	if cfg.ProxyCacheSize > 0 {
-		clientOpts = append(clientOpts, xetclient.WithCacheSize(cfg.ProxyCacheSize))
-	}
-	xetC, err := xetclient.NewClient(clientOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("create xet client: %w", err)
-	}
-	return xetC, nil
+// buildXETCache opens the storage-rooted cache every xet client and local ingest shares.
+func buildXETCache(cfg *config, st *storage.Storage) *xetclient.Cache {
+	return xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), cfg.ProxyDownloadCacheSize, cfg.ProxyUploadCacheSize)
 }
 
 // buildXETMirror creates the upstream ingest engine when a pull upstream is
-// configured; nil otherwise.
-func buildXETMirror(cfg *config, st *storage.Storage, xetC *xetclient.Client) (*xetmirror.Mirror, error) {
+// configured; nil otherwise. The upstream of each file comes from the
+// mirror source callback wired in buildMirror.
+func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache) (*xetmirror.Mirror, error) {
 	if cfg.PullMirrorURL == "" {
 		return nil, nil
 	}
-	upstream, err := xetmirror.StaticUpstream(strings.TrimSuffix(cfg.PullMirrorURL, "/"), cfg.ProxyToken)
-	if err != nil {
-		return nil, fmt.Errorf("create xet mirror engine: %w", err)
+	clientOpts := []xetclient.Options{xetclient.WithCache(cache)}
+	if cfg.ProxyConcurrencyPerFile > 0 {
+		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyConcurrencyPerFile))
 	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(st.XETStorage()),
-		xetmirror.WithUpstream(upstream),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
-		xetmirror.WithClient(xetC),
+		xetmirror.WithClientOptions(clientOpts...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create xet mirror engine: %w", err)
@@ -141,10 +128,10 @@ func buildXETMirror(cfg *config, st *storage.Storage, xetC *xetclient.Client) (*
 // mirror carries the data plane (token mint, external URL) and serves OID
 // resolves straight off the ingest engine. Pull and push mirroring activate
 // when their URLs are configured.
-func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *server.Hooks, xetC *xetclient.Client, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
+func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *server.Hooks, cache *xetclient.Cache, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
 		mirror.WithXETStorage(st.XETStorage()),
-		mirror.WithXETClient(xetC),
+		mirror.WithXETCache(cache),
 		mirror.WithXETMirror(engine),
 		mirror.WithMintToken(mint),
 		mirror.WithExternalURL(cfg.HostURL),
@@ -160,7 +147,7 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 
 	if cfg.PullMirrorURL != "" {
 		slog.InfoContext(ctx, "Pull mirror mode enabled", "source", cfg.PullMirrorURL)
-		baseURL := strings.TrimSuffix(cfg.PullMirrorURL, "/")
+		baseURL := strings.TrimRight(cfg.PullMirrorURL, "/")
 		opts = append(opts,
 			mirror.WithMirrorSourceFunc(
 				func(ctx context.Context, repoName string) (string, bool, error) {
@@ -170,7 +157,7 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 
 	if cfg.PushMirrorURL != "" {
 		slog.InfoContext(ctx, "Push mirror mode enabled", "destination", cfg.PushMirrorURL)
-		baseURL := strings.TrimSuffix(cfg.PushMirrorURL, "/")
+		baseURL := strings.TrimRight(cfg.PushMirrorURL, "/")
 		opts = append(opts, mirror.WithMirrorDestinationFunc(
 			func(ctx context.Context, repoName string) (string, bool, error) {
 				return baseURL + "/" + strings.TrimPrefix(repoName, "/"), true, nil

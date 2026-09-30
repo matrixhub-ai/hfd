@@ -185,15 +185,11 @@ func TestPreOpenPullTTL(t *testing.T) {
 	ctx := context.Background()
 	st := newStorage(t)
 	srcRoot := t.TempDir()
-	xetC, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("build xet client: %v", err)
-	}
 	hooks := &Hooks{PullTTL: time.Hour}
 	m, err := mirror.NewMirror(
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithXETStorage(st.XETStorage()),
-		mirror.WithXETClient(xetC),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
 		mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
 			return srcRoot + "/" + repoName, true, nil
 		}),

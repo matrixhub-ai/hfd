@@ -54,7 +54,7 @@ func (m *Mirror) PutObject(ctx context.Context, oid string, r io.Reader, size in
 		return fmt.Errorf("rewind spool file: %w", err)
 	}
 
-	opts := []xetupload.Option{xetupload.WithEnableSHA256(true)}
+	opts := []xetupload.Option{xetupload.WithEnableSHA256(true), xetupload.WithCacheManager(m.xetCache.Upload)}
 	if m.concurrency > 0 {
 		opts = append(opts, xetupload.WithConcurrency(m.concurrency))
 	}
@@ -101,34 +101,22 @@ func (l *localCAS) UploadShard(ctx context.Context, shardObj *xetshard.Shard) (*
 
 // Local shards are stored with raw chunk hashes, so keyed-shard candidates
 // are unnecessary here.
-func (l *localCAS) QueryDedupShards(ctx context.Context, chunkHashes []xet.ChunkHash, _ ...xet.ChunkHash) (map[xet.ChunkHash]*xetupload.DeduplicationResult, error) {
-	results := make(map[xet.ChunkHash]*xetupload.DeduplicationResult, len(chunkHashes))
+func (l *localCAS) QueryDedupShards(ctx context.Context, chunkHashes []xet.ChunkHash, _ ...xet.ChunkHash) (map[xet.ChunkHash]xetshard.ChunkLocation, error) {
+	results := make(map[xet.ChunkHash]xetshard.ChunkLocation, len(chunkHashes))
 	for _, chunkHash := range chunkHashes {
 		if _, ok := results[chunkHash]; ok {
 			continue
 		}
 		shardObj, err := l.storage.GetShardByChunkHash(ctx, l.namespace, chunkHash)
 		if err != nil || shardObj == nil {
-			results[chunkHash] = &xetupload.DeduplicationResult{ChunkHash: chunkHash, IsNew: true}
 			continue
 		}
 		// Register every chunk of the found shard, matching the remote
 		// global-dedup behavior where one probe yields the whole shard.
-		for _, casBlock := range shardObj.CASInfos {
-			for i, casChunk := range casBlock.Chunks {
-				if _, ok := results[casChunk.ChunkHash]; ok {
-					continue
-				}
-				results[casChunk.ChunkHash] = &xetupload.DeduplicationResult{
-					ChunkHash:  casChunk.ChunkHash,
-					IsNew:      false,
-					XorbHash:   casBlock.CASHash,
-					ChunkIndex: uint32(i),
-				}
+		for h, loc := range shardObj.ChunkLocations() {
+			if _, ok := results[h]; !ok {
+				results[h] = loc
 			}
-		}
-		if _, ok := results[chunkHash]; !ok {
-			results[chunkHash] = &xetupload.DeduplicationResult{ChunkHash: chunkHash, IsNew: true}
 		}
 	}
 	return results, nil

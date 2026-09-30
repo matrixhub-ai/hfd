@@ -65,27 +65,20 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 		t.Fatalf("new storage: %v", err)
 	}
 	xs := st.XETStorage()
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("new xet client: %v", err)
-	}
-	upstream, err := xetmirror.StaticUpstream(srv.URL, "")
-	if err != nil {
-		t.Fatalf("new xet mirror upstream: %v", err)
-	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
-		xetmirror.WithUpstream(upstream),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
-		xetmirror.WithClient(client),
 	)
 	if err != nil {
 		t.Fatalf("new xet mirror engine: %v", err)
 	}
 	m, err := NewMirror(
 		WithXETStorage(xs),
-		WithXETClient(client),
+		WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
 		WithXETMirror(engine),
+		WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
+			return srv.URL + "/" + repoName, true, nil
+		}),
 		WithDataDir(st.XETDir()),
 	)
 	if err != nil {

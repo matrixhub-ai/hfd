@@ -28,9 +28,9 @@ import (
 )
 
 // newXETDataPlane assembles the xet data-plane pieces the way cmd/hfd does —
-// file storage, client, token scheme, and the ingest engine when hubURL is
-// set — and builds the mirror over them with gitOpts appended, returning the
-// mirror and the CAS-server composition.
+// file storage, client options, token scheme, and the ingest engine fed by
+// hubURL when set — and builds the mirror over them with gitOpts appended,
+// returning the mirror and the CAS-server composition.
 func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mirror.Mirror, http.Handler) {
 	t.Helper()
 	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
@@ -38,42 +38,37 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		t.Fatalf("create storage: %v", err)
 	}
 	xs := st.XETStorage()
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("create xet client: %v", err)
-	}
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
-	var engine *xetmirror.Mirror
+	opts := []mirror.Option{
+		mirror.WithXETStorage(xs),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
+		mirror.WithMintToken(issuer.Sign),
+	}
 	if hubURL != "" {
-		upstream, err := xetmirror.StaticUpstream(hubURL, "")
-		if err != nil {
-			t.Fatalf("create xet mirror upstream: %v", err)
-		}
-		engine, err = xetmirror.NewMirror(
+		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
-			xetmirror.WithUpstream(upstream),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
-			xetmirror.WithClient(client),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
 		}
+		opts = append(opts,
+			mirror.WithXETMirror(engine),
+			mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
+				return hubURL + "/" + repoName, true, nil
+			}),
+		)
 	}
 	cas := xetserver.NewHandler(
 		xetserver.WithStorage(xs),
 		xetserver.WithAuthorizer(issuer),
 		xetserver.WithNext(http.NotFoundHandler()),
 	)
-	m, err := mirror.NewMirror(append([]mirror.Option{
-		mirror.WithXETStorage(xs),
-		mirror.WithXETClient(client),
-		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(st.XETDir()),
-		mirror.WithMintToken(issuer.Sign),
-	}, gitOpts...)...)
+	m, err := mirror.NewMirror(append(opts, gitOpts...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
@@ -103,12 +98,6 @@ func addCommit(t *testing.T, repo *repository.Repository, rev, file, content str
 		t.Fatalf("create commit: %v", err)
 	}
 	return hash
-}
-
-func staticSource(path string) mirror.SourceFunc {
-	return func(ctx context.Context, repoName string) (string, bool, error) {
-		return path, true, nil
-	}
 }
 
 func lfsPointerText(oid string, size int) string {
@@ -223,18 +212,17 @@ func TestBatchXETTokenBoundToOID(t *testing.T) {
 	if token == "" {
 		t.Fatal("missing CAS token")
 	}
-	xc, err := xetclient.NewClient(xetclient.WithCacheDir(t.TempDir()))
+	xc, err := xetclient.NewClient(xetclient.WithCache(xetclient.NewCache(t.TempDir(), 0, 0)), xetclient.WithUpstreamProvider(xetclient.StaticUpstreamProvider(srv.URL, token)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := xetclient.StaticAuthProvider(srv.URL, token)
-	if _, err := xc.UploadFileWithAuthProvider(ctx, provider, bytes.NewReader(dataB)); err == nil {
+	if _, err := xc.UploadFile(ctx, bytes.NewReader(dataB)); err == nil {
 		t.Fatal("upload of other content succeeded with token bound to object A")
 	}
 	if m.HasObject(ctx, oidB) {
 		t.Fatal("object B landed in storage with token bound to object A")
 	}
-	if _, err := xc.UploadFileWithAuthProvider(ctx, provider, bytes.NewReader(dataA)); err != nil {
+	if _, err := xc.UploadFile(ctx, bytes.NewReader(dataA)); err != nil {
 		t.Fatalf("upload object A: %v", err)
 	}
 	if !m.HasObject(ctx, oidA) {
@@ -343,15 +331,13 @@ func TestGetContentStreamsWhileIngesting(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	m, _ := newXETDataPlane(t, hub.URL,
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-	)
+	m, _ := newXETDataPlane(t, hub.URL)
 	// Registered after m.Wait and hub.Close so it runs first (LIFO): a test
 	// failing early must unblock the gated hub handler before those waits.
 	t.Cleanup(openGate)
 
 	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", &mirror.PullOptions{SourceURL: srcPath}); err != nil {
 		t.Fatalf("pull from remote: %v", err)
 	}
 

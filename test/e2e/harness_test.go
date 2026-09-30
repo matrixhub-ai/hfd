@@ -24,7 +24,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wzshiming/xet/auth"
-	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
@@ -146,21 +145,13 @@ func (fn upstreamMap) sourceFunc(ctx context.Context, repoName string) (string, 
 	return strings.TrimSuffix(baseURL, "/") + "/" + name, ok, nil
 }
 
-// upstreamFunc serves the xet engine, which asks by escaped canonical name.
-func (fn upstreamMap) upstreamFunc(ctx context.Context, repo string) (*url.URL, string, error) {
-	name, err := url.PathUnescape(repo)
-	if err != nil {
-		return nil, "", err
+// userInfo hands the hub token to git sync and the xet data plane alike, as the password of user git.
+func (fn upstreamMap) userInfo(ctx context.Context, repoName string) (*url.Userinfo, error) {
+	name := strings.TrimSuffix(strings.TrimPrefix(repoName, "/"), ".git")
+	if _, token, _ := fn(name); token != "" {
+		return url.UserPassword("git", token), nil
 	}
-	baseURL, token, ok := fn(name)
-	if !ok {
-		return nil, "", fmt.Errorf("no upstream for %q: %w", name, xetmirror.ErrUpstreamNotFound)
-	}
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, "", err
-	}
-	return u, token, nil
+	return nil, nil
 }
 
 // withRefFilter narrows which upstream refs withMirrorSource mirrors.
@@ -220,9 +211,8 @@ func catalogOptions(st *storage.Storage) []backendhf.Option {
 // from the mirror source when one is set — like cmd/hfd does with
 // --pull-mirror-url — so mirrored LFS resolves stream through the engine
 // instead of racing the batch-API fallback; plain servers only serve local
-// content, so their engine points at an always-404 server that fully ingested
-// objects never contact. During the S3 pass the xet storage lives in the fake
-// S3 bucket, like production.
+// content and, like cmd/hfd without --pull-mirror, have no engine. During
+// the S3 pass the xet storage lives in the fake S3 bucket, like production.
 func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	t.Helper()
 	cfg := &e2eConfig{}
@@ -233,15 +223,11 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	dataDir := newDataDir(t, "e2e-server-data")
 	st := newTestStorage(t, dataDir)
 
-	var engineUpstream xetmirror.UpstreamFunc
 	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
 	if cfg.mirrorSources != nil {
-		engineUpstream = cfg.mirrorSources.upstreamFunc
-		mirrorOpts = append(mirrorOpts, mirror.WithMirrorSourceFunc(cfg.mirrorSources.sourceFunc))
-	} else {
-		notFound := httptest.NewServer(http.NotFoundHandler())
-		t.Cleanup(notFound.Close)
-		engineUpstream = staticUpstream(t, notFound.URL)
+		mirrorOpts = append(mirrorOpts,
+			mirror.WithMirrorSourceFunc(cfg.mirrorSources.sourceFunc),
+			mirror.WithSyncUserInfoFunc(cfg.mirrorSources.userInfo))
 	}
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
@@ -250,7 +236,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.authPass != "" {
 		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
 	}
-	sharedMirror, xet := newTestMirror(t, st, engineUpstream, mirrorOpts...)
+	sharedMirror, xet := newTestMirror(t, st, cfg.mirrorSources != nil, mirrorOpts...)
 
 	perm := cfg.permission
 	var preOpen func(context.Context, string, bool) error
