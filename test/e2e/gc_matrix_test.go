@@ -150,12 +150,12 @@ func TestGCLifecycle(t *testing.T) {
 	oid := hex.EncodeToString(sum[:])
 	pushViaXetBatch(t, upstream, repoID, data)
 
-	// Pull-through proxy of upstream, assembled like newE2EServer except the
-	// xet engine ingests from the real upstream (the harness points it at an
-	// always-404 server), so resolve can re-ingest after GC.
+	// Pull-through proxy of upstream, assembled like newE2EServer with a
+	// mirror source so the xet engine can re-ingest from the real upstream
+	// after GC.
 	dataDir := newDataDir(t, "e2e-gc-proxy")
 	st := newTestStorage(t, dataDir)
-	proxyMirror, xet := newTestMirror(t, st, staticUpstream(t, upstream.httpURL),
+	proxyMirror, xet := newTestMirror(t, st, true,
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstream.httpURL)),
 	)

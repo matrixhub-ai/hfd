@@ -60,7 +60,7 @@ type Mirror struct {
 	background            sync.WaitGroup
 
 	xetStorage  xetstorage.Storage
-	xetClient   *xetclient.Client
+	xetCache    *xetclient.Cache
 	xetMirror   *xetmirror.Mirror // ingest engine; nil without a pull upstream
 	mint        func(auth.Grant) (string, int64, error)
 	externalURL string
@@ -118,10 +118,10 @@ func WithXETStorage(s xetstorage.Storage) Option {
 	}
 }
 
-// WithXETClient sets the xet client used for chunk transfers.
-func WithXETClient(c *xetclient.Client) Option {
+// WithXETCache sets the cache root shared by the per-transfer xet clients and local ingests.
+func WithXETCache(c *xetclient.Cache) Option {
 	return func(m *Mirror) {
-		m.xetClient = c
+		m.xetCache = c
 	}
 }
 
@@ -185,8 +185,8 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 }
 
 // NewMirror creates a new Mirror with the provided options. It does not
-// assemble the xet stack; the caller (cmd/hfd) builds the client, storage,
-// and mirror engine and injects each piece.
+// assemble the xet stack; the caller (cmd/hfd) builds the storage and
+// mirror engine and injects each piece.
 func NewMirror(opts ...Option) (*Mirror, error) {
 	m := &Mirror{oidIndex: make(map[string][]resolveTarget)}
 	for _, opt := range opts {
@@ -196,10 +196,14 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 		m.repositoriesFS = osfs.Default
 	}
 	// The batch/upload client has no overall timeout because uploads may run
-	// long; the stall guard bounds no-progress phases instead.
-	m.httpClient = http.DefaultClient
-	if m.xetStorage == nil || m.xetClient == nil {
-		return nil, fmt.Errorf("mirror requires the xet pieces: WithXETStorage, WithXETClient")
+	// long; the stall guard bounds no-progress phases instead. The explicit
+	// transport lets the per-upload xet clients share one connection pool.
+	m.httpClient = &http.Client{Transport: http.DefaultTransport}
+	if m.xetStorage == nil || m.xetCache == nil {
+		return nil, fmt.Errorf("mirror requires WithXETStorage and WithXETCache")
+	}
+	if m.xetMirror != nil && m.mirrorSourceFunc == nil {
+		return nil, fmt.Errorf("WithXETMirror requires WithMirrorSourceFunc")
 	}
 
 	return m, nil

@@ -66,6 +66,13 @@ func staticDestination(path string) mirror.DestinationFunc {
 	}
 }
 
+// hubSource sends every repository to the hub at hubURL.
+func hubSource(hubURL string) mirror.SourceFunc {
+	return func(ctx context.Context, repoName string) (string, bool, error) {
+		return hubURL + "/" + repoName, true, nil
+	}
+}
+
 // goGitFS hides the OS filesystem type so repositories on it are handled by go-git.
 type goGitFS struct{ billy.Filesystem }
 
@@ -88,50 +95,39 @@ func forEachRepositoriesFS(t *testing.T, fn func(t *testing.T, fs billy.Filesyst
 }
 
 // newMirror assembles the xet engine pieces the way cmd/hfd does — file
-// storage, client, and the xet mirror engine when hubURL is set — and builds
-// a Mirror over them with the extra options appended.
+// storage, client options, and the xet mirror engine fed by hubURL when set —
+// and builds a Mirror over them with the extra options appended.
 func newMirror(t *testing.T, hubURL string, extra ...mirror.Option) *mirror.Mirror {
 	t.Helper()
-	var upstream xetmirror.UpstreamFunc
+	var src mirror.SourceFunc
 	if hubURL != "" {
-		var err error
-		upstream, err = xetmirror.StaticUpstream(hubURL, "")
-		if err != nil {
-			t.Fatalf("create xet mirror upstream: %v", err)
-		}
+		src = hubSource(hubURL)
 	}
-	return newMirrorWithUpstream(t, upstream, extra...)
+	return newMirrorWithSource(t, src, extra...)
 }
 
-// newMirrorWithUpstream is newMirror with a per-repo selector; nil leaves the engine off.
-func newMirrorWithUpstream(t *testing.T, upstream xetmirror.UpstreamFunc, extra ...mirror.Option) *mirror.Mirror {
+// newMirrorWithSource is newMirror with a per-repo source; nil leaves the engine off.
+func newMirrorWithSource(t *testing.T, src mirror.SourceFunc, extra ...mirror.Option) *mirror.Mirror {
 	t.Helper()
 	st, err := storage.NewStorage(storage.WithRootDir(newXETDataDir(t)))
 	if err != nil {
 		t.Fatalf("create storage: %v", err)
 	}
 	xs := st.XETStorage()
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("create xet client: %v", err)
+	opts := []mirror.Option{
+		mirror.WithXETStorage(xs),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
 	}
-	var engine *xetmirror.Mirror
-	if upstream != nil {
-		engine, err = xetmirror.NewMirror(
+	if src != nil {
+		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
-			xetmirror.WithUpstream(upstream),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
-			xetmirror.WithClient(client),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
 		}
-	}
-	opts := []mirror.Option{
-		mirror.WithXETStorage(xs),
-		mirror.WithXETClient(client),
-		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(st.XETDir()),
+		opts = append(opts, mirror.WithXETMirror(engine), mirror.WithMirrorSourceFunc(src))
 	}
 	m, err := mirror.NewMirror(append(opts, extra...)...)
 	if err != nil {

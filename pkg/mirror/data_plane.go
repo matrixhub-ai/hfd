@@ -34,7 +34,7 @@ type resolveTarget struct {
 	size     int64
 }
 
-// The engine appends this name verbatim to hub URLs and hands it to the upstream selector.
+// This name is handed to the mirror source callback, whose URL the engine fetches through.
 func canonicalRepoName(name string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(repository.ResolvePath(name), "/"), ".git")
 }
@@ -121,14 +121,44 @@ func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string,
 	return true
 }
 
-// resolve runs one engine resolution for the target, with the components in
-// the escaped URL path form Resolve shares tasks and entries under.
+// resolve runs one engine resolution for the target through its hub download URL.
 func (m *Mirror) resolve(ctx context.Context, t resolveTarget) (*xetmirror.Resolution, error) {
-	return m.xetMirror.Resolve(ctx,
-		escapePath(t.repoName),
-		t.commit,
-		escapePath(t.path),
-	)
+	rawURL, token, err := m.upstreamURL(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	return m.xetMirror.Resolve(ctx, rawURL, token)
+}
+
+// upstreamURL derives the hub download URL and bearer of a target from the
+// mirror source and sync user info callbacks, with resolvePullSource's precedence.
+func (m *Mirror) upstreamURL(ctx context.Context, t resolveTarget) (rawURL, token string, err error) {
+	if m.mirrorSourceFunc == nil {
+		return "", "", fmt.Errorf("no mirror source configured for repository %q", t.repoName)
+	}
+	sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, t.repoName)
+	if err != nil {
+		return "", "", err
+	}
+	if !isMirror {
+		return "", "", fmt.Errorf("repository %q is not configured as a mirror", t.repoName)
+	}
+	u, err := url.Parse(sourceURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", "", fmt.Errorf("mirror source of repository %q is not an http(s) URL", t.repoName)
+	}
+	token, _ = u.User.Password()
+	if m.syncUserInfoFunc != nil {
+		ui, err := m.syncUserInfoFunc(ctx, t.repoName)
+		if err != nil {
+			return "", "", err
+		}
+		if ui != nil {
+			token, _ = ui.Password()
+		}
+	}
+	u.User = nil
+	return strings.TrimSuffix(u.String(), "/") + "/resolve/" + t.commit + "/" + escapePath(t.path), token, nil
 }
 
 // serveIngested serves a fully ingested object from the xet storage.
@@ -337,11 +367,11 @@ func (m *Mirror) fallbackDownload(ctx context.Context, sourceURL, oid string, si
 // ingest runs one ingest through the xet mirror and waits for the entry to
 // land; abandoning the wait on ctx cancel never cancels the ingest itself.
 func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
-	in, err := m.xetMirror.Ingest(
-		escapePath(target.repoName),
-		target.commit,
-		escapePath(target.path),
-	)
+	rawURL, token, err := m.upstreamURL(ctx, target)
+	if err != nil {
+		return err
+	}
+	in, err := m.xetMirror.Ingest(rawURL, token)
 	if err != nil {
 		return err
 	}

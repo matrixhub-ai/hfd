@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	xetdownload "github.com/wzshiming/xet/download"
+	xetupload "github.com/wzshiming/xet/upload"
 )
 
 // config groups all command line flags for the hfd server.
@@ -42,7 +45,8 @@ type config struct {
 	PushMirrorURL           string
 	ProxyCacheTTL           time.Duration
 	ProxyConcurrencyPerFile int
-	ProxyCacheSize          int64
+	ProxyDownloadCacheSize  int64
+	ProxyUploadCacheSize    int64
 
 	// Internal management
 	Internal bool
@@ -57,7 +61,8 @@ func defaultConfig() *config {
 		AuthSignKey:             "secret-sign-key",
 		ProxyCacheTTL:           time.Minute,
 		ProxyConcurrencyPerFile: 2,
-		ProxyCacheSize:          10 * 1024 * 1024 * 1024, // 10 GB
+		ProxyDownloadCacheSize:  xetdownload.DefaultCacheSize,
+		ProxyUploadCacheSize:    xetupload.DefaultCacheSize,
 	}
 }
 
@@ -91,7 +96,8 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.PushMirrorURL, "push-mirror", cfg.PushMirrorURL, "Push mirror destination base URL for syncing local pushes to a remote (e.g. https://huggingface.co)")
 	flag.DurationVar(&cfg.ProxyCacheTTL, "proxy-cache-ttl", cfg.ProxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
 	flag.IntVar(&cfg.ProxyConcurrencyPerFile, "proxy-concurrency-per-file", cfg.ProxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
-	flag.Int64Var(&cfg.ProxyCacheSize, "proxy-cache-size", cfg.ProxyCacheSize, "Maximum size in bytes of the content chunk cache used for proxy transfers")
+	flag.Int64Var(&cfg.ProxyDownloadCacheSize, "proxy-download-cache-size", cfg.ProxyDownloadCacheSize, "Maximum size in bytes of the download chunk cache used for proxy transfers; 0 or less means unbounded")
+	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 
 	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, GC via POST /internal/gc/prune (Git garbage collection in every repository, then unlinking of unreferenced LFS objects) then /internal/gc/sweep; run GC only while pushes are quiescent); expose only on trusted networks")
 	flag.Parse()

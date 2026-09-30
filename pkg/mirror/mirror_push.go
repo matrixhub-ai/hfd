@@ -144,24 +144,11 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 
 	// Advertise the xet transfer so the remote can select it; fall back to
 	// the basic transfer when the remote does not.
-	var batchResp *lfs.BatchResponse
-	xetC := m.xetClient
-	xetUpload := xetC != nil
-	if xetUpload {
-		batchResp, err = lfsClient.UploadBatch(ctx, destURL, lfs.TransferWithXETCapabilities, objects)
-		if err != nil {
-			return fmt.Errorf("failed to get LFS upload batch from remote with XET capabilities: %w", err)
-		}
-
-		if !strings.EqualFold(batchResp.Transfer, "xet") {
-			xetUpload = false
-		}
-	} else {
-		batchResp, err = lfsClient.UploadBatch(ctx, destURL, lfs.TransferCapabilities, objects)
-		if err != nil {
-			return fmt.Errorf("failed to get LFS upload batch from remote: %w", err)
-		}
+	batchResp, err := lfsClient.UploadBatch(ctx, destURL, lfs.TransferWithXETCapabilities, objects)
+	if err != nil {
+		return fmt.Errorf("failed to get LFS upload batch from remote with XET capabilities: %w", err)
 	}
+	xetUpload := strings.EqualFold(batchResp.Transfer, "xet")
 
 	for _, obj := range batchResp.Objects {
 		if obj.Error != nil {
@@ -176,7 +163,7 @@ func (m *Mirror) pushMirrorLFS(repo *repository.Repository, destURL string) erro
 		}
 
 		if xetUpload {
-			if err := m.doXETUpload(ctx, obj.Oid, uploadAction, obj.Actions["verify"], xetC); err != nil {
+			if err := m.doXETUpload(ctx, obj.Oid, uploadAction, obj.Actions["verify"]); err != nil {
 				slog.WarnContext(ctx, "LFS push mirror: XET upload failed", "oid", obj.Oid, "error", err)
 				continue
 			}
@@ -239,11 +226,19 @@ func (m *Mirror) doBasicUpload(ctx context.Context, oid string, uploadAction lfs
 
 // doXETUpload uploads an LFS object to the remote XET CAS using the credentials
 // embedded in uploadAction.Header, then fires the optional verify action.
-func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, verifyAction lfs.Action, xetC *xetclient.Client) error {
+func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, verifyAction lfs.Action) error {
 	casURL := uploadAction.Header["X-Xet-Cas-Url"]
 	casToken := uploadAction.Header["X-Xet-Access-Token"]
 
-	provider := xetclient.StaticAuthProvider(casURL, casToken)
+	opts := []xetclient.Options{xetclient.WithHTTPClient(m.httpClient), xetclient.WithCache(m.xetCache)}
+	if m.concurrency > 0 {
+		opts = append(opts, xetclient.WithConcurrency(m.concurrency))
+	}
+	opts = append(opts, xetclient.WithUpstreamProvider(xetclient.StaticUpstreamProvider(casURL, casToken)))
+	xc, err := xetclient.NewClient(opts...)
+	if err != nil {
+		return fmt.Errorf("XET client: %w", err)
+	}
 
 	content, _, err := m.OpenObject(ctx, oid)
 	if err != nil {
@@ -251,7 +246,7 @@ func (m *Mirror) doXETUpload(ctx context.Context, oid string, uploadAction, veri
 	}
 	defer content.Close()
 
-	if _, err := xetC.UploadFileWithAuthProvider(ctx, provider, content); err != nil {
+	if _, err := xc.UploadFile(ctx, content); err != nil {
 		return fmt.Errorf("XET upload: %w", err)
 	}
 

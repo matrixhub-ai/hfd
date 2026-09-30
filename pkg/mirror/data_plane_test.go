@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
-	xetmirror "github.com/wzshiming/xet/mirror"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 )
@@ -113,16 +111,11 @@ func strictHub(t *testing.T, filename string, data []byte, oid string, paths *re
 	return srv
 }
 
-// recordingUpstream sends every repo to hubURL and records the names the engine asks for.
-func recordingUpstream(t *testing.T, hubURL string, repos *recorder) xetmirror.UpstreamFunc {
-	t.Helper()
-	u, err := url.Parse(hubURL)
-	if err != nil {
-		t.Fatalf("parse hub URL: %v", err)
-	}
-	return func(ctx context.Context, repo string) (*url.URL, string, error) {
-		repos.add(repo)
-		return u, "", nil
+// recordingSource sends every repo to hubURL and records the names the mirror asks for.
+func recordingSource(hubURL string, repos *recorder) mirror.SourceFunc {
+	return func(ctx context.Context, repoName string) (string, bool, error) {
+		repos.add(repoName)
+		return hubURL + "/" + repoName, true, nil
 	}
 }
 
@@ -143,20 +136,20 @@ func lfsPointerText(oid string, size int) string {
 	return fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, size)
 }
 
-// An OID registered as /org/repo.git reaches the hub and the selector as org/repo.
+// An OID registered as /org/repo.git reaches the hub and the source callback as org/repo.
 func TestServeOIDCanonicalRepoName(t *testing.T) {
 	data := bytes.Repeat([]byte("canonical repo name bytes. "), 2048)
 	sum := sha256.Sum256(data)
 	oid := hex.EncodeToString(sum[:])
 	var paths, repos recorder
 	hub := strictHub(t, "model.bin", data, oid, &paths)
-	m := newMirrorWithUpstream(t, recordingUpstream(t, hub.URL, &repos))
+	m := newMirrorWithSource(t, recordingSource(hub.URL, &repos))
 
 	commit := strings.Repeat("a", 40)
 	m.RegisterObject(oid, "/org/repo.git", commit, "model.bin", int64(len(data)))
 	rec := httptest.NewRecorder()
 	if !m.ServeOID(rec, httptest.NewRequest(http.MethodGet, "/anything", nil), oid) {
-		t.Fatalf("ServeOID = false, want true (hub paths %q, selector repos %q)", paths.all(), repos.all())
+		t.Fatalf("ServeOID = false, want true (hub paths %q, source repos %q)", paths.all(), repos.all())
 	}
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), data) {
 		t.Fatalf("ServeOID status = %d, body %d bytes, want 200 with %d bytes", rec.Code, rec.Body.Len(), len(data))
@@ -165,7 +158,7 @@ func TestServeOIDCanonicalRepoName(t *testing.T) {
 	if got := paths.all(); !slices.ContainsFunc(got, func(p string) bool { return strings.HasPrefix(p, wantPath) }) {
 		t.Fatalf("hub paths = %q, want one starting with %q", got, wantPath)
 	}
-	wantOnly(t, "selector repos", repos.all(), "org/repo")
+	wantOnly(t, "source repos", repos.all(), "org/repo")
 }
 
 // The git pull-through path hands the mirror the access-path name /org/repo.git.
@@ -179,21 +172,19 @@ func TestPullMirrorLFSCanonicalRepoName(t *testing.T) {
 
 	var paths, repos recorder
 	hub := strictHub(t, "model.bin", data, oid, &paths)
-	m := newMirrorWithUpstream(t, recordingUpstream(t, hub.URL, &repos),
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-	)
+	m := newMirrorWithSource(t, recordingSource(hub.URL, &repos))
 	ctx := context.Background()
-	if err := m.PullFromRemote(ctx, filepath.Join(root, "dest.git"), "/org/repo.git", nil); err != nil {
+	if err := m.PullFromRemote(ctx, filepath.Join(root, "dest.git"), "/org/repo.git", &mirror.PullOptions{SourceURL: srcPath}); err != nil {
 		t.Fatalf("pull from remote: %v", err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for !m.HasObject(ctx, oid) {
 		if time.Now().After(deadline) {
-			t.Fatalf("object %s was never ingested (hub paths %q, selector repos %q)", oid, paths.all(), repos.all())
+			t.Fatalf("object %s was never ingested (hub paths %q, source repos %q)", oid, paths.all(), repos.all())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	wantOnly(t, "selector repos", repos.all(), "org/repo")
+	wantOnly(t, "source repos", repos.all(), "org/repo")
 }
 
 // The most recently registered target is dead; the older registration still serves.
@@ -205,13 +196,12 @@ func TestServeOIDTriesEveryTarget(t *testing.T) {
 	dead := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(dead.Close)
 	hubs := map[string]string{"org/b": live.URL, "org/a": dead.URL}
-	m := newMirrorWithUpstream(t, func(ctx context.Context, repo string) (*url.URL, string, error) {
-		hub, ok := hubs[repo]
+	m := newMirrorWithSource(t, func(ctx context.Context, repoName string) (string, bool, error) {
+		hub, ok := hubs[repoName]
 		if !ok {
-			return nil, "", fmt.Errorf("unexpected repo %q", repo)
+			return "", false, fmt.Errorf("unexpected repo %q", repoName)
 		}
-		u, err := url.Parse(hub)
-		return u, "", err
+		return hub + "/" + repoName, true, nil
 	})
 
 	commit := strings.Repeat("b", 40)
@@ -241,12 +231,10 @@ func TestPullMirrorLFSDataPlane(t *testing.T) {
 
 	hub := fakeHub(t, "model.bin", data, oid)
 
-	m := newMirror(t, hub.URL,
-		mirror.WithMirrorSourceFunc(staticSource(srcPath)),
-	)
+	m := newMirror(t, hub.URL)
 
 	destPath := filepath.Join(root, "dest.git")
-	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+	if err := m.PullFromRemote(context.Background(), destPath, "org/repo", &mirror.PullOptions{SourceURL: srcPath}); err != nil {
 		t.Fatalf("pull from remote: %v", err)
 	}
 

@@ -29,17 +29,13 @@ import (
 )
 
 // newXETDataPlane assembles the xet data-plane pieces the way cmd/hfd does —
-// file storage, client, token scheme, and the ingest engine when upstreamURL
-// is set — and builds the mirror over them, returning the mirror and the
-// CAS-server composition. wrap, when set, decorates the storage everything
-// is built over.
+// file storage, client options, token scheme, and the ingest engine fed by
+// upstreamURL when set — and builds the mirror over them, returning the
+// mirror and the CAS-server composition. wrap, when set, decorates the
+// storage everything is built over.
 func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Storage) xetstorage.Storage) (*mirror.Mirror, http.Handler) {
 	t.Helper()
 	st := newStorage(t, newXETDataDir(t))
-	client, err := xetclient.NewClient(xetclient.WithCacheDir(filepath.Join(st.XETDir(), "chunks")))
-	if err != nil {
-		t.Fatalf("create xet client: %v", err)
-	}
 	xs := st.XETStorage()
 	var wrapped xetstorage.Storage = xs
 	if wrap != nil {
@@ -49,34 +45,33 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
-	var engine *xetmirror.Mirror
+	opts := []mirror.Option{
+		mirror.WithXETStorage(wrapped),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
+		mirror.WithMintToken(issuer.Sign),
+	}
 	if upstreamURL != "" {
-		upstream, err := xetmirror.StaticUpstream(upstreamURL, "")
-		if err != nil {
-			t.Fatalf("create xet mirror upstream: %v", err)
-		}
-		engine, err = xetmirror.NewMirror(
+		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(wrapped),
-			xetmirror.WithUpstream(upstream),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
-			xetmirror.WithClient(client),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
 		}
+		opts = append(opts,
+			mirror.WithXETMirror(engine),
+			mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
+				return upstreamURL + "/" + repoName, true, nil
+			}),
+		)
 	}
 	cas := xetserver.NewHandler(
 		xetserver.WithStorage(wrapped),
 		xetserver.WithAuthorizer(issuer),
 		xetserver.WithNext(http.NotFoundHandler()),
 	)
-	m, err := mirror.NewMirror(
-		mirror.WithXETStorage(wrapped),
-		mirror.WithXETClient(client),
-		mirror.WithXETMirror(engine),
-		mirror.WithDataDir(st.XETDir()),
-		mirror.WithMintToken(issuer.Sign),
-	)
+	m, err := mirror.NewMirror(opts...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
