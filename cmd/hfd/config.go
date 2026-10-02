@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"time"
 
 	xetdownload "github.com/wzshiming/xet/download"
@@ -110,7 +111,7 @@ func parseConfig() (*config, error) {
 		if host == "" {
 			host = "localhost"
 		}
-		cfg.HostURL = fmt.Sprintf("http://%s:%s", host, port)
+		cfg.HostURL = (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String()
 	}
 
 	if cfg.Proxy != "" {
