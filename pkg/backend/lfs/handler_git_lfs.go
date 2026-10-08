@@ -109,15 +109,15 @@ func addXETUploadHeaders(rep *lfsRepresentation, casURL, casToken string, expire
 	}
 }
 
-// handlePutContent receives data from the client and ingests it into the xet
-// storage server-side; the OID and size are verified before anything lands.
+// handlePutContent acknowledges the verified upload before its xet ingest, so
+// clients do not re-send it on a slow ingest (git-lfs times out after 30s).
 func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
 	if h.mirror == nil {
 		responseJSON(w, "no object store configured", http.StatusNotImplemented)
 		return
 	}
-	if err := h.mirror.PutObject(r.Context(), rv.Oid, r.Body, r.ContentLength); err != nil {
+	if err := h.mirror.AcceptObject(r.Context(), rv.Oid, r.Body, r.ContentLength); err != nil {
 		responseJSON(w, fmt.Sprintf("failed to put LFS object %s: %v", rv.Oid, err), http.StatusInternalServerError)
 		return
 	}
@@ -128,7 +128,7 @@ func (h *Handler) handlePutContent(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleGetContent(w http.ResponseWriter, r *http.Request) {
 	rv := unpack(r)
 	if h.mirror != nil {
-		// Fully ingested objects serve from the xet storage with the hub metadata headers.
+		// Held objects, spooled or ingested, serve with the hub metadata headers.
 		if rs, size, err := h.mirror.OpenObject(r.Context(), rv.Oid); err == nil {
 			defer func() {
 				_ = rs.Close()

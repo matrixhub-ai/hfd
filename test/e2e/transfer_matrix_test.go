@@ -167,6 +167,8 @@ func TestTransferProtocolMatrix(t *testing.T) {
 			oid := hex.EncodeToString(sum[:])
 
 			p.push(t, s, p.repo, data)
+			// Basic uploads are acknowledged before their ingest; the read rows assert the ingested contract.
+			s.mirror.Wait()
 
 			t.Run("ReadGitLFSPull", func(t *testing.T) {
 				remote, env := p.remote(s, p.repo)

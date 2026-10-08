@@ -167,6 +167,8 @@ func TestUploadDownloadClientMatrix(t *testing.T) {
 
 			rec.reset()
 			up.upload(t, s, rec, up.repo, data)
+			// Basic uploads are acknowledged before their ingest; the download rows assert the ingested contract.
+			s.mirror.Wait()
 
 			t.Run("DownHFCliHTTP", func(t *testing.T) {
 				rec.reset()

@@ -20,6 +20,8 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetserver "github.com/wzshiming/xet/server"
+	xetshard "github.com/wzshiming/xet/shard"
+	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -379,4 +381,135 @@ func (g *openOnWrite) WriteHeader(code int) {
 func (g *openOnWrite) Write(p []byte) (int, error) {
 	g.open()
 	return g.ResponseRecorder.Write(p)
+}
+
+// gatedShardStorage holds shard writes until gate closes, so an accepted upload cannot finish its ingest before the test allows it.
+type gatedShardStorage struct {
+	xetstorage.Storage
+	gate <-chan struct{}
+}
+
+func (g *gatedShardStorage) PutShard(ctx context.Context, s *xetshard.Shard) (bool, error) {
+	select {
+	case <-g.gate:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return g.Storage.PutShard(ctx, s)
+}
+
+// TestPutContentAcknowledgesBeforeIngest pins the basic-transfer contract: the PUT answers while the ingest is held, and the object is verifiable and downloadable meanwhile.
+func TestPutContentAcknowledgesBeforeIngest(t *testing.T) {
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	gate := make(chan struct{})
+	m, err := mirror.NewMirror(
+		mirror.WithXETStorage(&gatedShardStorage{Storage: st.XETStorage(), gate: gate}),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
+	)
+	if err != nil {
+		t.Fatalf("new mirror: %v", err)
+	}
+	t.Cleanup(m.Wait)
+	// Registered after m.Wait so it runs first (LIFO): a failing test must release the gate before waiting.
+	openGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(openGate)
+
+	h := NewHandler(WithMirror(m))
+	data := bytes.Repeat([]byte("basic transfer upload bytes. "), 4096)
+	sum := sha256.Sum256(data)
+	oid := hex.EncodeToString(sum[:])
+
+	put := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/objects/"+oid, bytes.NewReader(data)))
+		put <- rec
+	}()
+	select {
+	case rec := <-put:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT status = %d: %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("PUT did not return while the ingest was held at the gate")
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/objects/"+oid+"/verify", strings.NewReader(fmt.Sprintf(`{"oid":%q,"size":%d}`, oid, len(data)))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	body := fmt.Sprintf(`{"operation":"download","objects":[{"oid":%q,"size":%d}]}`, oid, len(data))
+	req := httptest.NewRequest(http.MethodPost, "/org/repo.git/info/lfs/objects/batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", metaMediaType)
+	req.Header.Set("Accept", metaMediaType)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var batch lfsBatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &batch); err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Objects) != 1 || batch.Objects[0].Error != nil || batch.Objects[0].Actions["download"] == nil {
+		t.Fatalf("batch = %s, want a download action for the pending object", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/objects/"+oid, nil))
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), data) {
+		t.Fatalf("GET status = %d, %d bytes; want 200 with the payload", rec.Code, rec.Body.Len())
+	}
+	if got := rec.Result().Header.Get("X-Linked-Size"); got != fmt.Sprint(len(data)) {
+		t.Fatalf("X-Linked-Size = %q, want %d", got, len(data))
+	}
+
+	openGate()
+	m.Wait()
+	if !m.HasObject(context.Background(), oid) || m.FileHash(context.Background(), oid) == "" {
+		t.Fatal("object not stored after the ingest finished")
+	}
+}
+
+// The zero-length object, which xet never indexes, must still round-trip: PUT, verify and GET all answer 200.
+func TestPutContentEmptyObjectRoundTrip(t *testing.T) {
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	m, err := mirror.NewMirror(
+		mirror.WithXETStorage(st.XETStorage()),
+		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
+	)
+	if err != nil {
+		t.Fatalf("new mirror: %v", err)
+	}
+	t.Cleanup(m.Wait)
+	h := NewHandler(WithMirror(m))
+	sum := sha256.Sum256(nil)
+	oid := hex.EncodeToString(sum[:])
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/objects/"+oid, bytes.NewReader(nil)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/objects/"+oid+"/verify", strings.NewReader(fmt.Sprintf(`{"oid":%q,"size":0}`, oid))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/objects/"+oid, nil))
+	hd := rec.Result().Header
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 || hd.Get("X-Linked-Size") != "0" || hd.Get("Content-Length") != "0" {
+		t.Fatalf("GET status = %d, %d bytes, headers %v; want 200 with an empty body", rec.Code, rec.Body.Len(), hd)
+	}
 }

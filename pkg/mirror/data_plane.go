@@ -1,12 +1,14 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -66,12 +68,14 @@ func (m *Mirror) targets(oid string) []resolveTarget {
 	return m.oidIndex[oid]
 }
 
-// ServeOID serves the object by OID straight from the ingest engine: ready
-// entries are served from storage, in-flight ingests are streamed from the
-// growing spool (ingest-on-miss). Registered targets are tried in order. It
-// reports false when the OID is unregistered, there is no engine, or no
-// upstream has the file, letting the caller answer its own 404.
+// ServeOID serves the object from its spool entry, the xet storage, or the registered upstream targets in order; false lets the caller answer its own 404.
 func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bool {
+	if p, ok := m.pendingEntry(oid); ok && m.serveSpool(w, r, oid, p.path) {
+		return true
+	}
+	if m.serveIngested(w, r, oid) {
+		return true
+	}
 	if m.xetMirror == nil {
 		return false
 	}
@@ -81,6 +85,32 @@ func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bo
 		}
 	}
 	return false
+}
+
+// serveSpool serves a verified spool entry; false means the entry was retired meanwhile.
+func (m *Mirror) serveSpool(w http.ResponseWriter, r *http.Request, oid, path string) bool {
+	f, size, err := openSpool(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	lfs.SetObjectHeaders(w, oid, size)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, oid, time.Time{}, f)
+	return true
+}
+
+func openSpool(path string) (*os.File, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, err
+	}
+	return f, info.Size(), nil
 }
 
 // serveTarget serves the object through one resolve target; false leaves the response unwritten.
@@ -235,14 +265,17 @@ func (m *Mirror) FileHash(ctx context.Context, oid string) string {
 	return fh.String()
 }
 
-// HasObject reports whether the xet storage holds a fully ingested file with
-// the given SHA-256 OID.
+// HasObject reports whether verified content for the OID is held: spooled awaiting its ingest, in the xet storage,
+// or the empty object, which needs neither.
 func (m *Mirror) HasObject(ctx context.Context, oid string) bool {
-	return m.FileHash(ctx, oid) != ""
+	// Pending first: an entry is retired only after the storage resolves, so this order has no gap.
+	if _, pending := m.pendingEntry(oid); pending {
+		return true
+	}
+	return m.stored(ctx, oid)
 }
 
-// KnowsObject reports whether the object is either fully ingested or known
-// from a pull scan (so it can be served, possibly by triggering an ingest).
+// KnowsObject reports whether the object is held (see HasObject) or known from a pull scan.
 func (m *Mirror) KnowsObject(ctx context.Context, oid string) bool {
 	if m.HasObject(ctx, oid) {
 		return true
@@ -250,9 +283,22 @@ func (m *Mirror) KnowsObject(ctx context.Context, oid string) bool {
 	return len(m.targets(oid)) > 0
 }
 
-// OpenObject returns a reader over the reconstructed file with the given
-// SHA-256 OID from the xet storage, along with its size.
+// OpenObject returns a reader and size for the OID: the spool entry while pending, an empty reader for the empty
+// object, else the file reconstructed from the xet storage.
 func (m *Mirror) OpenObject(ctx context.Context, oid string) (io.ReadSeekCloser, int64, error) {
+	if p, ok := m.pendingEntry(oid); ok {
+		f, size, err := openSpool(p.path)
+		if err == nil {
+			return f, size, nil
+		}
+		// Retired between the lookup and the open: the storage holds it now.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, 0, fmt.Errorf("open spooled object %s: %w", oid, err)
+		}
+	}
+	if isEmptyOID(oid) {
+		return emptyObject{bytes.NewReader(nil)}, 0, nil
+	}
 	if m.xetStorage == nil {
 		return nil, 0, os.ErrNotExist
 	}
@@ -288,6 +334,29 @@ func parseOID(oid string) ([32]byte, bool) {
 	copy(digest[:], raw)
 	return digest, true
 }
+
+// canonicalOID is the lowercase hex spelling of a valid OID: the one form that keys pending state and names spool entries.
+func canonicalOID(oid string) (key string, digest [32]byte, ok bool) {
+	digest, ok = parseOID(oid)
+	if !ok {
+		return "", digest, false
+	}
+	return hex.EncodeToString(digest[:]), digest, true
+}
+
+// emptyDigest is the SHA-256 of the zero-length object; xet records no SHA-256 index for a file of no chunks.
+var emptyDigest = sha256.Sum256(nil)
+
+// isEmptyOID reports whether oid, in any hex case, names the zero-length object.
+func isEmptyOID(oid string) bool {
+	digest, ok := parseOID(oid)
+	return ok && digest == emptyDigest
+}
+
+// emptyObject serves the zero-length object without spool or storage.
+type emptyObject struct{ *bytes.Reader }
+
+func (emptyObject) Close() error { return nil }
 
 // prefetchLFS registers the scanned objects in the OID index and ingests the
 // missing ones sequentially in the background, falling back to the source's

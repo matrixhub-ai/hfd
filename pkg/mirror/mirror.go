@@ -71,6 +71,10 @@ type Mirror struct {
 	oidMu       sync.Mutex
 	oidIndex    map[string][]resolveTarget // oid -> targets, most recently registered first
 	prefetching sync.Map                   // oid -> struct{}, in-flight prefetch dedupe
+
+	pendingMu sync.Mutex
+	pending   map[string]*pendingObject // oid -> verified spool entry awaiting its ingest
+	ingestSem chan struct{}
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -188,7 +192,11 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 // assemble the xet stack; the caller (cmd/hfd) builds the storage and
 // mirror engine and injects each piece.
 func NewMirror(opts ...Option) (*Mirror, error) {
-	m := &Mirror{oidIndex: make(map[string][]resolveTarget)}
+	m := &Mirror{
+		oidIndex:  make(map[string][]resolveTarget),
+		pending:   make(map[string]*pendingObject),
+		ingestSem: make(chan struct{}, pendingIngestSlots),
+	}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -205,6 +213,7 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 	if m.xetMirror != nil && m.mirrorSourceFunc == nil {
 		return nil, fmt.Errorf("WithXETMirror requires WithMirrorSourceFunc")
 	}
+	m.recoverSpool()
 
 	return m, nil
 }
@@ -218,8 +227,7 @@ func (m *Mirror) IsMirrorSource(ctx context.Context, repoName string) (bool, err
 	return isMirror, err
 }
 
-// Wait blocks until background work (LFS prefetches and the ingests they
-// drive) has finished. Call it before tearing down the data directory.
+// Wait blocks until background work (LFS prefetches and every ingest) has finished; call it before tearing down the data directory.
 func (m *Mirror) Wait() {
 	m.background.Wait()
 }
