@@ -192,7 +192,7 @@ func NewTokenSignValidator(key []byte) TokenSignValidator {
 	}
 }
 
-const signedTokenPrefix = "sign:"
+const signedTokenPrefix = "hfd."
 
 func (a *tokenSignValidator) Sign(_ context.Context, method, path string, username string, expiration time.Duration) (string, error) {
 	if len(a.key) == 0 {
