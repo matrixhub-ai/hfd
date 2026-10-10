@@ -20,6 +20,7 @@ import (
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 
@@ -41,6 +42,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	if wrap != nil {
 		wrapped = wrap(xs)
 	}
+	sp := newTestSpool(t, st, wrapped)
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
@@ -55,6 +57,7 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(wrapped),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
@@ -90,6 +93,16 @@ func newXETDataDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
 	return dataDir
+}
+
+// newTestSpool opens the spool where cmd/hfd keeps it under st, ingesting into xs.
+func newTestSpool(t *testing.T, st *storage.Storage, xs xetstorage.Storage) *spool.Spool {
+	t.Helper()
+	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), xs)
+	if err != nil {
+		t.Fatalf("create xet spool: %v", err)
+	}
+	return sp
 }
 
 // newLFSRepo creates org/repo in the storage with the given LFS pointer
@@ -222,18 +235,18 @@ type emptyFile struct{ *bytes.Reader }
 
 func (emptyFile) Close() error { return nil }
 
-func (s zeroSizeStorage) GetFileHashBySHA256(ctx context.Context, ns string, digest [32]byte) (xet.FileHash, error) {
+func (s zeroSizeStorage) GetFileHashBySHA256(ctx context.Context, digest [32]byte) (xet.FileHash, error) {
 	if digest == s.digest {
 		return xet.FileHash{}, nil
 	}
-	return s.Storage.GetFileHashBySHA256(ctx, ns, digest)
+	return s.Storage.GetFileHashBySHA256(ctx, digest)
 }
 
-func (s zeroSizeStorage) GetReconstructedFile(ctx context.Context, ns string, digest [32]byte) (io.ReadSeekCloser, error) {
+func (s zeroSizeStorage) GetReconstructedFile(ctx context.Context, digest [32]byte) (io.ReadSeekCloser, error) {
 	if digest == s.digest {
 		return emptyFile{bytes.NewReader(nil)}, nil
 	}
-	return s.Storage.GetReconstructedFile(ctx, ns, digest)
+	return s.Storage.GetReconstructedFile(ctx, digest)
 }
 
 // TestResolveLFSZeroSize pins the hub-parity answer for ingested zero-size

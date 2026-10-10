@@ -14,7 +14,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/johannesboyne/gofakes3 v1.2.0
 	github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc
-	github.com/wzshiming/xet v0.0.0-20260930084535-3811cdf1f450
+	github.com/wzshiming/xet v0.0.0-20261010134610-17f2eb815428
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/time v0.14.0
@@ -73,6 +73,7 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/ssgelm/cookiejarparser v1.0.1 // indirect
 	github.com/wzshiming/httpseek v0.7.0 // indirect
+	github.com/wzshiming/ioswmr v0.3.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect
 	golang.org/x/net v0.59.0 // indirect

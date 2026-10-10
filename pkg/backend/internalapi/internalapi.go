@@ -17,9 +17,9 @@ import (
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
 // GET /internal/objects lists stored objects,
-// GET /internal/usage reports Git and xet storage usage,
+// GET /internal/usage reports Git, xet storage, spool and index usage,
 // POST /internal/gc/prune (?dry_run=&grace=) runs Git GC in every repository, then unlinks sha256 index entries no surviving LFS pointer names; data stays,
-// POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data.
+// POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data; the step that finishes it also removes idle spool files and compacts the engine index.
 // Neither step runs the other; both use one gc.Collector, so the store has a single sweeper.
 type Handler struct {
 	collector *gc.Collector

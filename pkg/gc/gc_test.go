@@ -245,7 +245,7 @@ func (f *fixture) stored(t *testing.T, oid string) bool {
 	if err != nil {
 		t.Fatalf("decode oid: %v", err)
 	}
-	_, err = f.xs.GetFileHashBySHA256(context.Background(), "default", [32]byte(raw))
+	_, err = f.xs.GetFileHashBySHA256(context.Background(), [32]byte(raw))
 	return err == nil
 }
 
@@ -257,7 +257,7 @@ func (f *fixture) counts(t *testing.T) (shards, xorbs int) {
 	}); err != nil {
 		t.Fatalf("walk shards: %v", err)
 	}
-	if err := f.xs.WalkXorbs(context.Background(), "default", func(string, int64, time.Time) error {
+	if err := f.xs.WalkXorbs(context.Background(), func(string, int64, time.Time) error {
 		xorbs++
 		return nil
 	}); err != nil {

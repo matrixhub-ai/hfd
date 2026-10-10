@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v6"
+	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -24,7 +26,7 @@ var zeroSHA256 = strings.Repeat("0", 64)
 // ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
 var ErrInvalidOID = errors.New("invalid oid")
 
-// Collector runs Git GC in every repository and prunes xet sha256 index entries no surviving LFS pointer names; SweepStep reclaims the data afterwards.
+// Collector runs Git GC in every repository and prunes xet sha256 index entries no surviving LFS pointer names; SweepStep reclaims the data afterwards, then the idle spool files and the engine index.
 //
 // Liveness is a git pointer in any repository.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
@@ -35,14 +37,38 @@ type Collector struct {
 	store xetstorage.Storage
 	gc    *xetstorage.GC
 	mu    sync.Mutex // serializes Prune and SweepStep
+
+	spool  *spool.Spool
+	mirror *xetmirror.Mirror
+}
+
+// Option configures a Collector.
+type Option func(*Collector)
+
+// WithSpool sets the shared ingest spool whose idle files the sweep removes; nil skips that pass.
+func WithSpool(sp *spool.Spool) Option {
+	return func(c *Collector) {
+		c.spool = sp
+	}
+}
+
+// WithMirror sets the xet mirror engine whose index the sweep compacts; nil skips that pass.
+func WithMirror(m *xetmirror.Mirror) Option {
+	return func(c *Collector) {
+		c.mirror = m
+	}
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
-func NewCollector(repos billy.Filesystem, store xetstorage.Storage) *Collector {
-	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
+func NewCollector(repos billy.Filesystem, store xetstorage.Storage, opts ...Option) *Collector {
+	c := &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
-// Options configures one sweep step; MaxDeletes and Budget bound the sweep, while prune is uncharged and unbounded.
+// Options configures one sweep step: Grace and DryRun drive every pass, MaxDeletes and Budget bound only the storage pass, and prune is uncharged and unbounded.
 type Options struct {
 	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
 	DryRun     bool
@@ -62,9 +88,13 @@ type SweepResult struct {
 	Done             bool     `json:"done"`
 	RemainingShards  int      `json:"remaining_shards"`
 	RemainingXorbs   int      `json:"remaining_xorbs"`
+
+	// Set only by the step that finishes the storage pass, each when its spool or engine is configured.
+	Spools *spool.SweepResult     `json:"spools,omitempty"`
+	Mirror *xetmirror.SweepResult `json:"mirror,omitempty"`
 }
 
-// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Prune, so the store has a single sweeper.
+// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Prune, so the store has a single sweeper; the step that finishes it also sweeps the spool and the engine index.
 func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
@@ -73,7 +103,7 @@ func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, 
 	return c.sweep(ctx, opts)
 }
 
-// sweep is the only place hfd builds xet's sweep options, always sha256-anchored; the caller holds c.mu.
+// sweep is the only place hfd builds xet's sweep options, sha256-anchoring the storage pass; the caller holds c.mu.
 func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, error) {
 	xr, err := c.gc.SweepStep(ctx, xetstorage.SweepOptions{
 		Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace, DryRun: opts.DryRun, MaxDeletes: opts.MaxDeletes, Budget: opts.Budget,
@@ -81,7 +111,7 @@ func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, erro
 	if err != nil {
 		return nil, err
 	}
-	return &SweepResult{
+	res := &SweepResult{
 		DryRun:           xr.DryRun,
 		SweptShards:      len(xr.SweptShards),
 		SweptXorbs:       len(xr.SweptXorbs),
@@ -92,7 +122,27 @@ func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, erro
 		Done:             xr.Done,
 		RemainingShards:  xr.RemainingShards,
 		RemainingXorbs:   xr.RemainingXorbs,
-	}, nil
+	}
+	// Once per full storage pass: the index judges its entries against the storage that pass left.
+	if !xr.Done {
+		return res, nil
+	}
+	pass := xetstorage.SweepOptions{Grace: opts.Grace, DryRun: opts.DryRun}
+	if c.spool != nil {
+		spools, err := c.spool.Sweep(ctx, pass)
+		if err != nil {
+			return nil, fmt.Errorf("spool sweep: %w", err)
+		}
+		res.Spools = &spools
+	}
+	if c.mirror != nil {
+		mirror, err := c.mirror.Sweep(ctx, pass)
+		if err != nil {
+			return nil, fmt.Errorf("mirror sweep: %w", err)
+		}
+		res.Mirror = &mirror
+	}
+	return res, nil
 }
 
 // PruneOptions configures one prune run.

@@ -190,6 +190,7 @@ func TestPreOpenPullTTL(t *testing.T) {
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithXETStorage(st.XETStorage()),
 		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
 		mirror.WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
 			return srcRoot + "/" + repoName, true, nil
 		}),

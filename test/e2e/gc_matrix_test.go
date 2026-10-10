@@ -51,6 +51,13 @@ type gcSweepResult struct {
 	Done            bool  `json:"done"`
 	RemainingShards int   `json:"remaining_shards"`
 	RemainingXorbs  int   `json:"remaining_xorbs"`
+	// Spools and mirror are present only on the step that finishes the storage pass.
+	Spools *struct {
+		SweptSpools int `json:"swept_spools"`
+	} `json:"spools"`
+	Mirror *struct {
+		DroppedEntries int `json:"dropped_entries"`
+	} `json:"mirror"`
 }
 
 // gcPruneResult carries the gc.PruneResult fields the test asserts on.
@@ -182,7 +189,7 @@ func TestGCLifecycle(t *testing.T) {
 	// The wiring under test: the internal management API wraps the whole
 	// chain outermost, the way cmd/hfd's internalAPI does.
 	handler = backendinternalapi.NewHandler(
-		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
+		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs, gc.WithSpool(xet.spool), gc.WithMirror(xet.engine))),
 		backendinternalapi.WithGCGrace(time.Hour),
 		backendinternalapi.WithNext(handler),
 	)
@@ -234,7 +241,7 @@ func TestGCLifecycle(t *testing.T) {
 		if err := xet.xs.WalkShards(t.Context(), func(string, int64, time.Time) error { shards++; return nil }); err != nil {
 			t.Fatalf("walk shards: %v", err)
 		}
-		if err := xet.xs.WalkXorbs(t.Context(), "default", func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
+		if err := xet.xs.WalkXorbs(t.Context(), func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
 			t.Fatalf("walk xorbs: %v", err)
 		}
 		return shards, xorbs
@@ -294,6 +301,9 @@ func TestGCLifecycle(t *testing.T) {
 		}
 		if !res.Done {
 			t.Fatal("unbounded sweep step did not finish the cycle")
+		}
+		if res.Spools == nil || res.Mirror == nil {
+			t.Fatalf("sweep = %+v, want the finishing step to report the spool and engine index passes", res)
 		}
 		// Storage-direct checks only: probing the HTTP paths here would
 		// trigger the self-heal re-ingest that the next step covers.
@@ -535,12 +545,19 @@ func TestGCBoundedSweep(t *testing.T) {
 		if bounded.Done || bounded.SweptShards != 1 || bounded.SweptXorbs != 0 || bounded.RemainingShards <= 0 || bounded.RemainingXorbs != 0 || bounded.ReclaimedBytes <= 0 {
 			t.Fatalf("bounded sweep = %+v, want unfinished, 1 shard and 0 xorbs swept, positive remaining shards, xorbs not yet judged", bounded)
 		}
+		if bounded.Spools != nil {
+			t.Fatalf("bounded sweep = %+v, want the spool pass deferred to the finishing step", bounded)
+		}
 		assertGCObjects(t, s.httpURL)
 	})
 	step("FinishCycle", func(t *testing.T) {
 		res := postSweep(t, s.httpURL)
 		if !res.Done || res.SweptShards != bounded.RemainingShards || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
 			t.Fatalf("sweep = %+v after bounded = %+v, want all remaining shards and xorbs reclaimed, done", res, bounded)
+		}
+		// No engine on this server, so only the spool pass reports.
+		if res.Spools == nil || res.Mirror != nil {
+			t.Fatalf("sweep = %+v, want the spool pass on the finishing step and no index pass without an engine", res)
 		}
 		assertGCObjects(t, s.httpURL)
 		for _, oid := range oids {
