@@ -8,22 +8,22 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.1
 	github.com/git-lfs/git-lfs/v3 v3.7.1
 	github.com/go-git/gcfg/v2 v2.0.2
-	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
-	github.com/go-git/go-git/v6 v6.0.0-alpha.5
+	github.com/go-git/go-billy/v6 v6.0.0-beta.1
+	github.com/go-git/go-git/v6 v6.0.0-beta.1
 	github.com/gorilla/handlers v1.5.2
 	github.com/gorilla/mux v1.8.1
 	github.com/johannesboyne/gofakes3 v1.2.0
 	github.com/wzshiming/go-billy-s3fs v0.0.0-20260814025818-0dbd17efdebc
 	github.com/wzshiming/xet v0.0.0-20260930084535-3811cdf1f450
-	golang.org/x/crypto v0.54.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/time v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/ProtonMail/go-crypto v1.4.1 // indirect
+	github.com/ProtonMail/go-crypto v1.5.2 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20210105120005-909beea2cc74 // indirect
 	github.com/avast/retry-go v2.4.2+incompatible // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.17 // indirect
@@ -65,7 +65,7 @@ require (
 	github.com/mattn/go-isatty v0.0.4 // indirect
 	github.com/olekukonko/ts v0.0.0-20171002115256-78ecb04241c0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
-	github.com/pjbgf/sha1cd v0.6.0 // indirect
+	github.com/pjbgf/sha1cd v0.7.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/rubyist/tracerx v0.0.0-20170927163412-787959303086 // indirect
@@ -75,9 +75,9 @@ require (
 	github.com/wzshiming/httpseek v0.7.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.shabbyrobe.org/gocovmerge v0.0.0-20230507111327-fa4f82cfbf4d // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/tools v0.47.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
