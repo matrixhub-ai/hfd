@@ -54,7 +54,11 @@ func run(ctx context.Context, cfg *config) error {
 
 	// Phase 3: xet/mirror layer.
 	cache := buildXETCache(cfg, st)
-	engine, err := buildXETMirror(cfg, st, cache)
+	sp, err := buildXETSpool(st)
+	if err != nil {
+		return fmt.Errorf("prepare XET spool: %w", err)
+	}
+	engine, err := buildXETMirror(cfg, st, cache, sp)
 	if err != nil {
 		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
@@ -90,7 +94,7 @@ func run(ctx context.Context, cfg *config) error {
 	}
 	if cfg.Internal {
 		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
-		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), st.XETStorage())
+		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), st.XETStorage(), gc.WithSpool(sp), gc.WithMirror(engine))
 		opts.GCGrace = time.Hour
 	}
 	handler := server.NewHTTPHandler(opts)

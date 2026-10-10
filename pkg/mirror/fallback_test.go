@@ -65,9 +65,11 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 		t.Fatalf("new storage: %v", err)
 	}
 	xs := st.XETStorage()
+	sp := newTestSpool(t, st)
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+		xetmirror.WithSpool(sp),
 	)
 	if err != nil {
 		t.Fatalf("new xet mirror engine: %v", err)

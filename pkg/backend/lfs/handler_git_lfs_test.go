@@ -19,6 +19,7 @@ import (
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xetserver "github.com/wzshiming/xet/server"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
@@ -38,6 +39,10 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		t.Fatalf("create storage: %v", err)
 	}
 	xs := st.XETStorage()
+	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), xs)
+	if err != nil {
+		t.Fatalf("create xet spool: %v", err)
+	}
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
@@ -52,6 +57,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
@@ -292,18 +298,69 @@ func TestGetContentServesIngested(t *testing.T) {
 // halfway so the object cannot become fully ingested before the request is
 // answered.
 func TestGetContentStreamsWhileIngesting(t *testing.T) {
+	m, oid, data, openGate := startGatedIngest(t)
+	h := NewHandler(WithMirror(m))
+
+	// Open the gate only once the response starts, after the handler has
+	// committed to the hub streaming path.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(&openOnWrite{ResponseRecorder: rec, open: openGate},
+		httptest.NewRequest(http.MethodGet, "/objects/"+oid, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (spool streaming path)", rec.Code)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), data) {
+		t.Fatal("served bytes mismatch")
+	}
+}
+
+// TestGetContentCanceledWhileIngesting pins that a client giving up on a
+// stalled stream releases its handler while the ingest keeps running.
+func TestGetContentCanceledWhileIngesting(t *testing.T) {
+	m, oid, data, openGate := startGatedIngest(t)
+	h := NewHandler(WithMirror(m))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// The request is canceled once the first half has been served and the stream waits on the gate.
+		h.ServeHTTP(&openOnWrite{ResponseRecorder: httptest.NewRecorder(), open: cancel},
+			httptest.NewRequest(http.MethodGet, "/objects/"+oid, nil).WithContext(ctx))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled request stayed blocked on the gated upstream")
+	}
+
+	openGate()
+	m.Wait()
+	rs, size, err := m.OpenObject(context.Background(), oid)
+	if err != nil || size != int64(len(data)) {
+		t.Fatalf("object after the abandoned stream: size %d, err %v; want the ingest to have completed", size, err)
+	}
+	_ = rs.Close()
+}
+
+// startGatedIngest pulls a repository whose one LFS object the hub serves
+// halfway and then holds until openGate; the returned mirror's prefetch is
+// provably stalled mid-ingest when it returns.
+func startGatedIngest(t *testing.T) (m *mirror.Mirror, oid string, data []byte, openGate func()) {
+	t.Helper()
 	root := t.TempDir()
 	src, srcPath := initSourceRepo(t, root, "src")
 
-	data := bytes.Repeat([]byte("streaming ingest bytes. "), 2048)
+	data = bytes.Repeat([]byte("streaming ingest bytes. "), 2048)
 	sum := sha256.Sum256(data)
-	oid := hex.EncodeToString(sum[:])
+	oid = hex.EncodeToString(sum[:])
 	addCommit(t, src, "main", "weights.bin", lfsPointerText(oid, len(data)))
 
 	gateHit := make(chan struct{})
 	gate := make(chan struct{})
 	var hitOnce sync.Once
-	openGate := sync.OnceFunc(func() { close(gate) })
+	openGate = sync.OnceFunc(func() { close(gate) })
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/resolve/") || !strings.HasSuffix(r.URL.Path, "/weights.bin") {
 			http.NotFound(w, r)
@@ -331,7 +388,7 @@ func TestGetContentStreamsWhileIngesting(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	m, _ := newXETDataPlane(t, hub.URL)
+	m, _ = newXETDataPlane(t, hub.URL)
 	// Registered after m.Wait and hub.Close so it runs first (LIFO): a test
 	// failing early must unblock the gated hub handler before those waits.
 	t.Cleanup(openGate)
@@ -348,20 +405,7 @@ func TestGetContentStreamsWhileIngesting(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("ingest never reached the hub gate")
 	}
-
-	h := NewHandler(WithMirror(m))
-
-	// Open the gate only once the response starts, after the handler has
-	// committed to the hub streaming path.
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(&openOnWrite{ResponseRecorder: rec, open: openGate},
-		httptest.NewRequest(http.MethodGet, "/objects/"+oid, nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (spool streaming path)", rec.Code)
-	}
-	if !bytes.Equal(rec.Body.Bytes(), data) {
-		t.Fatal("served bytes mismatch")
-	}
+	return m, oid, data, openGate
 }
 
 // openOnWrite runs open when the response is first written, marking the

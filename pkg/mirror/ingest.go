@@ -4,35 +4,66 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
-	"github.com/wzshiming/xet"
-	xetshard "github.com/wzshiming/xet/shard"
+	"github.com/go-git/go-git/v6/utils/ioutil"
 	xetstorage "github.com/wzshiming/xet/storage"
-	xetupload "github.com/wzshiming/xet/upload"
 )
 
-// PutObject verifies the stream against its OID and ingests it into the xet
-// storage as chunk-deduplicated xorbs and shards, after which it is servable
-// by OID. The stream is spooled to disk first: the upload pipeline needs a
-// seekable source, and a hash mismatch must be rejected before anything is
-// stored.
+// uploadPattern names the staging files of uploads under uploadDir.
+const uploadPattern = "upload-*"
+
+func (m *Mirror) uploadDir() string {
+	return filepath.Join(m.dataDir, "uploads")
+}
+
+// removeStaleUploads drops the staging files of uploads that a crash
+// interrupted; nothing is in flight while the mirror is constructed.
+func (m *Mirror) removeStaleUploads() error {
+	dir := m.uploadDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("list stale uploads: %w", err)
+	}
+	for _, e := range entries {
+		if stale, _ := filepath.Match(uploadPattern, e.Name()); !stale || e.IsDir() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove stale upload: %w", err)
+		}
+	}
+	return nil
+}
+
+// PutObject stages the stream in its own temporary file, verifies it against
+// the OID and size, and only then ingests it into the xet storage as
+// chunk-deduplicated xorbs and shards; the object is then servable by OID.
 func (m *Mirror) PutObject(ctx context.Context, oid string, r io.Reader, size int64) error {
 	digest, ok := parseOID(oid)
 	if !ok {
 		return fmt.Errorf("invalid OID %q", oid)
 	}
-
-	spoolDir := filepath.Join(m.dataDir, "spool")
-	if err := os.MkdirAll(spoolDir, 0755); err != nil {
-		return fmt.Errorf("create spool dir: %w", err)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("stage object: %w", err)
 	}
-	f, err := os.CreateTemp(spoolDir, "put-*")
+
+	dir := m.uploadDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create upload dir: %w", err)
+	}
+	f, err := os.CreateTemp(dir, uploadPattern)
 	if err != nil {
-		return fmt.Errorf("create spool file: %w", err)
+		return fmt.Errorf("create upload file: %w", err)
 	}
 	defer func() {
 		_ = f.Close()
@@ -40,84 +71,26 @@ func (m *Mirror) PutObject(ctx context.Context, oid string, r io.Reader, size in
 	}()
 
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(hash, f), r)
+	written, err := io.Copy(io.MultiWriter(hash, f), ioutil.NewContextReader(ctx, r))
 	if err != nil {
-		return fmt.Errorf("spool object: %w", err)
+		return fmt.Errorf("stage object: %w", err)
 	}
 	if size >= 0 && written != size {
 		return fmt.Errorf("content size does not match: expected %d bytes, got %d", size, written)
 	}
 	if !bytes.Equal(hash.Sum(nil), digest[:]) {
-		return fmt.Errorf("content hash does not match OID %s", oid)
+		return fmt.Errorf("content hash does not match OID %s", hex.EncodeToString(digest[:]))
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind spool file: %w", err)
+	// Empty files carry no SHA-256 in xet shards, so storing one would record nothing servable.
+	if written == 0 {
+		return nil
 	}
 
-	opts := []xetupload.Option{xetupload.WithEnableSHA256(true), xetupload.WithCacheManager(m.xetCache.Upload)}
-	if m.concurrency > 0 {
-		opts = append(opts, xetupload.WithConcurrency(m.concurrency))
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind upload file: %w", err)
 	}
-	adapter := &localCAS{storage: m.xetStorage, namespace: xetNamespace}
-	if _, err := xetupload.UploadFile(ctx, adapter, f, opts...); err != nil {
+	if _, err := xetstorage.PutFile(ctx, m.xetStorage, f); err != nil {
 		return fmt.Errorf("ingest object %s: %w", oid, err)
 	}
 	return nil
-}
-
-// localCAS adapts the xet storage to the standard upload pipeline so
-// PutObject writes xorbs and shards without an HTTP hop, following xet's own
-// local CAS adapter.
-type localCAS struct {
-	storage   xetstorage.Storage
-	namespace string
-}
-
-var _ xetupload.ClientAdapter = (*localCAS)(nil)
-
-func (l *localCAS) HasXorb(ctx context.Context, xorbHash xet.XorbHash) (bool, error) {
-	return l.storage.HasXorb(ctx, l.namespace, xorbHash)
-}
-
-func (l *localCAS) UploadXorb(ctx context.Context, xorbHash xet.XorbHash, reader io.ReadSeeker) (*xetupload.XorbUploadResponse, error) {
-	wasInserted, err := l.storage.PutXorb(ctx, l.namespace, xorbHash, reader)
-	if err != nil {
-		return nil, err
-	}
-	return &xetupload.XorbUploadResponse{WasInserted: wasInserted}, nil
-}
-
-func (l *localCAS) UploadShard(ctx context.Context, shardObj *xetshard.Shard) (*xetupload.ShardUploadResponse, error) {
-	wasInserted, err := l.storage.PutShard(ctx, shardObj)
-	if err != nil {
-		return nil, err
-	}
-	result := 0
-	if wasInserted {
-		result = 1
-	}
-	return &xetupload.ShardUploadResponse{Result: result}, nil
-}
-
-// Local shards are stored with raw chunk hashes, so keyed-shard candidates
-// are unnecessary here.
-func (l *localCAS) QueryDedupShards(ctx context.Context, chunkHashes []xet.ChunkHash, _ ...xet.ChunkHash) (map[xet.ChunkHash]xetshard.ChunkLocation, error) {
-	results := make(map[xet.ChunkHash]xetshard.ChunkLocation, len(chunkHashes))
-	for _, chunkHash := range chunkHashes {
-		if _, ok := results[chunkHash]; ok {
-			continue
-		}
-		shardObj, err := l.storage.GetShardByChunkHash(ctx, l.namespace, chunkHash)
-		if err != nil || shardObj == nil {
-			continue
-		}
-		// Register every chunk of the found shard, matching the remote
-		// global-dedup behavior where one probe yields the whole shard.
-		for h, loc := range shardObj.ChunkLocations() {
-			if _, ok := results[h]; !ok {
-				results[h] = loc
-			}
-		}
-	}
-	return results, nil
 }

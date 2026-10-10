@@ -40,6 +40,7 @@ func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
 	m, err := mirror.NewMirror(append([]mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
 	}, opts...)...)
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)

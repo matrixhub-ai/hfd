@@ -21,6 +21,7 @@ import (
 	xetauth "github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xets3 "github.com/wzshiming/xet/storage/s3"
 )
 
@@ -97,15 +98,25 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 	return storage.NewStorage(opts...)
 }
 
-// buildXETCache opens the storage-rooted cache every xet client and local ingest shares.
+// buildXETCache opens the storage-rooted cache every xet client shares.
 func buildXETCache(cfg *config, st *storage.Storage) *xetclient.Cache {
 	return xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), cfg.ProxyDownloadCacheSize, cfg.ProxyUploadCacheSize)
 }
 
-// buildXETMirror creates the upstream ingest engine when a pull upstream is
-// configured; nil otherwise. The upstream of each file comes from the
-// mirror source callback wired in buildMirror.
-func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache) (*xetmirror.Mirror, error) {
+// buildXETSpool opens the spool of the ingest engine, at the engine's
+// default location so its earlier leftovers stay resumable.
+func buildXETSpool(st *storage.Storage) (*spool.Spool, error) {
+	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), st.XETStorage())
+	if err != nil {
+		return nil, fmt.Errorf("create xet spool: %w", err)
+	}
+	return sp, nil
+}
+
+// buildXETMirror creates the upstream ingest engine over the shared spool
+// when a pull upstream is configured; nil otherwise. The upstream of each
+// file comes from the mirror source callback wired in buildMirror.
+func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache, sp *spool.Spool) (*xetmirror.Mirror, error) {
 	if cfg.PullMirrorURL == "" {
 		return nil, nil
 	}
@@ -116,6 +127,7 @@ func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache) (*
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(st.XETStorage()),
 		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+		xetmirror.WithSpool(sp),
 		xetmirror.WithClientOptions(clientOpts...),
 	)
 	if err != nil {
@@ -125,17 +137,18 @@ func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache) (*
 }
 
 // buildMirror builds the shared mirror around the injected xet pieces; the
-// mirror carries the data plane (token mint, external URL) and serves OID
-// resolves straight off the ingest engine. Pull and push mirroring activate
-// when their URLs are configured.
+// mirror carries the data plane (token mint, external URL), stages and
+// ingests local uploads under the xet directory and serves OID resolves
+// straight off the ingest engine. Pull and push mirroring activate when their
+// URLs are configured.
 func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *server.Hooks, cache *xetclient.Cache, engine *xetmirror.Mirror, mint func(xetauth.Grant) (string, int64, error)) (*mirror.Mirror, error) {
 	opts := []mirror.Option{
 		mirror.WithXETStorage(st.XETStorage()),
 		mirror.WithXETCache(cache),
+		mirror.WithDataDir(st.XETDir()),
 		mirror.WithXETMirror(engine),
 		mirror.WithMintToken(mint),
 		mirror.WithExternalURL(cfg.HostURL),
-		mirror.WithDataDir(st.XETDir()),
 		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
 		mirror.WithPreReceiveHookFunc(hooks.PreReceive),
 		mirror.WithPostReceiveHookFunc(hooks.PostReceive),
