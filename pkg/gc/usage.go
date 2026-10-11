@@ -6,29 +6,15 @@ import (
 	"fmt"
 	"io/fs"
 
-	xetstorage "github.com/wzshiming/xet/storage"
-
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-type Usage struct {
-	repository.Usage
-	Xet xetstorage.Usage
-}
-
-// Usage is not an atomic snapshot.
-func (c *Collector) Usage(ctx context.Context) (Usage, error) {
+// Usage sums the repositories' Git usage; it is not an atomic snapshot.
+func (c *Collector) Usage(ctx context.Context) (repository.Usage, error) {
 	if err := ctx.Err(); err != nil {
-		return Usage{}, err
+		return repository.Usage{}, err
 	}
-	var total Usage
-	if c.store != nil {
-		xet, err := c.store.Usage(ctx)
-		if err != nil {
-			return Usage{}, fmt.Errorf("xet usage: %w", err)
-		}
-		total.Xet = xet
-	}
+	var total repository.Usage
 	_, err := c.repos.Stat("/")
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -54,7 +40,7 @@ func (c *Collector) Usage(ctx context.Context) (Usage, error) {
 		err = ctx.Err()
 	}
 	if err != nil {
-		return Usage{}, err
+		return repository.Usage{}, err
 	}
 	return total, nil
 }

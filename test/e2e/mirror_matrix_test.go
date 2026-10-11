@@ -440,7 +440,7 @@ func ingested(t *testing.T, s *e2eServer, oid string) bool {
 	}
 	var digest [sha256.Size]byte
 	copy(digest[:], raw)
-	_, err = s.storage.XETStorage().GetFileHashBySHA256(t.Context(), "default", digest)
+	_, err = s.storage.XETStorage().GetFileHashBySHA256(t.Context(), digest)
 	return err == nil
 }
 

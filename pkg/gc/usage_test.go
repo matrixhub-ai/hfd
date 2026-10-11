@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/util"
-	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -98,43 +97,15 @@ func usageSnapshot(t *testing.T, fs billy.Filesystem) map[string]string {
 	return files
 }
 
-func (f *fixture) xetUsage(t *testing.T) xetstorage.Usage {
-	t.Helper()
-	usage, err := f.xs.Usage(context.Background())
-	if err != nil {
-		t.Fatalf("xet usage: %v", err)
-	}
-	if usage.Xorbs.Count == 0 || usage.Shards.Count == 0 || usage.SHA256Index.Count == 0 {
-		t.Fatalf("xet usage = %+v, want stored xorbs, shards and sha256 entries", usage)
-	}
-	return usage
-}
-
-type usageStub struct {
-	xetstorage.Storage
-	usage func(context.Context) (xetstorage.Usage, error)
-}
-
-func (stub usageStub) Usage(ctx context.Context) (xetstorage.Usage, error) {
-	return stub.usage(ctx)
-}
-
 func TestUsage(t *testing.T) {
 	ctx := context.Background()
 	t.Run("MissingRoot", func(t *testing.T) {
 		fixture := newFixture(t)
+		fixture.put(t, "usage-x ")
 		for name, collector := range map[string]*Collector{"store": fixture.collector(), "nil store": NewCollector(fixture.st.RepositoriesFS(), nil)} {
-			if got, err := collector.Usage(ctx); err != nil || got != (Usage{}) {
+			if got, err := collector.Usage(ctx); err != nil || got != (repository.Usage{}) {
 				t.Errorf("%s: Usage = %+v, %v; want zero, nil", name, got, err)
 			}
-		}
-	})
-	t.Run("MissingRootReportsXet", func(t *testing.T) {
-		fixture := newFixture(t)
-		fixture.put(t, "usage-x ")
-		want := Usage{Xet: fixture.xetUsage(t)}
-		if got, err := fixture.collector().Usage(ctx); err != nil || got != want {
-			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
 	})
 	t.Run("EmptyRepository", func(t *testing.T) {
@@ -143,7 +114,7 @@ func TestUsage(t *testing.T) {
 		if _, err := repository.Init(ctx, repos, "/org/empty.git", "main"); err != nil {
 			t.Fatalf("init: %v", err)
 		}
-		want := Usage{Usage: gitFiles(t, repos, "/org/empty.git")}
+		want := gitFiles(t, repos, "/org/empty.git")
 		if got, err := fixture.collector().Usage(ctx); err != nil || want.Other.Count == 0 || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v with metadata only, nil", got, err, want)
 		}
@@ -154,10 +125,10 @@ func TestUsage(t *testing.T) {
 		fixture.commitPointer(t, "org/a", oid)
 		fixture.commitPointer(t, "datasets/org/b", oid)
 		repos := fixture.st.RepositoriesFS()
-		want := Usage{Usage: gitFiles(t, repos, "/org/a.git", "/datasets/org/b.git")}
+		want := gitFiles(t, repos, "/org/a.git", "/datasets/org/b.git")
 		want.Objects.Count = 6
 		if want.Objects.Bytes <= 0 || want.Objects.Bytes >= objectSize || want.Other.Count == 0 {
-			t.Fatalf("repositories hold %+v, want objects between 0 and the %d-byte LFS payload plus metadata", want.Usage, objectSize)
+			t.Fatalf("repositories hold %+v, want objects between 0 and the %d-byte LFS payload plus metadata", want, objectSize)
 		}
 		collector := NewCollector(repos, nil)
 		if got, err := collector.Usage(ctx); err != nil || got != want {
@@ -178,28 +149,18 @@ func TestUsage(t *testing.T) {
 			t.Fatalf("Usage after xet-only upload and metadata = %+v, %v; want %+v, nil", got, err, want)
 		}
 	})
-	t.Run("XetStore", func(t *testing.T) {
+	t.Run("ReadOnly", func(t *testing.T) {
 		fixture := newFixture(t)
 		fixture.commitPointer(t, "org/a", fixture.put(t, "usage-x "))
 		repos := fixture.st.RepositoriesFS()
-		want := Usage{Usage: gitFiles(t, repos, "/org/a.git"), Xet: fixture.xetUsage(t)}
+		want := gitFiles(t, repos, "/org/a.git")
 		want.Objects.Count = 3
 		before := usageSnapshot(t, repos)
-		collector := fixture.collector()
-		got, err := collector.Usage(ctx)
-		if err != nil || got != want {
+		if got, err := fixture.collector().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
 		if !maps.Equal(before, usageSnapshot(t, repos)) {
 			t.Fatal("Usage changed repository files")
-		}
-		fixture.put(t, "usage-y ")
-		want.Xet = fixture.xetUsage(t)
-		if want.Xet == got.Xet {
-			t.Fatalf("second upload left xet usage at %+v", want.Xet)
-		}
-		if got, err := collector.Usage(ctx); err != nil || got != want {
-			t.Fatalf("Usage after xet-only upload = %+v, %v; want %+v, nil", got, err, want)
 		}
 	})
 	t.Run("ToleratesGarbage", func(t *testing.T) {
@@ -215,7 +176,7 @@ func TestUsage(t *testing.T) {
 				t.Fatalf("write %s: %v", name, err)
 			}
 		}
-		want := Usage{Usage: gitFiles(t, repos, "/org/a.git"), Xet: fixture.xetUsage(t)}
+		want := gitFiles(t, repos, "/org/a.git")
 		want.Objects.Count = 3
 		if got, err := fixture.collector().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
@@ -225,43 +186,12 @@ func TestUsage(t *testing.T) {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
 		fixture := newFixture(t)
-		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (Usage{}) {
+		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
 			t.Errorf("missing root: Usage = %+v, %v; want zero, context.Canceled", got, err)
 		}
 		fixture.commitPointer(t, "org/a", fixture.put(t, "usage-c "))
-		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (Usage{}) {
+		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
 			t.Errorf("populated: Usage = %+v, %v; want zero, context.Canceled", got, err)
-		}
-	})
-	t.Run("StoreCancelsContext", func(t *testing.T) {
-		fixture := newFixture(t)
-		fixture.put(t, "usage-f ")
-		for _, populated := range []bool{false, true} {
-			if populated {
-				fixture.commitPointer(t, "org/a", fixture.put(t, "usage-g "))
-			}
-			canceling, cancel := context.WithCancel(ctx)
-			t.Cleanup(cancel)
-			store := usageStub{Storage: fixture.xs, usage: func(context.Context) (xetstorage.Usage, error) {
-				cancel()
-				return fixture.xs.Usage(ctx)
-			}}
-			if got, err := NewCollector(fixture.st.RepositoriesFS(), store).Usage(canceling); !errors.Is(err, context.Canceled) || got != (Usage{}) {
-				t.Errorf("populated=%t: Usage = %+v, %v; want zero, context.Canceled", populated, got, err)
-			}
-		}
-	})
-	t.Run("StoreErrorAborts", func(t *testing.T) {
-		fixture := newFixture(t)
-		injected := errors.New("injected xet usage failure")
-		store := usageStub{Storage: fixture.xs, usage: func(context.Context) (xetstorage.Usage, error) { return xetstorage.Usage{}, injected }}
-		for _, populated := range []bool{false, true} {
-			if populated {
-				fixture.commitPointer(t, "org/a", fixture.put(t, "usage-h "))
-			}
-			if got, err := NewCollector(fixture.st.RepositoriesFS(), store).Usage(ctx); !errors.Is(err, injected) || got != (Usage{}) {
-				t.Errorf("populated=%t: Usage = %+v, %v; want zero, injected error", populated, got, err)
-			}
 		}
 	})
 	t.Run("ReadDirErrorAborts", func(t *testing.T) {
@@ -272,7 +202,7 @@ func TestUsage(t *testing.T) {
 		injected := errors.New("injected readdir failure")
 		for _, failing := range []string{"/", "/org"} {
 			collector := NewCollector(readDirFailure{Filesystem: fixture.st.RepositoriesFS(), path: failing, err: injected}, fixture.xs)
-			if got, err := collector.Usage(ctx); !errors.Is(err, injected) || got != (Usage{}) {
+			if got, err := collector.Usage(ctx); !errors.Is(err, injected) || got != (repository.Usage{}) {
 				t.Errorf("ReadDir %s failing: Usage = %+v, %v; want zero, injected error", failing, got, err)
 			}
 		}
@@ -285,7 +215,7 @@ func TestUsage(t *testing.T) {
 				t.Fatalf("write %s: %v", file, err)
 			}
 		}
-		if got, err := fixture.collector().Usage(ctx); err == nil || !strings.Contains(err.Error(), "/org/broken.git") || got != (Usage{}) {
+		if got, err := fixture.collector().Usage(ctx); err == nil || !strings.Contains(err.Error(), "/org/broken.git") || got != (repository.Usage{}) {
 			t.Fatalf("Usage = %+v, %v; want zero and an error naming the broken repository", got, err)
 		}
 	})

@@ -19,6 +19,7 @@ import (
 	"github.com/wzshiming/xet/auth"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xetserver "github.com/wzshiming/xet/server"
 	xetstorage "github.com/wzshiming/xet/storage"
 	xets3 "github.com/wzshiming/xet/storage/s3"
@@ -128,11 +129,14 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 	return st
 }
 
-// xetStack carries the xet pieces the callers mount: the CAS storage and the
-// issuer shared by the CAS server's authorizer and the mirror's token mint.
+// xetStack carries the xet pieces the callers mount: the CAS storage, the
+// issuer shared by the CAS server's authorizer and the mirror's token mint,
+// and the spool and engine (nil without one) the mirror runs over.
 type xetStack struct {
 	xs     xetstorage.Storage
 	issuer *auth.Issuer
+	spool  *spool.Spool
+	engine *xetmirror.Mirror
 }
 
 // casServer returns the xet CAS server over next; callers mount it ahead of
@@ -154,11 +158,16 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
+	sp, err := spool.NewSpool(filepath.Join(xetDir, "mirror", "spool"), xs)
+	if err != nil {
+		t.Fatalf("create xet spool: %v", err)
+	}
 	var xm *xetmirror.Mirror
 	if engine {
 		xm, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithCacheDir(filepath.Join(xetDir, "mirror")),
+			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)
@@ -167,8 +176,8 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETCache(xetclient.NewCache(filepath.Join(xetDir, "chunks"), 0, 0)),
-		mirror.WithXETMirror(xm),
 		mirror.WithDataDir(xetDir),
+		mirror.WithXETMirror(xm),
 		mirror.WithMintToken(issuer.Sign),
 	}
 	m, err := mirror.NewMirror(append(opts, gitOpts...)...)
@@ -176,5 +185,5 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 		t.Fatalf("create mirror: %v", err)
 	}
 	t.Cleanup(m.Wait)
-	return m, &xetStack{xs: xs, issuer: issuer}
+	return m, &xetStack{xs: xs, issuer: issuer, spool: sp, engine: xm}
 }

@@ -245,7 +245,7 @@ func (f *fixture) stored(t *testing.T, oid string) bool {
 	if err != nil {
 		t.Fatalf("decode oid: %v", err)
 	}
-	_, err = f.xs.GetFileHashBySHA256(context.Background(), "default", [32]byte(raw))
+	_, err = f.xs.GetFileHashBySHA256(context.Background(), [32]byte(raw))
 	return err == nil
 }
 
@@ -257,7 +257,7 @@ func (f *fixture) counts(t *testing.T) (shards, xorbs int) {
 	}); err != nil {
 		t.Fatalf("walk shards: %v", err)
 	}
-	if err := f.xs.WalkXorbs(context.Background(), "default", func(string, int64, time.Time) error {
+	if err := f.xs.WalkXorbs(context.Background(), func(string, int64, time.Time) error {
 		xorbs++
 		return nil
 	}); err != nil {
@@ -287,11 +287,11 @@ func TestPrune(t *testing.T) {
 		if gotShards, gotXorbs := f.counts(t); gotShards != shards || gotXorbs != xorbs {
 			t.Fatalf("data changed during unlink: shards=%d xorbs=%d, want shards=%d xorbs=%d", gotShards, gotXorbs, shards, xorbs)
 		}
-		sweep, err := c.SweepStep(ctx, Options{Grace: -1})
+		sweep, err := xetstorage.NewGC(f.xs).SweepStep(ctx, xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: -1})
 		if err != nil {
 			t.Fatalf("sweep step: %v", err)
 		}
-		if !sweep.Done || sweep.SweptShards == 0 || sweep.SweptXorbs == 0 || !f.stored(t, live) {
+		if !sweep.Done || len(sweep.SweptShards) == 0 || len(sweep.SweptXorbs) == 0 || !f.stored(t, live) {
 			t.Fatalf("unexpected sweep: %+v live stored=%v", sweep, f.stored(t, live))
 		}
 		if gotShards, gotXorbs := f.counts(t); gotShards >= shards || gotXorbs >= xorbs {
@@ -355,34 +355,6 @@ func TestPrune(t *testing.T) {
 		}
 		if gotShards, gotXorbs := f.counts(t); gotShards != shards || gotXorbs != xorbs {
 			t.Fatalf("data changed during dry run: shards=%d xorbs=%d, want shards=%d xorbs=%d", gotShards, gotXorbs, shards, xorbs)
-		}
-	})
-	t.Run("BoundedSweepContinues", func(t *testing.T) {
-		f := newFixture(t)
-		c := f.collector()
-		dead := []string{f.put(t, "dead-h "), f.put(t, "dead-i ")}
-		slices.Sort(dead)
-		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
-		if err != nil {
-			t.Fatalf("prune: %v", err)
-		}
-		if !slices.Equal(res.Unlinked, dead) {
-			t.Fatalf("unexpected result: %+v", res)
-		}
-		// Prune is unbounded; the cap stops the sweep after one shard.
-		sweep, err := c.SweepStep(ctx, Options{Grace: -1, MaxDeletes: 1})
-		if err != nil {
-			t.Fatalf("sweep step: %v", err)
-		}
-		if sweep.Done || sweep.SweptShards != 1 || sweep.RemainingShards == 0 {
-			t.Fatalf("unexpected sweep: %+v", sweep)
-		}
-		sweep, err = c.SweepStep(ctx, Options{Grace: -1})
-		if err != nil {
-			t.Fatalf("sweep step: %v", err)
-		}
-		if !sweep.Done || sweep.SweptShards == 0 || sweep.SweptXorbs == 0 {
-			t.Fatalf("unexpected sweep: %+v", sweep)
 		}
 	})
 	t.Run("Layouts", func(t *testing.T) {
@@ -602,45 +574,6 @@ func (c *cancelOnHEAD) Stat(name string) (os.FileInfo, error) {
 		c.cancel()
 	}
 	return c.Filesystem.Stat(name)
-}
-
-// TestSweepSharesLock pins that SweepStep and Prune exclude each other, so the store has one sweeper.
-func TestSweepSharesLock(t *testing.T) {
-	f := newFixture(t)
-	c := f.collector()
-	c.mu.Lock()
-	if _, err := c.SweepStep(context.Background(), Options{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
-		t.Fatalf("sweep during prune: got %v, want ErrGCBusy", err)
-	}
-	if _, err := c.Prune(context.Background(), PruneOptions{Grace: -1}); !errors.Is(err, xetstorage.ErrGCBusy) {
-		t.Fatalf("prune during sweep: got %v, want ErrGCBusy", err)
-	}
-	c.mu.Unlock()
-	res, err := c.SweepStep(context.Background(), Options{Grace: -1})
-	if err != nil || !res.Done {
-		t.Fatalf("sweep: err=%v result=%+v", err, res)
-	}
-}
-
-// TestSweepStepAnchorsSHA256 pins that hfd sweeps sha256-anchored: once Prune drops the OID, the files entry alone keeps nothing alive.
-func TestSweepStepAnchorsSHA256(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-	c := f.collector()
-	oid := f.put(t, "anchor ")
-	if res, err := c.Prune(ctx, PruneOptions{Grace: -1}); err != nil || !slices.Equal(res.Unlinked, []string{oid}) {
-		t.Fatalf("prune: result=%+v err=%v", res, err)
-	}
-	res, err := c.SweepStep(ctx, Options{Grace: -1})
-	if err != nil {
-		t.Fatalf("sweep step: %v", err)
-	}
-	if !res.Done || res.SweptShards == 0 || res.SweptXorbs == 0 || res.ReclaimedBytes <= 0 {
-		t.Fatalf("unexpected result: %+v", res)
-	}
-	if f.stored(t, oid) {
-		t.Fatal("unlinked object still stored after sweep")
-	}
 }
 
 func TestList(t *testing.T) {

@@ -1,29 +1,43 @@
-// Package internalapi serves hfd's internal management endpoints over the xet store.
+// Package internalapi serves hfd's internal management endpoints over the repositories and the xet store.
 package internalapi
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
+	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate:
+// Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate; it assembles the
+// usage report and the GC step from the collector (repositories), the xet store, the spool and the engine:
 // GET /internal/objects lists stored objects,
-// GET /internal/usage reports Git and xet storage usage,
-// POST /internal/gc/prune (?dry_run=&grace=) runs Git GC in every repository, then unlinks sha256 index entries no surviving LFS pointer names; data stays,
-// POST /internal/gc/sweep (?dry_run=&grace=&max=&budget=) runs one sha256-anchored sweep step reclaiming unlinked data.
-// Neither step runs the other; both use one gc.Collector, so the store has a single sweeper.
+// GET /internal/usage reports repository, xet storage, spool and mirror index usage,
+// POST /internal/gc (?dry_run=&grace=&max=&budget=) runs one GC step: Git GC in every repository, then unlinking of the sha256 index
+// entries no surviving LFS pointer names (the prune pass, uncharged and unbounded), then the budgeted sweep passes — storage
+// (sha256-anchored, max bounds it), idle spools and the engine index — under the same grace and dry run with budget as one
+// wall-clock budget spent storage → spool → mirror; the response carries the prune section even when that pass failed and a
+// section per sweep pass that ran and succeeded (storage, spools, mirror), lists failed passes in errors with status 200, and
+// done once every pass finished — repeat until done; only a GC step already in flight (409) or a bad parameter (400) fails the request.
 type Handler struct {
 	collector *gc.Collector
+	store     xetstorage.Storage
+	gc        *xetstorage.GC
+	spool     *spool.Spool
+	mirror    *xetmirror.Mirror
 	gcGrace   time.Duration
+	mu        sync.Mutex // one GC step in flight
 	root      *mux.Router
 	next      http.Handler
 }
@@ -31,10 +45,31 @@ type Handler struct {
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
 
-// WithCollector sets the collector the GC endpoints run.
+// WithCollector sets the collector that lists objects, reports repository usage and runs the prune pass.
 func WithCollector(c *gc.Collector) Option {
 	return func(h *Handler) {
 		h.collector = c
+	}
+}
+
+// WithStorage sets the xet store the usage report and the storage sweep read.
+func WithStorage(st xetstorage.Storage) Option {
+	return func(h *Handler) {
+		h.store = st
+	}
+}
+
+// WithSpool sets the ingest spool whose idle files the GC step sweeps and whose usage it reports; nil skips it.
+func WithSpool(sp *spool.Spool) Option {
+	return func(h *Handler) {
+		h.spool = sp
+	}
+}
+
+// WithMirror sets the xet mirror engine whose index the GC step compacts and whose usage it reports; nil skips it.
+func WithMirror(m *xetmirror.Mirror) Option {
+	return func(h *Handler) {
+		h.mirror = m
 	}
 }
 
@@ -60,13 +95,15 @@ func NewHandler(opts ...Option) *Handler {
 	for _, opt := range opts {
 		opt(h)
 	}
+	if h.store != nil {
+		h.gc = xetstorage.NewGC(h.store)
+	}
 	if h.next == nil {
 		h.next = http.NotFoundHandler()
 	}
 	h.root.HandleFunc("/internal/objects", h.handleList).Methods(http.MethodGet)
 	h.root.HandleFunc("/internal/usage", h.handleUsage).Methods(http.MethodGet)
-	h.root.HandleFunc("/internal/gc/prune", h.handlePrune).Methods(http.MethodPost)
-	h.root.HandleFunc("/internal/gc/sweep", h.handleSweep).Methods(http.MethodPost)
+	h.root.HandleFunc("/internal/gc", h.handleGC).Methods(http.MethodPost)
 	h.root.NotFoundHandler = h.next
 	return h
 }
@@ -76,42 +113,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.ServeHTTP(w, r)
 }
 
-// parsePruneOptions reads ?dry_run=&grace= and returns the parsed query for further keys, answering 400 itself on a bad value.
-func (h *Handler) parsePruneOptions(w http.ResponseWriter, r *http.Request) (url.Values, gc.PruneOptions, bool) {
-	var opts gc.PruneOptions
+// gcOptions configures one GC step: grace and dryRun drive every pass; maxDeletes bounds the storage pass; budget is one
+// wall-clock budget for the sweep passes; dry runs ignore both bounds.
+type gcOptions struct {
+	grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
+	dryRun     bool
+	maxDeletes int           // max shard+xorb deletions per step, 0 = unlimited
+	budget     time.Duration // wall-clock cap per step across the sweep passes, 0 = unlimited
+}
+
+// parseOptions reads ?dry_run=&grace=&max=&budget=, answering 400 itself on a bad value.
+func (h *Handler) parseOptions(w http.ResponseWriter, r *http.Request) (gcOptions, bool) {
+	var opts gcOptions
 	// Parse the raw query strictly: r.URL.Query() drops malformed pairs, which could silently turn a dry run destructive.
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		http.Error(w, "Invalid query string", http.StatusBadRequest)
-		return q, opts, false
+		return opts, false
 	}
-	if opts.DryRun, err = parseDryRun(q); err != nil {
+	if opts.dryRun, err = parseDryRun(q); err != nil {
 		http.Error(w, "Invalid dry_run value", http.StatusBadRequest)
-		return q, opts, false
+		return opts, false
 	}
-	if opts.Grace, err = parseGrace(q, h.gcGrace); err != nil {
+	if opts.grace, err = parseGrace(q, h.gcGrace); err != nil {
 		http.Error(w, "Invalid grace value", http.StatusBadRequest)
-		return q, opts, false
+		return opts, false
 	}
-	return q, opts, true
-}
-
-// parseSweepOptions adds ?max=&budget= on top of parsePruneOptions.
-func (h *Handler) parseSweepOptions(w http.ResponseWriter, r *http.Request) (gc.Options, bool) {
-	q, prune, ok := h.parsePruneOptions(w, r)
-	if !ok {
-		return gc.Options{}, false
-	}
-	opts := gc.Options{DryRun: prune.DryRun, Grace: prune.Grace}
-	var err error
 	if q.Has("max") {
-		if opts.MaxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.MaxDeletes < 0 {
+		if opts.maxDeletes, err = strconv.Atoi(q.Get("max")); err != nil || opts.maxDeletes < 0 {
 			http.Error(w, "Invalid max value", http.StatusBadRequest)
 			return opts, false
 		}
 	}
 	if q.Has("budget") {
-		if opts.Budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.Budget < 0 {
+		if opts.budget, err = time.ParseDuration(q.Get("budget")); err != nil || opts.budget < 0 {
 			http.Error(w, "Invalid budget value", http.StatusBadRequest)
 			return opts, false
 		}
@@ -151,8 +186,16 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, objects)
 }
 
+// usageResponse is the usage report; unconfigured sections stay, at zero.
+type usageResponse struct {
+	Repository repository.Usage
+	Xet        xetstorage.Usage
+	Spool      xetstorage.ObjectUsage
+	Mirror     xetstorage.ObjectUsage
+}
+
 func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
-	usage, err := h.collector.Usage(r.Context())
+	usage, err := h.usage(r)
 	if err != nil {
 		http.Error(w, "Usage failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -160,44 +203,164 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, usage)
 }
 
-func (h *Handler) handlePrune(w http.ResponseWriter, r *http.Request) {
-	_, opts, ok := h.parsePruneOptions(w, r)
-	if !ok {
-		return
+// usage composes the report; it is not an atomic snapshot.
+func (h *Handler) usage(r *http.Request) (usageResponse, error) {
+	ctx := r.Context()
+	var resp usageResponse
+	if err := ctx.Err(); err != nil {
+		return resp, err
 	}
-	res, err := h.collector.Prune(r.Context(), opts)
-	if err != nil {
-		if errors.Is(err, xetstorage.ErrGCBusy) {
-			http.Error(w, "GC already running", http.StatusConflict)
-			return
+	var err error
+	if h.store != nil {
+		if resp.Xet, err = h.store.Usage(ctx); err != nil {
+			return resp, fmt.Errorf("xet usage: %w", err)
 		}
-		if res == nil {
-			http.Error(w, "Prune failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Git GC or unlinks already happened: report the partial result alongside the failure.
-		res.Error = err.Error()
-		writeJSON(w, http.StatusInternalServerError, res)
-		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	if h.spool != nil {
+		if resp.Spool, err = h.spool.Usage(ctx); err != nil {
+			return resp, fmt.Errorf("spool usage: %w", err)
+		}
+	}
+	if h.mirror != nil {
+		if resp.Mirror, err = h.mirror.Usage(ctx); err != nil {
+			return resp, fmt.Errorf("mirror usage: %w", err)
+		}
+	}
+	if resp.Repository, err = h.collector.Usage(ctx); err != nil {
+		return resp, err
+	}
+	return resp, nil
 }
 
-func (h *Handler) handleSweep(w http.ResponseWriter, r *http.Request) {
-	opts, ok := h.parseSweepOptions(w, r)
+// storageResult reports the storage pass of one step: counts, not hashes.
+type storageResult struct {
+	DryRun           bool     `json:"dry_run"`
+	SweptShards      int      `json:"swept_shards"`
+	SweptXorbs       int      `json:"swept_xorbs"`
+	ReclaimedBytes   int64    `json:"reclaimed_bytes"`
+	SkippedInGrace   int      `json:"skipped_in_grace"`
+	Dangling         []string `json:"dangling"`          // OIDs whose data is missing; reported, never deleted
+	UnreadableShards []string `json:"unreadable_shards"` // treated live; no xorb deleted that pass
+	Done             bool     `json:"done"`              // the storage pass finished
+	RemainingShards  int      `json:"remaining_shards"`
+	RemainingXorbs   int      `json:"remaining_xorbs"`
+}
+
+// gcResponse reports one GC step: the prune pass keeps its section even when it failed, each sweep pass has one when it ran and
+// succeeded, Errors lists the failed passes as "<name>: <message>" in pass order, and Done is true once every configured
+// pass finished in this step.
+type gcResponse struct {
+	DryRun  bool                   `json:"dry_run"`
+	Done    bool                   `json:"done"`
+	Prune   *gc.PruneResult        `json:"prune,omitempty"`
+	Storage *storageResult         `json:"storage,omitempty"`
+	Spools  *spool.SweepResult     `json:"spools,omitempty"`
+	Mirror  *xetmirror.SweepResult `json:"mirror,omitempty"`
+	Errors  []string               `json:"errors,omitempty"`
+}
+
+func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
+	opts, ok := h.parseOptions(w, r)
 	if !ok {
 		return
 	}
-	res, err := h.collector.SweepStep(r.Context(), opts)
-	if err != nil {
-		if errors.Is(err, xetstorage.ErrGCBusy) {
-			http.Error(w, "GC already running", http.StatusConflict)
-			return
-		}
-		http.Error(w, "Sweep failed: "+err.Error(), http.StatusInternalServerError)
+	if !h.mu.TryLock() {
+		http.Error(w, "GC already running", http.StatusConflict)
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	defer h.mu.Unlock()
+	ctx := r.Context()
+
+	// A failed prune does not stop the sweep: it only unlinks, and the sweep reclaims nothing an index entry still anchors.
+	pr, err := h.collector.Prune(ctx, gc.PruneOptions{Grace: opts.grace, DryRun: opts.dryRun})
+	if errors.Is(err, xetstorage.ErrGCBusy) {
+		http.Error(w, "GC already running", http.StatusConflict)
+		return
+	}
+	resp := gcResponse{DryRun: opts.dryRun, Prune: pr}
+	done := err == nil
+	if err != nil {
+		resp.Errors = append(resp.Errors, "prune: "+err.Error())
+	}
+
+	var deadline time.Time
+	if opts.budget > 0 && !opts.dryRun {
+		deadline = time.Now().Add(opts.budget)
+	}
+	swept, ended := 0, true
+	if h.gc != nil {
+		// hfd sweeps sha256-anchored: once prune drops the OID, the files entry alone keeps nothing alive.
+		xr, err := h.gc.SweepStep(ctx, xetstorage.SweepOptions{
+			Anchor: xetstorage.AnchorSHA256, Grace: opts.grace, DryRun: opts.dryRun, MaxDeletes: opts.maxDeletes, Budget: opts.budget,
+		})
+		if err != nil {
+			resp.Errors = append(resp.Errors, "storage: "+err.Error())
+			done = false
+		} else {
+			resp.Storage = &storageResult{
+				DryRun:           opts.dryRun,
+				SweptShards:      len(xr.SweptShards),
+				SweptXorbs:       len(xr.SweptXorbs),
+				ReclaimedBytes:   xr.ReclaimedBytes,
+				SkippedInGrace:   xr.SkippedInGrace,
+				Dangling:         nonNil(xr.DanglingSHA256Entries),
+				UnreadableShards: nonNil(xr.UnreadableShards),
+				Done:             xr.Done,
+				RemainingShards:  xr.RemainingShards,
+				RemainingXorbs:   xr.RemainingXorbs,
+			}
+			swept = len(xr.SweptShards) + len(xr.SweptXorbs)
+			done = done && xr.Done
+		}
+		// The later passes wait for the storage pass to finish, not for one that failed.
+		ended = err != nil || xr.Done
+	}
+	// handDown returns the budget left for the next pass; false defers it because this step already swept and spent its budget.
+	handDown := func() (time.Duration, bool) {
+		if deadline.IsZero() {
+			return 0, true
+		}
+		if left := time.Until(deadline); left > 0 {
+			return left, true
+		}
+		if swept > 0 {
+			return 0, false
+		}
+		return time.Nanosecond, true
+	}
+	if ended && h.spool != nil {
+		if b, ok := handDown(); !ok {
+			done = false
+		} else if spools, err := h.spool.Sweep(ctx, spool.SweepOptions{Grace: opts.grace, DryRun: opts.dryRun, Budget: b}); err != nil {
+			resp.Errors = append(resp.Errors, "spools: "+err.Error())
+			done = false
+		} else {
+			resp.Spools = &spools
+			swept += spools.SweptSpools
+			done = done && spools.Done
+		}
+	}
+	if ended && h.mirror != nil {
+		if b, ok := handDown(); !ok {
+			done = false
+		} else if index, err := h.mirror.Sweep(ctx, xetmirror.SweepOptions{Grace: opts.grace, DryRun: opts.dryRun, Budget: b}); err != nil {
+			resp.Errors = append(resp.Errors, "mirror: "+err.Error())
+			done = false
+		} else {
+			resp.Mirror = &index
+			done = done && index.Done
+		}
+	}
+	resp.Done = done
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// nonNil keeps an empty list encoding as [] rather than null.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

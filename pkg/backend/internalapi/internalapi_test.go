@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func newRepos(t *testing.T) billy.Filesystem {
 func newHandler(t *testing.T, repos billy.Filesystem, store xetstorage.Storage) *Handler {
 	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
-	return NewHandler(WithCollector(gc.NewCollector(repos, store)), WithGCGrace(-1), WithNext(next))
+	return NewHandler(WithCollector(gc.NewCollector(repos, store)), WithStorage(store), WithGCGrace(-1), WithNext(next))
 }
 
 // orphanPointer creates name with a live pointer on main and an orphaned pointer commit of four objects: commit, tree, pointer blob and 64 KiB filler.
@@ -89,17 +90,20 @@ func TestHandler(t *testing.T) {
 		method, target string
 		want           int
 	}{
-		{http.MethodPost, "/internal/gc/prune?grace=bogus", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/prune?grace=-5s", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/prune?grace=", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/prune?dry_run=maybe", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/prune?dry_run=", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/prune?dry_run=true;x=1", http.StatusBadRequest}, // r.URL.Query() would drop dry_run and prune for real
-		{http.MethodPost, "/internal/gc/sweep?dry_run=true;x=1", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/sweep?grace=-1s", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/sweep?max=-1", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc/sweep?budget=nope", http.StatusBadRequest},
-		{http.MethodPost, "/internal/gc", http.StatusTeapot},
+		{http.MethodPost, "/internal/gc?grace=bogus", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?grace=-5s", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?grace=", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?dry_run=maybe", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?dry_run=", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?dry_run=true;x=1", http.StatusBadRequest}, // r.URL.Query() would drop dry_run and collect for real
+		{http.MethodPost, "/internal/gc?grace=-1s", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?max=-1", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?max=x", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?budget=nope", http.StatusBadRequest},
+		{http.MethodPost, "/internal/gc?budget=-1s", http.StatusBadRequest},
+		{http.MethodGet, "/internal/gc", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/internal/gc/prune", http.StatusTeapot},
+		{http.MethodPost, "/internal/gc/sweep", http.StatusTeapot},
 		{http.MethodDelete, "/internal/objects/" + deadSHA, http.StatusTeapot},
 		{http.MethodGet, "/internal/objects", http.StatusOK},
 		{http.MethodPost, "/internal/usage", http.StatusMethodNotAllowed},
@@ -116,72 +120,104 @@ func TestHandler(t *testing.T) {
 		t.Fatalf("empty list: content-type %q, body %q", rec.Header().Get("Content-Type"), rec.Body)
 	}
 
-	rec = do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0")
+	rec = do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("dry run: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), `"unlinked":[]`) {
 		t.Fatalf("empty unlinked must encode as []: %s", rec.Body)
 	}
-	if strings.Contains(rec.Body.String(), `"sweep"`) {
-		t.Fatalf("prune body must not contain sweep: %s", rec.Body)
+	if strings.Contains(rec.Body.String(), `"errors"`) {
+		t.Fatalf("a clean step must not list errors: %s", rec.Body)
 	}
-	var res gc.PruneResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun {
+	var res gcResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || !res.DryRun || !res.Done || res.Prune == nil || !res.Prune.DryRun || res.Storage == nil || !res.Storage.DryRun {
 		t.Fatalf("dry run body %s: err=%v result=%+v", rec.Body, err, res)
 	}
-	rec = do(h, http.MethodPost, "/internal/gc/prune?grace=0")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("prune: got %d, body %s", rec.Code, rec.Body)
-	}
-	var prune gc.PruneResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &prune); err != nil || prune.DryRun {
-		t.Fatalf("prune body %s: err=%v result=%+v", rec.Body, err, prune)
-	}
 
-	rec = do(h, http.MethodPost, "/internal/gc/sweep?grace=0&max=1&budget=1s&dry_run=false")
-	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("sweep: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
-	}
-	var sweep gc.SweepResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &sweep); err != nil || !sweep.Done || sweep.DryRun {
-		t.Fatalf("sweep body %s: err=%v result=%+v", rec.Body, err, sweep)
+	rec = do(h, http.MethodPost, "/internal/gc?grace=0&max=1&budget=1s&dry_run=false")
+	res = decodeResult(t, rec, http.StatusOK)
+	if !res.Done || res.DryRun || res.Prune == nil || res.Prune.DryRun || res.Storage == nil || res.Storage.DryRun || len(res.Errors) != 0 {
+		t.Fatalf("collect body %s: result=%+v", rec.Body, res)
 	}
 }
 
-// blockingStore parks the first shard walk until released; later walks pass through.
+// blockingStore parks the first xorb walk until released and counts the shard walks; prune walks shards, only the storage sweep walks xorbs.
 type blockingStore struct {
 	xetstorage.Storage
 	once           sync.Once
 	enter, release chan struct{}
+	shardWalks     atomic.Int32
 }
 
 func (b *blockingStore) WalkShards(ctx context.Context, fn func(string, int64, time.Time) error) error {
-	b.once.Do(func() { b.enter <- struct{}{}; <-b.release })
+	b.shardWalks.Add(1)
 	return b.Storage.WalkShards(ctx, fn)
 }
 
+func (b *blockingStore) WalkXorbs(ctx context.Context, fn func(string, int64, time.Time) error) error {
+	b.once.Do(func() { b.enter <- struct{}{}; <-b.release })
+	return b.Storage.WalkXorbs(ctx, fn)
+}
+
+// TestHandlerBusy pins that the handler serializes whole GC steps: a step parked in its storage sweep, past the prune pass
+// and the collector's lock, still turns the next request away before it runs a prune of its own.
 func TestHandlerBusy(t *testing.T) {
-	for _, endpoint := range []string{"prune", "sweep"} {
-		t.Run(endpoint, func(t *testing.T) {
-			store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
-			h := newHandler(t, newRepos(t), store)
-			first := make(chan int, 1)
-			go func() { first <- do(h, http.MethodPost, "/internal/gc/"+endpoint).Code }()
-			<-store.enter
-			if rec := do(h, http.MethodPost, "/internal/gc/prune"); rec.Code != http.StatusConflict {
-				t.Errorf("prune during %s: got %d, want 409", endpoint, rec.Code)
-			}
-			if endpoint == "prune" {
-				if rec := do(h, http.MethodPost, "/internal/gc/sweep"); rec.Code != http.StatusConflict {
-					t.Errorf("sweep during prune: got %d, want 409", rec.Code)
-				}
-			}
-			close(store.release)
-			if code := <-first; code != http.StatusOK {
-				t.Fatalf("first %s: got %d, want 200", endpoint, code)
-			}
-		})
+	store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
+	h := newHandler(t, newRepos(t), store)
+	first := make(chan int, 1)
+	go func() { first <- do(h, http.MethodPost, "/internal/gc").Code }()
+	<-store.enter
+	walks := store.shardWalks.Load()
+	if walks == 0 {
+		t.Fatal("the first step reached its storage sweep without a prune pass")
+	}
+	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "GC already running") {
+		t.Errorf("GC during GC: got %d %q, want 409", rec.Code, rec.Body)
+	}
+	if got := store.shardWalks.Load(); got != walks {
+		t.Errorf("rejected step walked the shards %d more times, want none: it must not prune", got-walks)
+	}
+	close(store.release)
+	if code := <-first; code != http.StatusOK {
+		t.Fatalf("first GC: got %d, want 200", code)
+	}
+}
+
+// TestHandlerGCStorageBusyKeepsPrune pins that a busy storage GC is reported as a storage error after the prune pass ran,
+// not as a 409 that would drop the prune section.
+func TestHandlerGCStorageBusyKeepsPrune(t *testing.T) {
+	store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
+	h := newHandler(t, newRepos(t), store)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(release)
+	direct := make(chan error, 1)
+	go func() {
+		_, err := h.gc.SweepStep(context.Background(), xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: -1})
+		direct <- err
+	}()
+	<-store.enter
+	walks := store.shardWalks.Load()
+
+	rec := do(h, http.MethodPost, "/internal/gc")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GC during a busy storage sweep: got %d %q, want 200", rec.Code, rec.Body)
+	}
+	var res gcResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	if res.Prune == nil || res.Storage != nil || !slices.Equal(res.Errors, []string{"storage: gc already running"}) || res.Done {
+		t.Fatalf("body %s: want the prune section, no storage section and a storage busy error", rec.Body)
+	}
+	if got := store.shardWalks.Load(); got != walks+1 {
+		t.Fatalf("body %s: shard walks went %d -> %d, want one prune pass", rec.Body, walks, got)
+	}
+
+	release()
+	if err := <-direct; err != nil {
+		t.Fatalf("direct sweep: %v", err)
 	}
 }
 
@@ -209,35 +245,36 @@ func (p *partialStore) DeleteSHA256IndexEntry(_ context.Context, oid string) (bo
 
 func TestHandlerReportsUnlinksOnFailure(t *testing.T) {
 	h := newHandler(t, newRepos(t), &partialStore{Storage: newStorage(t)})
-	rec := do(h, http.MethodPost, "/internal/gc/prune")
-	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	rec := do(h, http.MethodPost, "/internal/gc")
+	res := decodeResult(t, rec, http.StatusOK)
+	if res.Done || len(res.Errors) == 0 || !strings.HasPrefix(res.Errors[0], "prune: ") || !strings.Contains(res.Errors[0], "index delete failed") {
+		t.Fatalf("body %s: want an unfinished step listing the prune error first", rec.Body)
 	}
-	var res gc.PruneResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("decode %s: %v", rec.Body, err)
-	}
-	if !slices.Equal(res.Unlinked, []string{deadSHA}) || !strings.Contains(res.Error, "index delete failed") {
-		t.Fatalf("failure body must list the applied unlinks and the error: %+v", res)
+	if res.Prune == nil || !slices.Equal(res.Prune.Unlinked, []string{deadSHA}) || res.Storage == nil {
+		t.Fatalf("body %s: want the applied unlinks and the storage pass that still ran", rec.Body)
 	}
 }
 
-// usageStore answers Usage with fixed values and records the contexts it was asked with.
+// usageStore answers Usage with fixed values, records the contexts it was asked with, and runs onUsage first when set.
 type usageStore struct {
 	xetstorage.Storage
-	usage xetstorage.Usage
-	err   error
-	ctxs  []context.Context
+	usage   xetstorage.Usage
+	err     error
+	ctxs    []context.Context
+	onUsage func()
 }
 
 func (s *usageStore) Usage(ctx context.Context) (xetstorage.Usage, error) {
 	s.ctxs = append(s.ctxs, ctx)
+	if s.onUsage != nil {
+		s.onUsage()
+	}
 	return s.usage, s.err
 }
 
 func TestHandlerUsage(t *testing.T) {
 	ctx := context.Background()
-	const empty = `{"Objects":{"Count":0,"Bytes":0},"Other":{"Count":0,"Bytes":0},"Xet":{"Xorbs":{"Count":0,"Bytes":0},"Shards":{"Count":0,"Bytes":0},"FileIndex":{"Count":0,"Bytes":0},"ChunkIndex":{"Count":0,"Bytes":0},"SHA256Index":{"Count":0,"Bytes":0}}}`
+	const empty = `{"Repository":{"Objects":{"Count":0,"Bytes":0},"Other":{"Count":0,"Bytes":0}},"Xet":{"Xorbs":{"Count":0,"Bytes":0},"Shards":{"Count":0,"Bytes":0},"FileIndex":{"Count":0,"Bytes":0},"ChunkIndex":{"Count":0,"Bytes":0},"SHA256Index":{"Count":0,"Bytes":0}},"Spool":{"Count":0,"Bytes":0},"Mirror":{"Count":0,"Bytes":0}}`
 	rec := do(newHandler(t, newRepos(t), newStorage(t)), http.MethodGet, "/internal/usage")
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || strings.TrimSpace(rec.Body.String()) != empty {
 		t.Fatalf("empty usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
@@ -255,11 +292,12 @@ func TestHandlerUsage(t *testing.T) {
 		SHA256Index: xetstorage.ObjectUsage{Count: 5, Bytes: 50},
 	}}
 	collector := gc.NewCollector(repos, store)
-	want, err := collector.Usage(ctx)
-	if err != nil || want.Other.Count == 0 || want.Xet != store.usage {
-		t.Fatalf("fixture usage = %+v, %v; want git metadata plus the stubbed xet usage", want, err)
+	gitUsage, err := collector.Usage(ctx)
+	if err != nil || gitUsage.Other.Count == 0 {
+		t.Fatalf("fixture usage = %+v, %v; want git metadata", gitUsage, err)
 	}
-	h := NewHandler(WithCollector(collector))
+	want := usageResponse{Repository: gitUsage, Xet: store.usage}
+	h := NewHandler(WithCollector(collector), WithStorage(store))
 	get := func(ctx context.Context) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(ctx))
@@ -273,20 +311,20 @@ func TestHandlerUsage(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
-	var got gc.Usage
+	var got usageResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got != want {
 		t.Fatalf("usage body %s: err=%v, want %+v", rec.Body, err, want)
 	}
 	if len(store.ctxs) != 1 || store.ctxs[0].Err() == nil {
 		t.Fatalf("store saw %d Usage calls, want exactly one carrying the request context", len(store.ctxs))
 	}
-	if after, err := collector.Usage(ctx); err != nil || after != want {
-		t.Fatalf("usage after request = %+v, %v; want unchanged %+v", after, err, want)
+	if after, err := collector.Usage(ctx); err != nil || after != gitUsage {
+		t.Fatalf("usage after request = %+v, %v; want unchanged %+v", after, err, gitUsage)
 	}
 
 	store.err = errors.New("disk on fire")
 	rec = get(ctx)
-	if rec.Code != http.StatusInternalServerError || !strings.HasPrefix(rec.Body.String(), "Usage failed: ") || !strings.Contains(rec.Body.String(), "disk on fire") {
+	if rec.Code != http.StatusInternalServerError || !strings.HasPrefix(rec.Body.String(), "Usage failed: xet usage: ") || !strings.Contains(rec.Body.String(), "disk on fire") {
 		t.Fatalf("store failure: status %d, body %q", rec.Code, rec.Body)
 	}
 
@@ -296,31 +334,54 @@ func TestHandlerUsage(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), context.Canceled.Error()) {
 		t.Fatalf("canceled request: status %d, body %q", rec.Code, rec.Body)
 	}
+
+	// A request canceled while the store answers fails after that success too, with or without repositories to walk.
+	store.err = nil
+	for _, populated := range []bool{false, true} {
+		repos := newRepos(t)
+		if populated {
+			if _, err := repository.Init(ctx, repos, "/org/repo.git", "main"); err != nil {
+				t.Fatalf("init: %v", err)
+			}
+		}
+		mid, cancelMid := context.WithCancel(ctx)
+		t.Cleanup(cancelMid)
+		store.onUsage = cancelMid
+		h := NewHandler(WithCollector(gc.NewCollector(repos, store)), WithStorage(store))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(mid))
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), context.Canceled.Error()) || strings.Contains(rec.Body.String(), `"Xet"`) {
+			t.Fatalf("populated=%t, canceled during the store call: status %d, body %q; want 500 and no partial report", populated, rec.Code, rec.Body)
+		}
+	}
 }
 
-// decodePrune decodes a prune response body, requiring the status and JSON content type.
-func decodePrune(t *testing.T, rec *httptest.ResponseRecorder, status int) gc.PruneResult {
+// decodeResult decodes a GC response body, requiring the status and JSON content type.
+func decodeResult(t *testing.T, rec *httptest.ResponseRecorder, status int) gcResponse {
 	t.Helper()
 	if rec.Code != status || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("status %d, content-type %q, body %s; want %d JSON", rec.Code, rec.Header().Get("Content-Type"), rec.Body, status)
 	}
-	var res gc.PruneResult
+	var res gcResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 		t.Fatalf("decode %s: %v", rec.Body, err)
+	}
+	if res.Prune == nil {
+		t.Fatalf("body %s: missing the prune section", rec.Body)
 	}
 	return res
 }
 
-// A prune preview reports the Git objects and bytes the run then deletes, with no disk saving measured, and deletes nothing itself.
+// A GC preview reports the Git objects and bytes the run then deletes, with no disk saving measured, and deletes nothing itself.
 func TestHandlerPruneGitGC(t *testing.T) {
 	repos := newRepos(t)
 	orphanPointer(t, repos, "/org/repo.git")
 	h := newHandler(t, repos, newStorage(t))
-	var preview gc.PruneResult
+	var preview *gc.PruneResult
 	// A second identical preview proves the first deleted nothing.
 	for i := range 2 {
-		rec := do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0")
-		preview = decodePrune(t, rec, http.StatusOK)
+		rec := do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
+		preview = decodeResult(t, rec, http.StatusOK).Prune
 		if !preview.DryRun || preview.Repositories != 1 || preview.DeletedGitObjects != 4 || preview.DeletedGitBytes <= 64<<10 || preview.ReclaimedBytes != 0 {
 			t.Fatalf("preview %d: %+v; want 4 objects, more than the 64 KiB filler and no reclaimed bytes", i, preview)
 		}
@@ -328,16 +389,16 @@ func TestHandlerPruneGitGC(t *testing.T) {
 			t.Fatalf("preview body %s: want the Git fields and no failed map", body)
 		}
 	}
-	res := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?grace=0"), http.StatusOK)
+	res := decodeResult(t, do(h, http.MethodPost, "/internal/gc?grace=0"), http.StatusOK).Prune
 	if res.DryRun || res.DeletedGitObjects != preview.DeletedGitObjects || res.DeletedGitBytes != preview.DeletedGitBytes || res.ReclaimedBytes <= 0 {
 		t.Fatalf("prune %+v, want the preview's %d objects and %d bytes", res, preview.DeletedGitObjects, preview.DeletedGitBytes)
 	}
-	if after := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0"), http.StatusOK); after.DeletedGitObjects != 0 || after.DeletedGitBytes != 0 {
+	if after := decodeResult(t, do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0"), http.StatusOK).Prune; after.DeletedGitObjects != 0 || after.DeletedGitBytes != 0 {
 		t.Fatalf("preview after prune %+v, want nothing left to delete", after)
 	}
 }
 
-// A repository whose GC fails answers 500 with the partial result: the failure, the other repositories' stats and the error.
+// A repository whose GC fails answers 200 with the partial prune section: the failure, the other repositories' stats and the error in errors.
 func TestHandlerReportsGitGCFailure(t *testing.T) {
 	repos := newRepos(t)
 	orphanPointer(t, repos, "/org/repo.git")
@@ -346,8 +407,12 @@ func TestHandlerReportsGitGCFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHandler(t, repos, newStorage(t))
-	res := decodePrune(t, do(h, http.MethodPost, "/internal/gc/prune?dry_run=true&grace=0"), http.StatusInternalServerError)
-	if res.Failed["/org/broken.git"] == "" || len(res.Failed) != 1 || res.Repositories != 2 || res.DeletedGitObjects != 4 || res.DeletedGitBytes <= 0 || !strings.Contains(res.Error, "git gc failed in 1 repositories") {
-		t.Fatalf("failure body must carry the failed repository, the healthy repository's stats and the error: %+v", res)
+	rec := do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
+	res := decodeResult(t, rec, http.StatusOK)
+	if res.Done || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "prune: git gc failed in 1 repositories") || res.Storage == nil {
+		t.Fatalf("body %s: want an unfinished step listing the prune error and the storage pass", rec.Body)
+	}
+	if p := res.Prune; p.Failed["/org/broken.git"] == "" || len(p.Failed) != 1 || p.Repositories != 2 || p.DeletedGitObjects != 4 || p.DeletedGitBytes <= 0 {
+		t.Fatalf("failure body must carry the failed repository and the healthy repository's stats: %s", rec.Body)
 	}
 }

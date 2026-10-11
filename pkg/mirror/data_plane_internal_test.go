@@ -17,7 +17,7 @@ func TestRegisterObjectDedupesTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new storage: %v", err)
 	}
-	m, err := NewMirror(WithXETStorage(st.XETStorage()), WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)))
+	m, err := NewMirror(WithXETStorage(st.XETStorage()), WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)), WithDataDir(st.XETDir()))
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}

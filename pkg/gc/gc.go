@@ -1,4 +1,5 @@
-// Package gc reclaims xet LFS content no git repository references any more.
+// Package gc runs Git GC in every repository and prunes the xet sha256 index entries no surviving LFS pointer names;
+// reclaiming the data is the xet storage GC's sweep, which the internal API runs after a prune.
 package gc
 
 import (
@@ -24,7 +25,9 @@ var zeroSHA256 = strings.Repeat("0", 64)
 // ErrInvalidOID reports an OID that is not a non-zero 64-hex sha256 digest.
 var ErrInvalidOID = errors.New("invalid oid")
 
-// Collector runs Git GC in every repository and prunes xet sha256 index entries no surviving LFS pointer names; SweepStep reclaims the data afterwards.
+// Collector covers the repository-aware side of GC over the repositories and the xet store: the prune pass (Git GC in every
+// repository, then unlinking of the sha256 index entries no surviving LFS pointer names), the object listing and the
+// repositories' usage.
 //
 // Liveness is a git pointer in any repository.
 // The grace window is keyed on shard mtime, which a dedup hit does not refresh: an OID deleted
@@ -34,65 +37,12 @@ type Collector struct {
 	repos billy.Filesystem
 	store xetstorage.Storage
 	gc    *xetstorage.GC
-	mu    sync.Mutex // serializes Prune and SweepStep
+	mu    sync.Mutex // serializes Prune
 }
 
 // NewCollector creates a Collector over the repositories filesystem and the xet store.
 func NewCollector(repos billy.Filesystem, store xetstorage.Storage) *Collector {
 	return &Collector{repos: repos, store: store, gc: xetstorage.NewGC(store)}
-}
-
-// Options configures one sweep step; MaxDeletes and Budget bound the sweep, while prune is uncharged and unbounded.
-type Options struct {
-	Grace      time.Duration // zero = xetstorage.DefaultSweepGrace, negative = disabled
-	DryRun     bool
-	MaxDeletes int           // max shard+xorb deletions per sweep, 0 = unlimited
-	Budget     time.Duration // wall-clock cap per sweep, 0 = unlimited
-}
-
-// SweepResult reports one sweep step.
-type SweepResult struct {
-	DryRun           bool     `json:"dry_run"`
-	SweptShards      int      `json:"swept_shards"`
-	SweptXorbs       int      `json:"swept_xorbs"`
-	ReclaimedBytes   int64    `json:"reclaimed_bytes"`
-	SkippedInGrace   int      `json:"skipped_in_grace"`
-	Dangling         []string `json:"dangling"`          // OIDs whose data is missing; reported, never deleted
-	UnreadableShards []string `json:"unreadable_shards"` // treated live; no xorb deleted that pass
-	Done             bool     `json:"done"`
-	RemainingShards  int      `json:"remaining_shards"`
-	RemainingXorbs   int      `json:"remaining_xorbs"`
-}
-
-// SweepStep runs one bounded sha256-anchored sweep step under the same lock as Prune, so the store has a single sweeper.
-func (c *Collector) SweepStep(ctx context.Context, opts Options) (*SweepResult, error) {
-	if !c.mu.TryLock() {
-		return nil, xetstorage.ErrGCBusy
-	}
-	defer c.mu.Unlock()
-	return c.sweep(ctx, opts)
-}
-
-// sweep is the only place hfd builds xet's sweep options, always sha256-anchored; the caller holds c.mu.
-func (c *Collector) sweep(ctx context.Context, opts Options) (*SweepResult, error) {
-	xr, err := c.gc.SweepStep(ctx, xetstorage.SweepOptions{
-		Anchor: xetstorage.AnchorSHA256, Grace: opts.Grace, DryRun: opts.DryRun, MaxDeletes: opts.MaxDeletes, Budget: opts.Budget,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &SweepResult{
-		DryRun:           xr.DryRun,
-		SweptShards:      len(xr.SweptShards),
-		SweptXorbs:       len(xr.SweptXorbs),
-		ReclaimedBytes:   xr.ReclaimedBytes,
-		SkippedInGrace:   xr.SkippedInGrace,
-		Dangling:         xr.DanglingSHA256Entries,
-		UnreadableShards: xr.UnreadableShards,
-		Done:             xr.Done,
-		RemainingShards:  xr.RemainingShards,
-		RemainingXorbs:   xr.RemainingXorbs,
-	}, nil
 }
 
 // PruneOptions configures one prune run.
@@ -112,17 +62,21 @@ type PruneResult struct {
 	LiveObjects       int               `json:"live_objects"`
 	Unlinked          []string          `json:"unlinked"` // sorted sha256 hex; dry run: what would be unlinked
 	SkippedInGrace    int               `json:"skipped_in_grace"`
-	Error             string            `json:"error,omitempty"` // set by the HTTP layer when the run failed with a partial result
 }
 
-// Prune runs Git GC in every repository, then unlinks unreferenced OIDs past the grace window; the data stays until SweepStep reclaims it.
-// Busy runs fail with xetstorage.ErrGCBusy; any other error comes with the partial result, whose Git fields and Unlinked list what already happened.
+// Prune runs Git GC in every repository, then unlinks the unreferenced OIDs past the grace window;
+// the data stays until a sweep reclaims it. Busy runs fail with xetstorage.ErrGCBusy; any other error comes with the partial result,
+// whose Git fields and Unlinked list what already happened.
 func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
 	if !c.mu.TryLock() {
 		return nil, xetstorage.ErrGCBusy
 	}
 	defer c.mu.Unlock()
+	return c.prune(ctx, opts)
+}
 
+// prune is the prune pass; the caller holds c.mu.
+func (c *Collector) prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
 	res := &PruneResult{DryRun: opts.DryRun, Unlinked: []string{}}
 	grace := opts.Grace
 	if grace == 0 {

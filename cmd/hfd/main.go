@@ -10,6 +10,7 @@ import (
 
 	"github.com/matrixhub-ai/hfd/internal/server"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
+	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -54,7 +55,11 @@ func run(ctx context.Context, cfg *config) error {
 
 	// Phase 3: xet/mirror layer.
 	cache := buildXETCache(cfg, st)
-	engine, err := buildXETMirror(cfg, st, cache)
+	sp, err := buildXETSpool(st)
+	if err != nil {
+		return fmt.Errorf("prepare XET spool: %w", err)
+	}
+	engine, err := buildXETMirror(cfg, st, cache, sp)
 	if err != nil {
 		return fmt.Errorf("prepare XET mirror engine: %w", err)
 	}
@@ -90,8 +95,13 @@ func run(ctx context.Context, cfg *config) error {
 	}
 	if cfg.Internal {
 		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
-		opts.InternalGC = gc.NewCollector(st.RepositoriesFS(), st.XETStorage())
-		opts.GCGrace = time.Hour
+		opts.InternalOptions = []backendinternalapi.Option{
+			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), st.XETStorage())),
+			backendinternalapi.WithStorage(st.XETStorage()),
+			backendinternalapi.WithSpool(sp),
+			backendinternalapi.WithMirror(engine),
+			backendinternalapi.WithGCGrace(time.Hour),
+		}
 	}
 	handler := server.NewHTTPHandler(opts)
 	var sshServer *backendssh.Server

@@ -18,6 +18,7 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
+	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
@@ -132,7 +133,10 @@ func TestNewHTTPHandler(t *testing.T) {
 		{name: "internal disabled", path: "/internal/objects", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal default tail", path: "/internal/objects", status: http.StatusNotFound, defaultNext: true},
 		{name: "internal usage disabled", path: "/internal/usage", status: http.StatusTeapot, identity: authenticate.Anonymous},
-		{name: "internal usage enabled", options: Options{InternalGC: gc.NewCollector(xsStorage.RepositoriesFS(), xs)}, path: "/internal/usage", status: http.StatusOK},
+		{name: "internal usage enabled", options: Options{InternalOptions: []backendinternalapi.Option{
+			backendinternalapi.WithCollector(gc.NewCollector(xsStorage.RepositoriesFS(), xs)),
+			backendinternalapi.WithStorage(xs),
+		}}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "permission denied", options: Options{Permission: deny, HFOptions: []backendhf.Option{backendhf.WithListReposFunc(hooks.ListRepos)}}, path: "/api/models", status: http.StatusForbidden},
 		{name: "permission denied skips callback", options: Options{Permission: deny, HFOptions: []backendhf.Option{

@@ -118,10 +118,17 @@ func WithXETStorage(s xetstorage.Storage) Option {
 	}
 }
 
-// WithXETCache sets the cache root shared by the per-transfer xet clients and local ingests.
+// WithXETCache sets the cache root shared by the per-transfer xet clients.
 func WithXETCache(c *xetclient.Cache) Option {
 	return func(m *Mirror) {
 		m.xetCache = c
+	}
+}
+
+// WithDataDir sets the mirror's scratch directory; uploads are staged under it.
+func WithDataDir(dir string) Option {
+	return func(m *Mirror) {
+		m.dataDir = dir
 	}
 }
 
@@ -148,17 +155,10 @@ func WithExternalURL(u string) Option {
 	}
 }
 
-// WithConcurrency sets the xet upload concurrency for ingests.
+// WithConcurrency sets the xet client concurrency of push-mirror uploads.
 func WithConcurrency(concurrency int) Option {
 	return func(m *Mirror) {
 		m.concurrency = concurrency
-	}
-}
-
-// WithDataDir sets the mirror's scratch directory; the ingest spool lives under it.
-func WithDataDir(dir string) Option {
-	return func(m *Mirror) {
-		m.dataDir = dir
 	}
 }
 
@@ -185,8 +185,8 @@ func WithSyncUserInfoFunc(fn SyncUserInfoFunc) Option {
 }
 
 // NewMirror creates a new Mirror with the provided options. It does not
-// assemble the xet stack; the caller (cmd/hfd) builds the storage and
-// mirror engine and injects each piece.
+// assemble the xet stack; the caller (cmd/hfd) builds the storage and mirror
+// engine and injects each piece.
 func NewMirror(opts ...Option) (*Mirror, error) {
 	m := &Mirror{oidIndex: make(map[string][]resolveTarget)}
 	for _, opt := range opts {
@@ -199,11 +199,14 @@ func NewMirror(opts ...Option) (*Mirror, error) {
 	// long; the stall guard bounds no-progress phases instead. The explicit
 	// transport lets the per-upload xet clients share one connection pool.
 	m.httpClient = &http.Client{Transport: http.DefaultTransport}
-	if m.xetStorage == nil || m.xetCache == nil {
-		return nil, fmt.Errorf("mirror requires WithXETStorage and WithXETCache")
+	if m.xetStorage == nil || m.xetCache == nil || m.dataDir == "" {
+		return nil, fmt.Errorf("mirror requires WithXETStorage, WithXETCache and WithDataDir")
 	}
 	if m.xetMirror != nil && m.mirrorSourceFunc == nil {
 		return nil, fmt.Errorf("WithXETMirror requires WithMirrorSourceFunc")
+	}
+	if err := m.removeStaleUploads(); err != nil {
+		return nil, err
 	}
 
 	return m, nil
