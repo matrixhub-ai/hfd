@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/wzshiming/xet/auth"
@@ -18,7 +17,6 @@ import (
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -35,18 +33,17 @@ type Options struct {
 	CASAuthorizer  auth.Authorizer                 // gates the xet CAS routes; nil rejects every gated route (xorb downloads and /xet-bridge stay anonymous)
 	Permission     permission.PermissionHookFunc   // nil allows every operation
 	// Nil hooks are skipped.
-	PreOpen     func(ctx context.Context, repoName string, write bool) error
-	PreReceive  receive.PreReceiveHookFunc
-	PostReceive receive.PostReceiveHookFunc
-	InternalGC  *gc.Collector      // mounts the unauthenticated /internal management API when set
-	GCGrace     time.Duration      // prune grace for that API; zero uses the xet default
-	AccessLog   io.Writer          // combined access log; nil disables the layer
-	HostURL     string             // external base URL handed to SSH clients for LFS
-	Next        http.Handler       // chain tail; nil answers 404
-	HFOptions   []backendhf.Option // appended after the defaults; likewise below
-	LFSOptions  []backendlfs.Option
-	GitOptions  []backendhttp.Option
-	SSHOptions  []backendssh.Option
+	PreOpen         func(ctx context.Context, repoName string, write bool) error
+	PreReceive      receive.PreReceiveHookFunc
+	PostReceive     receive.PostReceiveHookFunc
+	InternalOptions []backendinternalapi.Option // mounts the unauthenticated /internal management API when non-empty
+	AccessLog       io.Writer                   // combined access log; nil disables the layer
+	HostURL         string                      // external base URL handed to SSH clients for LFS
+	Next            http.Handler                // chain tail; nil answers 404
+	HFOptions       []backendhf.Option          // appended after the defaults; likewise below
+	LFSOptions      []backendlfs.Option
+	GitOptions      []backendhttp.Option
+	SSHOptions      []backendssh.Option
 }
 
 type middleware func(next http.Handler) http.Handler
@@ -70,15 +67,11 @@ func requestLogging(writer io.Writer) middleware {
 }
 
 func internalAPI(o Options) middleware {
-	if o.InternalGC == nil {
+	if len(o.InternalOptions) == 0 {
 		return passthrough
 	}
 	return func(next http.Handler) http.Handler {
-		return backendinternalapi.NewHandler(
-			backendinternalapi.WithCollector(o.InternalGC),
-			backendinternalapi.WithGCGrace(o.GCGrace),
-			backendinternalapi.WithNext(next),
-		)
+		return backendinternalapi.NewHandler(append(slices.Clone(o.InternalOptions), backendinternalapi.WithNext(next))...)
 	}
 }
 

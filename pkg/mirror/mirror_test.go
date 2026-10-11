@@ -11,6 +11,7 @@ import (
 	"github.com/go-git/go-billy/v6/osfs"
 	xetclient "github.com/wzshiming/xet/client"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	"github.com/wzshiming/xet/mirror/spool"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -114,6 +115,10 @@ func newMirrorWithSource(t *testing.T, src mirror.SourceFunc, extra ...mirror.Op
 		t.Fatalf("create storage: %v", err)
 	}
 	xs := st.XETStorage()
+	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), xs)
+	if err != nil {
+		t.Fatalf("create xet spool: %v", err)
+	}
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
 		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
@@ -123,6 +128,7 @@ func newMirrorWithSource(t *testing.T, src mirror.SourceFunc, extra ...mirror.Op
 		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
 			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
 			t.Fatalf("create xet mirror engine: %v", err)

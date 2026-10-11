@@ -43,27 +43,40 @@ type gcObject struct {
 	Size uint64 `json:"size"`
 }
 
-// gcSweepResult carries the gc.SweepResult fields the test asserts on.
-type gcSweepResult struct {
-	SweptShards     int   `json:"swept_shards"`
-	SweptXorbs      int   `json:"swept_xorbs"`
-	ReclaimedBytes  int64 `json:"reclaimed_bytes"`
-	Done            bool  `json:"done"`
-	RemainingShards int   `json:"remaining_shards"`
-	RemainingXorbs  int   `json:"remaining_xorbs"`
-}
-
-// gcPruneResult carries the gc.PruneResult fields the test asserts on.
-type gcPruneResult struct {
-	DryRun            bool              `json:"dry_run"`
-	Repositories      int               `json:"repositories"`
-	DeletedGitObjects int               `json:"deleted_git_objects"`
-	DeletedGitBytes   int64             `json:"deleted_git_bytes"`
-	ReclaimedBytes    int64             `json:"reclaimed_bytes"`
-	Failed            map[string]string `json:"failed"`
-	LiveObjects       int               `json:"live_objects"`
-	Unlinked          []string          `json:"unlinked"`
-	SkippedInGrace    int               `json:"skipped_in_grace"`
+// gcResult carries the GC response fields the test asserts on.
+type gcResult struct {
+	DryRun bool `json:"dry_run"`
+	Done   bool `json:"done"`
+	Prune  *struct {
+		DryRun            bool              `json:"dry_run"`
+		Repositories      int               `json:"repositories"`
+		DeletedGitObjects int               `json:"deleted_git_objects"`
+		DeletedGitBytes   int64             `json:"deleted_git_bytes"`
+		ReclaimedBytes    int64             `json:"reclaimed_bytes"`
+		Failed            map[string]string `json:"failed"`
+		LiveObjects       int               `json:"live_objects"`
+		Unlinked          []string          `json:"unlinked"`
+		SkippedInGrace    int               `json:"skipped_in_grace"`
+	} `json:"prune"`
+	Storage *struct {
+		DryRun          bool  `json:"dry_run"`
+		SweptShards     int   `json:"swept_shards"`
+		SweptXorbs      int   `json:"swept_xorbs"`
+		ReclaimedBytes  int64 `json:"reclaimed_bytes"`
+		Done            bool  `json:"done"`
+		RemainingShards int   `json:"remaining_shards"`
+		RemainingXorbs  int   `json:"remaining_xorbs"`
+	} `json:"storage"`
+	// Spools and mirror are present once the storage pass ended, as the budget allows.
+	Spools *struct {
+		SweptSpools int  `json:"swept_spools"`
+		Done        bool `json:"done"`
+	} `json:"spools"`
+	Mirror *struct {
+		DroppedEntries int  `json:"dropped_entries"`
+		Done           bool `json:"done"`
+	} `json:"mirror"`
+	Errors []string `json:"errors"`
 }
 
 // mustGet follows redirects and returns the 200 body, failing the test otherwise.
@@ -84,55 +97,42 @@ func mustGet(t *testing.T, url string) []byte {
 	return body
 }
 
-// postSweep runs one unshielded sweep step against baseURL and returns the decoded 200 body, failing the test otherwise.
-func postSweep(t *testing.T, baseURL string, query ...string) gcSweepResult {
+// postGC runs one unshielded GC step (grace=0 plus query) against baseURL and returns the decoded 200 body, failing the test otherwise.
+func postGC(t *testing.T, baseURL string, query ...string) gcResult {
 	t.Helper()
-	resp, err := http.Post(baseURL+"/internal/gc/sweep?grace=0&"+strings.Join(query, "&"), "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST sweep: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read sweep body: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("sweep status = %d, want 200 (body %q)", resp.StatusCode, body)
-	}
-	var res gcSweepResult
-	if err := json.Unmarshal(body, &res); err != nil {
-		t.Fatalf("decode sweep result: %v", err)
-	}
-	return res
+	return postGCQuery(t, baseURL, strings.Join(append([]string{"grace=0"}, query...), "&"))
 }
 
-// postPrune runs one prune with query against baseURL and returns the decoded 200 body, failing the test otherwise.
-func postPrune(t *testing.T, baseURL, query string) gcPruneResult {
+// postGCQuery runs one GC step with the raw query against baseURL and returns the decoded 200 body with its prune and storage sections, failing the test otherwise.
+func postGCQuery(t *testing.T, baseURL, rawQuery string) gcResult {
 	t.Helper()
-	resp, err := http.Post(baseURL+"/internal/gc/prune"+query, "application/json", nil)
+	resp, err := http.Post(baseURL+"/internal/gc?"+rawQuery, "application/json", nil)
 	if err != nil {
-		t.Fatalf("POST /internal/gc/prune%s: %v", query, err)
+		t.Fatalf("POST /internal/gc?%s: %v", rawQuery, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("read prune body: %v", err)
+		t.Fatalf("read GC body: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("prune status = %d, want 200 (body %q)", resp.StatusCode, body)
+		t.Fatalf("GC status = %d, want 200 (body %q)", resp.StatusCode, body)
 	}
-	var res gcPruneResult
+	var res gcResult
 	if err := json.Unmarshal(body, &res); err != nil {
-		t.Fatalf("decode prune result: %v", err)
+		t.Fatalf("decode GC result: %v", err)
+	}
+	if res.Prune == nil || res.Storage == nil {
+		t.Fatalf("GC body %s: want the prune and storage sections", body)
 	}
 	return res
 }
 
 // TestGCLifecycle drives the /internal/ management API end to end over the
 // assembled hfd chain: a pull-through mirror ingests an LFS object from an
-// upstream hfd server, /internal/objects lists it, and prune keeps the
-// referenced object. Deleting the mirrored repo lets prune unlink the OID
-// and sweep reclaim the bytes; the next resolve self-heals by mirroring
+// upstream hfd server, /internal/objects lists it, and a GC step keeps the
+// referenced object. Deleting the mirrored repo lets the next GC step unlink
+// the OID and reclaim the bytes; the next resolve self-heals by mirroring
 // the repo and re-ingesting from upstream. The internal API wraps the chain
 // outermost with the same options as cmd/hfd's internalAPI. Library-level
 // GC semantics stay covered upstream in xet; this test pins the hfd wiring.
@@ -183,6 +183,9 @@ func TestGCLifecycle(t *testing.T) {
 	// chain outermost, the way cmd/hfd's internalAPI does.
 	handler = backendinternalapi.NewHandler(
 		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
+		backendinternalapi.WithStorage(xet.xs),
+		backendinternalapi.WithSpool(xet.spool),
+		backendinternalapi.WithMirror(xet.engine),
 		backendinternalapi.WithGCGrace(time.Hour),
 		backendinternalapi.WithNext(handler),
 	)
@@ -234,7 +237,7 @@ func TestGCLifecycle(t *testing.T) {
 		if err := xet.xs.WalkShards(t.Context(), func(string, int64, time.Time) error { shards++; return nil }); err != nil {
 			t.Fatalf("walk shards: %v", err)
 		}
-		if err := xet.xs.WalkXorbs(t.Context(), "default", func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
+		if err := xet.xs.WalkXorbs(t.Context(), func(string, int64, time.Time) error { xorbs++; return nil }); err != nil {
 			t.Fatalf("walk xorbs: %v", err)
 		}
 		return shards, xorbs
@@ -263,13 +266,15 @@ func TestGCLifecycle(t *testing.T) {
 	})
 
 	step("PruneKeepsReferenced", func(t *testing.T) {
-		prune := postPrune(t, proxy.URL, "?grace=0")
-		if len(prune.Unlinked) != 0 || prune.LiveObjects < 1 {
-			t.Fatalf("prune = %+v, want a live object and nothing unlinked", prune)
+		res := postGC(t, proxy.URL)
+		if len(res.Prune.Unlinked) != 0 || res.Prune.LiveObjects < 1 {
+			t.Fatalf("prune = %+v, want a live object and nothing unlinked", *res.Prune)
 		}
-		res := postSweep(t, proxy.URL)
-		if res.SweptShards != 0 || res.SweptXorbs != 0 {
-			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", res.SweptShards, res.SweptXorbs)
+		if res.Storage.SweptShards != 0 || res.Storage.SweptXorbs != 0 {
+			t.Fatalf("anchored sweep reclaimed shards=%d xorbs=%d, want none", res.Storage.SweptShards, res.Storage.SweptXorbs)
+		}
+		if !res.Done || res.Errors != nil {
+			t.Fatalf("GC = %+v, want a finished step without errors", res)
 		}
 		if got := mustGet(t, proxy.URL+"/objects/"+oid); !bytes.Equal(got, data) {
 			t.Fatalf("object download after anchored sweep mismatch: got %d bytes, want %d", len(got), len(data))
@@ -280,20 +285,20 @@ func TestGCLifecycle(t *testing.T) {
 		deleteRepoAt(t, proxy.URL, "gc-org", "gc-repo")
 	})
 
-	step("PruneUnlinks", func(t *testing.T) {
-		res := postPrune(t, proxy.URL, "?grace=0")
-		if !slices.Equal(res.Unlinked, []string{oid}) || res.Repositories != 0 {
-			t.Fatalf("prune = %+v, want [%s] unlinked and no repositories", res, oid)
+	// The unlinked-but-stored state between the passes is pinned by pkg/gc's TestPrune/LeavesDataForSweep.
+	step("CollectUnlinksAndReclaims", func(t *testing.T) {
+		res := postGC(t, proxy.URL)
+		if !slices.Equal(res.Prune.Unlinked, []string{oid}) || res.Prune.Repositories != 0 {
+			t.Fatalf("prune = %+v, want [%s] unlinked and no repositories", *res.Prune, oid)
 		}
-	})
-
-	step("SweepReclaims", func(t *testing.T) {
-		res := postSweep(t, proxy.URL)
-		if res.SweptShards == 0 || res.SweptXorbs == 0 {
-			t.Fatalf("unanchored sweep reclaimed shards=%d xorbs=%d, want both non-zero", res.SweptShards, res.SweptXorbs)
+		if res.Storage.SweptShards == 0 || res.Storage.SweptXorbs == 0 {
+			t.Fatalf("unanchored sweep reclaimed shards=%d xorbs=%d, want both non-zero", res.Storage.SweptShards, res.Storage.SweptXorbs)
 		}
-		if !res.Done {
-			t.Fatal("unbounded sweep step did not finish the cycle")
+		if !res.Done || res.Errors != nil {
+			t.Fatalf("GC = %+v, want an unbounded step to finish the cycle without errors", res)
+		}
+		if res.Spools == nil || res.Mirror == nil {
+			t.Fatalf("GC = %+v, want the finishing step to report the spool and engine index passes", res)
 		}
 		// Storage-direct checks only: probing the HTTP paths here would
 		// trigger the self-heal re-ingest that the next step covers.
@@ -407,33 +412,28 @@ func TestGCSharedReferences(t *testing.T) {
 		s.deleteRepo(t, "gc-org", "shared-a")
 	})
 	step("KeepShared", func(t *testing.T) {
-		prune := postPrune(t, s.httpURL, "?grace=0")
-		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 1 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
-			t.Fatalf("prune = %+v, want 1 repository, 1 live object, nothing unlinked or skipped", prune)
+		res := postGC(t, s.httpURL)
+		if p := res.Prune; p.DryRun || p.Repositories != 1 || p.LiveObjects != 1 || p.SkippedInGrace != 0 || !slices.Equal(p.Unlinked, []string{}) {
+			t.Fatalf("prune = %+v, want 1 repository, 1 live object, nothing unlinked or skipped", *p)
 		}
-		sweep := postSweep(t, s.httpURL)
-		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		if st := res.Storage; !res.Done || res.Errors != nil || st.SweptShards != 0 || st.SweptXorbs != 0 || st.ReclaimedBytes != 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
+			t.Fatalf("GC = %+v, storage = %+v, want done with nothing reclaimed or remaining", res, *st)
 		}
 		assertGCObjects(t, s.httpURL, object)
 		if got := mustGet(t, s.httpURL+"/gc-org/shared-b/resolve/main/"+transferMatrixFile); !bytes.Equal(got, data) {
-			t.Fatalf("prune = %+v, sweep = %+v, shared-b resolve: got %d bytes, want original %d bytes", prune, sweep, len(got), len(data))
+			t.Fatalf("prune = %+v, storage = %+v, shared-b resolve: got %d bytes, want original %d bytes", *res.Prune, *res.Storage, len(got), len(data))
 		}
 	})
 	step("DeleteLast", func(t *testing.T) {
 		s.deleteRepo(t, "gc-org", "shared-b")
 	})
-	step("PruneLast", func(t *testing.T) {
-		res := postPrune(t, s.httpURL, "?grace=0")
-		if res.DryRun || res.Repositories != 0 || res.LiveObjects != 0 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, []string{oid}) {
-			t.Fatalf("prune = %+v, want no repositories or live objects, [%s] unlinked, none skipped", res, oid)
+	step("CollectLast", func(t *testing.T) {
+		res := postGC(t, s.httpURL)
+		if p := res.Prune; p.DryRun || p.Repositories != 0 || p.LiveObjects != 0 || p.SkippedInGrace != 0 || !slices.Equal(p.Unlinked, []string{oid}) {
+			t.Fatalf("prune = %+v, want no repositories or live objects, [%s] unlinked, none skipped", *p, oid)
 		}
-		assertGCObjects(t, s.httpURL)
-	})
-	step("SweepLast", func(t *testing.T) {
-		res := postSweep(t, s.httpURL)
-		if !res.Done || res.SweptShards <= 0 || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with shards, xorbs and bytes reclaimed, nothing remaining", res)
+		if st := res.Storage; !res.Done || res.Errors != nil || st.SweptShards <= 0 || st.SweptXorbs <= 0 || st.ReclaimedBytes <= 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
+			t.Fatalf("GC = %+v, storage = %+v, want done with shards, xorbs and bytes reclaimed, nothing remaining", res, *st)
 		}
 		assertGCObjects(t, s.httpURL)
 		assertGCNotFound(t, s.httpURL+"/objects/"+oid)
@@ -487,24 +487,23 @@ func TestGCHistoryReferences(t *testing.T) {
 		}
 	})
 	step("KeepHistoryAndBranch", func(t *testing.T) {
-		prune := postPrune(t, s.httpURL, "?grace=0")
-		if prune.DryRun || prune.Repositories != 1 || prune.LiveObjects != 2 || prune.SkippedInGrace != 0 || !slices.Equal(prune.Unlinked, []string{}) {
-			t.Fatalf("prune = %+v, want 1 repository, 2 live objects, nothing unlinked or skipped", prune)
+		res := postGC(t, s.httpURL)
+		if p := res.Prune; p.DryRun || p.Repositories != 1 || p.LiveObjects != 2 || p.SkippedInGrace != 0 || !slices.Equal(p.Unlinked, []string{}) {
+			t.Fatalf("prune = %+v, want 1 repository, 2 live objects, nothing unlinked or skipped", *p)
 		}
-		sweep := postSweep(t, s.httpURL)
-		if !sweep.Done || sweep.SweptShards != 0 || sweep.SweptXorbs != 0 || sweep.ReclaimedBytes != 0 || sweep.RemainingShards != 0 || sweep.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with nothing reclaimed or remaining", sweep)
+		if st := res.Storage; !res.Done || res.Errors != nil || st.SweptShards != 0 || st.SweptXorbs != 0 || st.ReclaimedBytes != 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
+			t.Fatalf("GC = %+v, storage = %+v, want done with nothing reclaimed or remaining", res, *st)
 		}
 		assertGCObjects(t, s.httpURL, gcObject{OID: historyOID, Size: uint64(len(historyData))}, gcObject{OID: branchOID, Size: uint64(len(branchData))})
 		for oid, data := range map[string][]byte{historyOID: historyData, branchOID: branchData} {
 			if got := mustGet(t, s.httpURL+"/objects/"+oid); !bytes.Equal(got, data) {
-				t.Fatalf("prune = %+v, sweep = %+v, object %s: got %d bytes, want original %d bytes", prune, sweep, oid, len(got), len(data))
+				t.Fatalf("prune = %+v, storage = %+v, object %s: got %d bytes, want original %d bytes", *res.Prune, *res.Storage, oid, len(got), len(data))
 			}
 		}
 	})
 }
 
-// TestGCBoundedSweep resumes a deletion-limited sweep after unlinking two dead objects.
+// TestGCBoundedSweep resumes a deletion-limited GC step after unlinking two dead objects.
 func TestGCBoundedSweep(t *testing.T) {
 	s := newE2EServer(t, withInternalAPI())
 	firstData, secondData := makeBinaryData(64*1024, 51), makeBinaryData(64*1024, 52)
@@ -517,30 +516,40 @@ func TestGCBoundedSweep(t *testing.T) {
 			t.FailNow()
 		}
 	}
-	step("UnlinkTwo", func(t *testing.T) {
+	step("PushAndDelete", func(t *testing.T) {
 		s.createRepo(t, "gc-org", "bounded")
 		pushViaXetBatch(t, s, "gc-org/bounded", firstData)
 		pushViaXetBatch(t, s, "gc-org/bounded", secondData)
 		assertGCObjects(t, s.httpURL, gcObject{OID: oids[0], Size: uint64(len(firstData))}, gcObject{OID: oids[1], Size: uint64(len(secondData))})
 		s.deleteRepo(t, "gc-org", "bounded")
-		res := postPrune(t, s.httpURL, "?grace=0")
-		if res.DryRun || res.Repositories != 0 || res.LiveObjects != 0 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, oids) {
-			t.Fatalf("prune = %+v, want no repositories or live objects, %v unlinked, none skipped", res, oids)
-		}
-		assertGCObjects(t, s.httpURL)
 	})
-	var bounded gcSweepResult
+	var bounded gcResult
 	step("OneDeletion", func(t *testing.T) {
-		bounded = postSweep(t, s.httpURL, "max=1")
-		if bounded.Done || bounded.SweptShards != 1 || bounded.SweptXorbs != 0 || bounded.RemainingShards <= 0 || bounded.RemainingXorbs != 0 || bounded.ReclaimedBytes <= 0 {
-			t.Fatalf("bounded sweep = %+v, want unfinished, 1 shard and 0 xorbs swept, positive remaining shards, xorbs not yet judged", bounded)
+		// The prune pass is unbounded and unlinks both; max=1 caps only the storage pass.
+		bounded = postGC(t, s.httpURL, "max=1")
+		if p := bounded.Prune; p.DryRun || p.Repositories != 0 || p.LiveObjects != 0 || p.SkippedInGrace != 0 || !slices.Equal(p.Unlinked, oids) {
+			t.Fatalf("prune = %+v, want no repositories or live objects, %v unlinked, none skipped", *p, oids)
+		}
+		st := bounded.Storage
+		if bounded.Done || bounded.Errors != nil || st.Done || st.SweptShards != 1 || st.SweptXorbs != 0 || st.RemainingShards <= 0 || st.RemainingXorbs != 0 || st.ReclaimedBytes <= 0 {
+			t.Fatalf("bounded GC = %+v, storage = %+v, want unfinished, 1 shard and 0 xorbs swept, positive remaining shards, xorbs not yet judged", bounded, *st)
+		}
+		if bounded.Spools != nil || bounded.Mirror != nil {
+			t.Fatalf("bounded GC = %+v, want the spool and mirror passes deferred to the finishing step", bounded)
 		}
 		assertGCObjects(t, s.httpURL)
 	})
 	step("FinishCycle", func(t *testing.T) {
-		res := postSweep(t, s.httpURL)
-		if !res.Done || res.SweptShards != bounded.RemainingShards || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v after bounded = %+v, want all remaining shards and xorbs reclaimed, done", res, bounded)
+		res := postGC(t, s.httpURL)
+		if len(res.Prune.Unlinked) != 0 {
+			t.Fatalf("prune = %+v, want nothing left to unlink", *res.Prune)
+		}
+		if st := res.Storage; !res.Done || res.Errors != nil || !st.Done || st.SweptShards != bounded.Storage.RemainingShards || st.SweptXorbs <= 0 || st.ReclaimedBytes <= 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
+			t.Fatalf("GC = %+v, storage = %+v after bounded storage = %+v, want all remaining shards and xorbs reclaimed, done", res, *st, *bounded.Storage)
+		}
+		// No engine on this server, so only the spool pass reports.
+		if res.Spools == nil || res.Mirror != nil {
+			t.Fatalf("GC = %+v, want the spool pass on the finishing step and no index pass without an engine", res)
 		}
 		assertGCObjects(t, s.httpURL)
 		for _, oid := range oids {
@@ -549,7 +558,8 @@ func TestGCBoundedSweep(t *testing.T) {
 	})
 }
 
-// TestGCPrune drives POST /internal/gc/prune then /internal/gc/sweep over the assembled chain: a deleted repository's LFS object is unlinked once outside the grace window, and only the separate sweep reclaims its data.
+// TestGCPrune drives POST /internal/gc over the assembled chain: a deleted repository's LFS object is unlinked and its data reclaimed in one step once outside the grace window.
+// The unlinked-but-stored state between the passes is pinned by pkg/gc's TestPrune/LeavesDataForSweep.
 func TestGCPrune(t *testing.T) {
 	s := newE2EServer(t, withInternalAPI())
 	s.createRepo(t, "gc-org", "keep")
@@ -567,11 +577,6 @@ func TestGCPrune(t *testing.T) {
 		}
 	}
 
-	prune := func(t *testing.T, query string) gcPruneResult {
-		t.Helper()
-		return postPrune(t, s.httpURL, query)
-	}
-
 	listed := func(t *testing.T) map[string]bool {
 		t.Helper()
 		var objects []gcObject
@@ -586,9 +591,12 @@ func TestGCPrune(t *testing.T) {
 	}
 
 	step("DryRunKeepsAll", func(t *testing.T) {
-		res := prune(t, "?dry_run=true")
-		if !res.DryRun || res.Repositories != 2 || res.LiveObjects != 2 || len(res.Unlinked) != 0 {
-			t.Fatalf("dry run = %+v, want 2 repositories, 2 live objects, nothing unlinked", res)
+		res := postGC(t, s.httpURL, "dry_run=true")
+		if p := res.Prune; !res.DryRun || !p.DryRun || p.Repositories != 2 || p.LiveObjects != 2 || len(p.Unlinked) != 0 {
+			t.Fatalf("dry run = %+v, prune = %+v, want 2 repositories, 2 live objects, nothing unlinked", res, *p)
+		}
+		if st := res.Storage; !res.Done || res.Errors != nil || !st.DryRun || st.SweptShards != 0 || st.SweptXorbs != 0 {
+			t.Fatalf("dry run = %+v, storage = %+v, want a finished preview sweeping nothing", res, *st)
 		}
 	})
 
@@ -597,9 +605,13 @@ func TestGCPrune(t *testing.T) {
 	})
 
 	step("GraceShields", func(t *testing.T) {
-		res := prune(t, "")
-		if len(res.Unlinked) != 0 || res.SkippedInGrace != 1 || res.Repositories != 1 {
-			t.Fatalf("prune in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", res)
+		// No grace parameter: the server's default window shields both passes.
+		res := postGCQuery(t, s.httpURL, "")
+		if p := res.Prune; len(p.Unlinked) != 0 || p.SkippedInGrace != 1 || p.Repositories != 1 {
+			t.Fatalf("prune in grace = %+v, want 1 repository, nothing unlinked, 1 skipped", *p)
+		}
+		if st := res.Storage; st.SweptShards != 0 || st.SweptXorbs != 0 {
+			t.Fatalf("storage in grace = %+v, want nothing swept", *st)
 		}
 		if !listed(t)[dropOID] {
 			t.Fatalf("/internal/objects lost %s inside the grace window", dropOID)
@@ -607,73 +619,72 @@ func TestGCPrune(t *testing.T) {
 	})
 
 	step("DryRunListsDead", func(t *testing.T) {
-		res := prune(t, "?dry_run=true&grace=0")
-		if !res.DryRun || res.Repositories != 1 || res.LiveObjects != 1 || res.SkippedInGrace != 0 || !slices.Equal(res.Unlinked, []string{dropOID}) {
-			t.Fatalf("dry run = %+v, want 1 repository, 1 live object, [%s] unlinked, none skipped", res, dropOID)
+		res := postGC(t, s.httpURL, "dry_run=true")
+		if p := res.Prune; !p.DryRun || p.Repositories != 1 || p.LiveObjects != 1 || p.SkippedInGrace != 0 || !slices.Equal(p.Unlinked, []string{dropOID}) {
+			t.Fatalf("dry run prune = %+v, want 1 repository, 1 live object, [%s] unlinked, none skipped", *p, dropOID)
+		}
+		if !res.Storage.DryRun || !res.Done || res.Errors != nil {
+			t.Fatalf("dry run = %+v, storage = %+v, want a finished preview", res, *res.Storage)
 		}
 		files := listed(t)
 		if len(files) != 2 || !files[dropOID] || !files[keepOID] {
-			t.Fatalf("dry run = %+v, /internal/objects = %v, want both %s and %s", res, files, dropOID, keepOID)
+			t.Fatalf("/internal/objects = %v after dry run, want both %s and %s", files, dropOID, keepOID)
 		}
 		if got := mustGet(t, s.httpURL+"/objects/"+dropOID); !bytes.Equal(got, dropData) {
-			t.Fatalf("dry run = %+v, drop download: got %d bytes, want original %d bytes", res, len(got), len(dropData))
+			t.Fatalf("drop download after dry run: got %d bytes, want original %d bytes", len(got), len(dropData))
 		}
 	})
 
-	step("Prune", func(t *testing.T) {
+	step("Collect", func(t *testing.T) {
 		// The fresh upload sits inside the default 1h grace window; grace=0 disables it.
-		res := prune(t, "?grace=0")
-		if !slices.Equal(res.Unlinked, []string{dropOID}) {
-			t.Fatalf("unlinked = %v, want [%s]", res.Unlinked, dropOID)
+		res := postGC(t, s.httpURL)
+		if !slices.Equal(res.Prune.Unlinked, []string{dropOID}) {
+			t.Fatalf("unlinked = %v, want [%s]", res.Prune.Unlinked, dropOID)
+		}
+		if st := res.Storage; !res.Done || res.Errors != nil || st.SweptShards == 0 || st.SweptXorbs == 0 {
+			t.Fatalf("GC = %+v, storage = %+v, want a finished step reclaiming shards and xorbs", res, *st)
 		}
 		files := listed(t)
 		if files[dropOID] || !files[keepOID] {
 			t.Fatalf("/internal/objects lists drop=%v keep=%v, want false/true", files[dropOID], files[keepOID])
 		}
+		assertGCNotFound(t, s.httpURL+"/objects/"+dropOID)
 		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
-			t.Fatalf("keep resolve after prune: got %d bytes, want %d", len(got), len(keepData))
-		}
-	})
-
-	step("Sweep", func(t *testing.T) {
-		res := postSweep(t, s.httpURL)
-		if !res.Done || res.SweptShards == 0 || res.SweptXorbs == 0 {
-			t.Fatalf("sweep = %+v, want a finished sweep reclaiming shards and xorbs", res)
-		}
-		if got := mustGet(t, s.httpURL+"/gc-org/keep/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
-			t.Fatalf("keep resolve after sweep: got %d bytes, want %d", len(got), len(keepData))
+			t.Fatalf("keep resolve after GC: got %d bytes, want %d", len(got), len(keepData))
 		}
 	})
 
 	step("Idempotent", func(t *testing.T) {
-		res := prune(t, "?grace=0")
-		if len(res.Unlinked) != 0 {
-			t.Fatalf("second prune = %+v, want nothing unlinked", res)
-		}
-		if sweep := postSweep(t, s.httpURL); sweep.SweptShards != 0 || sweep.SweptXorbs != 0 {
-			t.Fatalf("second sweep = %+v, want nothing swept", sweep)
+		res := postGC(t, s.httpURL)
+		if len(res.Prune.Unlinked) != 0 || res.Storage.SweptShards != 0 || res.Storage.SweptXorbs != 0 || !res.Done || res.Errors != nil {
+			t.Fatalf("second GC = %+v, prune = %+v, storage = %+v, want a finished step unlinking and sweeping nothing", res, *res.Prune, *res.Storage)
 		}
 	})
 
-	step("LegacyRouteGone", func(t *testing.T) {
-		resp, err := http.Post(s.httpURL+"/internal/gc", "application/json", nil)
-		if err != nil {
-			t.Fatalf("POST legacy GC: %v", err)
+	step("SplitRoutesGone", func(t *testing.T) {
+		for _, route := range []string{"/internal/gc/prune", "/internal/gc/sweep"} {
+			resp, err := http.Post(s.httpURL+route, "application/json", nil)
+			if err != nil {
+				t.Fatalf("POST %s: %v", route, err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatalf("read %s body: %v", route, err)
+			}
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("POST %s status = %d, want 404 (body %q)", route, resp.StatusCode, body)
+			}
 		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read legacy GC body: %v", err)
-		}
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("legacy GC status = %d, want 404 (body %q)", resp.StatusCode, body)
+		if res := postGC(t, s.httpURL, "dry_run=true"); !res.Done {
+			t.Fatalf("POST /internal/gc = %+v, want a finished step", res)
 		}
 	})
 }
 
 // TestGCGitObjects force-pushes main back two commits, leaving them, their LFS pointer and a 128 KiB blob unreachable, then drives
-// POST /internal/gc/prune over the assembled chain: the dry run reports exactly those objects and bytes without touching storage,
-// the live prune removes them and unlinks the orphaned pointer's LFS object for the sweep. The expected objects come from the
+// POST /internal/gc over the assembled chain: the dry run reports exactly those objects and bytes without touching storage,
+// the live step removes them, unlinks the orphaned pointer's LFS object and reclaims its data. The expected objects come from the
 // clone's own object graph sized by native git, never from the server.
 func TestGCGitObjects(t *testing.T) {
 	const repoID = "gc-org/git-objects"
@@ -738,8 +749,9 @@ func TestGCGitObjects(t *testing.T) {
 		assertGCObjects(t, s.httpURL, keepObject, dropObject)
 	})
 
-	requirePrune := func(t *testing.T, label string, res gcPruneResult, dryRun bool) {
+	requirePrune := func(t *testing.T, label string, got gcResult, dryRun bool) {
 		t.Helper()
+		res := got.Prune
 		// A preview measures no disk saving; the run must shrink objects/ by at least the 128 KiB orphan blob's worth.
 		reclaimedOK := res.ReclaimedBytes == 0
 		if !dryRun {
@@ -748,14 +760,17 @@ func TestGCGitObjects(t *testing.T) {
 		if res.DryRun != dryRun || res.Repositories != 1 || res.LiveObjects != 1 || res.SkippedInGrace != 0 || len(res.Failed) != 0 ||
 			res.DeletedGitObjects != wantDeleted || res.DeletedGitBytes != wantBytes || !reclaimedOK || !slices.Equal(res.Unlinked, []string{dropOID}) {
 			t.Fatalf("%s = %+v, want dry_run=%t, 1 repository, 1 live object, %d Git objects (%d bytes) deleted, at least 100 KiB reclaimed unless dry run (then 0), [%s] unlinked, nothing failed or skipped",
-				label, res, dryRun, wantDeleted, wantBytes, dropOID)
+				label, *res, dryRun, wantDeleted, wantBytes, dropOID)
+		}
+		if !got.Done || got.Errors != nil || got.Storage.DryRun != dryRun {
+			t.Fatalf("%s: GC = %+v, storage = %+v, want a finished step without errors, dry_run=%t", label, got, *got.Storage, dryRun)
 		}
 	}
 
 	step("DryRun", func(t *testing.T) {
 		before := snapshotRepository(t, repos, repoPath)
-		first := postPrune(t, s.httpURL, "?dry_run=true&grace=0")
-		second := postPrune(t, s.httpURL, "?dry_run=true&grace=0")
+		first := postGC(t, s.httpURL, "dry_run=true")
+		second := postGC(t, s.httpURL, "dry_run=true")
 		requirePrune(t, "dry run", first, true)
 		requirePrune(t, "repeated dry run", second, true)
 		if !reflect.DeepEqual(first, second) {
@@ -775,18 +790,25 @@ func TestGCGitObjects(t *testing.T) {
 		}
 	})
 
-	step("Prune", func(t *testing.T) {
-		res := postPrune(t, s.httpURL, "?grace=0")
-		requirePrune(t, "prune", res, false)
+	step("Collect", func(t *testing.T) {
+		res := postGC(t, s.httpURL)
+		requirePrune(t, "GC", res, false)
+		if st := res.Storage; st.SweptShards <= 0 || st.SweptXorbs <= 0 || st.ReclaimedBytes <= 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
+			t.Fatalf("storage = %+v, want shards, xorbs and bytes reclaimed, nothing remaining", *st)
+		}
 		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {
-			t.Fatalf("server stores %v after prune, want exactly what main reaches %v", stored, kept)
+			t.Fatalf("server stores %v after GC, want exactly what main reaches %v", stored, kept)
 		}
 		if loose, packs := gitObjectFiles(t, repos, repoPath); loose != 0 || packs != 1 {
-			t.Fatalf("objects/ holds %d loose objects and %d packs after prune, want one pack", loose, packs)
+			t.Fatalf("objects/ holds %d loose objects and %d packs after GC, want one pack", loose, packs)
 		}
 		assertGCObjects(t, s.httpURL, keepObject)
+		assertGCNotFound(t, s.httpURL+"/objects/"+dropOID)
+		if got := mustGet(t, s.httpURL+"/objects/"+keepOID); !bytes.Equal(got, keepData) {
+			t.Fatalf("retained object after GC: got %d bytes, want %d", len(got), len(keepData))
+		}
 		if got := mustGet(t, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, keepData) {
-			t.Fatalf("main resolve after prune: got %d bytes, want %d", len(got), len(keepData))
+			t.Fatalf("main resolve after GC: got %d bytes, want %d", len(got), len(keepData))
 		}
 	})
 
@@ -803,24 +825,16 @@ func TestGCGitObjects(t *testing.T) {
 		}
 	})
 
-	step("Sweep", func(t *testing.T) {
-		res := postSweep(t, s.httpURL)
-		if !res.Done || res.SweptShards <= 0 || res.SweptXorbs <= 0 || res.ReclaimedBytes <= 0 || res.RemainingShards != 0 || res.RemainingXorbs != 0 {
-			t.Fatalf("sweep = %+v, want done with shards, xorbs and bytes reclaimed, nothing remaining", res)
-		}
-		assertGCNotFound(t, s.httpURL+"/objects/"+dropOID)
-		if got := mustGet(t, s.httpURL+"/objects/"+keepOID); !bytes.Equal(got, keepData) {
-			t.Fatalf("retained object after sweep: got %d bytes, want %d", len(got), len(keepData))
-		}
-		assertGCObjects(t, s.httpURL, keepObject)
-	})
-
 	step("Idempotent", func(t *testing.T) {
-		for _, query := range []string{"?dry_run=true&grace=0", "?grace=0"} {
-			res := postPrune(t, s.httpURL, query)
+		for _, query := range []string{"dry_run=true", "dry_run=false"} {
+			got := postGC(t, s.httpURL, query)
+			res := got.Prune
 			if res.Repositories != 1 || res.LiveObjects != 1 || res.DeletedGitObjects != 0 || res.DeletedGitBytes != 0 || res.ReclaimedBytes != 0 ||
 				len(res.Failed) != 0 || len(res.Unlinked) != 0 || res.SkippedInGrace != 0 {
-				t.Fatalf("prune%s after GC = %+v, want 1 repository, 1 live object and nothing deleted, reclaimed or unlinked", query, res)
+				t.Fatalf("GC?%s prune after GC = %+v, want 1 repository, 1 live object and nothing deleted, reclaimed or unlinked", query, *res)
+			}
+			if st := got.Storage; !got.Done || got.Errors != nil || st.SweptShards != 0 || st.SweptXorbs != 0 || st.ReclaimedBytes != 0 {
+				t.Fatalf("GC?%s after GC = %+v, storage = %+v, want a finished step sweeping nothing", query, got, *st)
 			}
 		}
 		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {

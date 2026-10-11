@@ -100,7 +100,7 @@ func parseConfig() (*config, error) {
 	flag.Int64Var(&cfg.ProxyDownloadCacheSize, "proxy-download-cache-size", cfg.ProxyDownloadCacheSize, "Maximum size in bytes of the download chunk cache used for proxy transfers; 0 or less means unbounded")
 	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 
-	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, GC via POST /internal/gc/prune (Git garbage collection in every repository, then unlinking of unreferenced LFS objects) then /internal/gc/sweep; run GC only while pushes are quiescent); expose only on trusted networks")
+	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, usage report under /internal/usage, GC via POST /internal/gc (Git garbage collection in every repository, unlinking of unreferenced LFS objects, then the budgeted sweep of storage, spool and engine index; repeat until done); run GC only while pushes are quiescent); expose only on trusted networks")
 	flag.Parse()
 
 	if cfg.HostURL == "" {

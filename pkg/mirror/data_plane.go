@@ -21,10 +21,6 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// xetNamespace is the single CAS namespace the data plane operates in,
-// matching the namespace the xet mirror ingests into.
-const xetNamespace = "default"
-
 // resolveTarget locates a file in the upstream hub by its commit-pinned
 // resolve key, along with the object size from the pointer that named it.
 type resolveTarget struct {
@@ -92,29 +88,28 @@ func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string,
 	if res.Entry != nil {
 		return m.serveIngested(w, r, oid)
 	}
-	if _, _, err := res.Stream.WaitMeta(r.Context()); err != nil {
-		return false
-	}
 	size, ok := res.Stream.WaitSize(r.Context())
 	if !ok {
 		return false
 	}
 	if size >= 0 {
-		rs := res.Stream.NewSeekReader(r.Context(), size)
-		if rs == nil {
+		rs, err := res.Stream.NewSeekReader(0, int(size))
+		if err != nil {
 			return m.serveDrained(w, r, oid, t)
 		}
 		defer func() { _ = rs.Close() }()
+		defer context.AfterFunc(r.Context(), func() { _ = rs.Close() })()
 		lfs.SetObjectHeaders(w, oid, size)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeContent(w, r, oid, time.Time{}, rs)
 		return true
 	}
-	rc := res.Stream.NewReader(r.Context(), 0)
-	if rc == nil {
+	rc, err := res.Stream.NewReader(0)
+	if err != nil {
 		return m.serveDrained(w, r, oid, t)
 	}
 	defer func() { _ = rc.Close() }()
+	defer context.AfterFunc(r.Context(), func() { _ = rc.Close() })()
 	// Size unknown until the ingest completes: stream the body; a copy error
 	// after the first write cannot be reported anymore.
 	_, _ = io.Copy(w, rc)
@@ -228,7 +223,7 @@ func (m *Mirror) FileHash(ctx context.Context, oid string) string {
 	if !ok {
 		return ""
 	}
-	fh, err := m.xetStorage.GetFileHashBySHA256(ctx, xetNamespace, digest)
+	fh, err := m.xetStorage.GetFileHashBySHA256(ctx, digest)
 	if err != nil {
 		return ""
 	}
@@ -260,10 +255,10 @@ func (m *Mirror) OpenObject(ctx context.Context, oid string) (io.ReadSeekCloser,
 	if !ok {
 		return nil, 0, os.ErrNotExist
 	}
-	if _, err := m.xetStorage.GetFileHashBySHA256(ctx, xetNamespace, digest); err != nil {
+	if _, err := m.xetStorage.GetFileHashBySHA256(ctx, digest); err != nil {
 		return nil, 0, os.ErrNotExist
 	}
-	rs, err := m.xetStorage.GetReconstructedFile(ctx, xetNamespace, digest)
+	rs, err := m.xetStorage.GetReconstructedFile(ctx, digest)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reconstruct object %s: %w", oid, err)
 	}
@@ -364,28 +359,39 @@ func (m *Mirror) fallbackDownload(ctx context.Context, sourceURL, oid string, si
 	return nil
 }
 
-// ingest runs one ingest through the xet mirror and waits for the entry to
-// land; abandoning the wait on ctx cancel never cancels the ingest itself.
+// ingest resolves the target through the xet mirror and waits for the entry
+// to land; abandoning the wait on ctx cancel never cancels the ingest itself.
 func (m *Mirror) ingest(ctx context.Context, target resolveTarget) error {
 	rawURL, token, err := m.upstreamURL(ctx, target)
 	if err != nil {
 		return err
 	}
-	in, err := m.xetMirror.Ingest(rawURL, token)
+	res, err := m.xetMirror.Resolve(ctx, rawURL, token)
 	if err != nil {
 		return err
 	}
+	if res.Entry != nil {
+		return nil
+	}
 	select {
-	case <-in.Done():
-		_, err := in.Entry()
-		return err
+	case <-res.Stream.Done():
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	// Done carries no outcome: the second Resolve returns the published entry
+	// or, while the failure's retry backoff holds, the terminal error.
+	res, err = m.xetMirror.Resolve(ctx, rawURL, token)
+	if err != nil {
+		return err
+	}
+	if res.Entry == nil {
+		return errors.New("ingest finished without a published entry")
+	}
+	return nil
 }
 
 // escapePath escapes a path the way ServeHTTP sees it, keeping slashes, so
-// Ingest shares tasks and entries with the HTTP resolve path.
+// ingest shares tasks and entries with the HTTP resolve path.
 func escapePath(p string) string {
 	return (&url.URL{Path: p}).EscapedPath()
 }
