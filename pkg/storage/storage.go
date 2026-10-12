@@ -62,18 +62,16 @@ func NewStorage(opts ...Option) (*Storage, error) {
 	h.repositoriesFS = chrootFS(h.fs, "/repositories")
 
 	if h.xetStorage == nil {
-		xs, err := xetlocal.NewStorage(
-			xetlocal.WithBasePath(filepath.Join(h.XETDir(), "storage")),
-		)
+		xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(h.XETDir()))
 		if err != nil {
 			return nil, fmt.Errorf("create xet storage: %w", err)
 		}
 		h.xetStorage = xs
 	}
 
-	for _, dir := range []string{"chunks", "mirror"} {
-		if err := os.MkdirAll(filepath.Join(h.XETDir(), dir), 0755); err != nil {
-			return nil, fmt.Errorf("create xet cache dir: %w", err)
+	for _, dir := range []string{h.XETMirrorDir(), h.XETSpoolDir()} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create xet dir: %w", err)
 		}
 	}
 
@@ -104,7 +102,17 @@ func (s *Storage) XETStorage() xetstorage.Storage {
 	return s.xetStorage
 }
 
-// XETDir is the local xet directory, even when content is stored remotely.
+// XETDir is laid out like xetd's -storage root: content at the top level, spool/ and mirror/.
 func (s *Storage) XETDir() string {
 	return filepath.Join(s.rootDir, "xet")
+}
+
+// XETSpoolDir is the spool of the xet ingest engine.
+func (s *Storage) XETSpoolDir() string {
+	return filepath.Join(s.XETDir(), "spool")
+}
+
+// XETMirrorDir holds the xet engine index and the shared xet client cache.
+func (s *Storage) XETMirrorDir() string {
+	return filepath.Join(s.XETDir(), "mirror")
 }

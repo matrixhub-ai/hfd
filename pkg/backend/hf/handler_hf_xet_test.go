@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,7 +38,7 @@ func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
 	xs := st.XETStorage()
 	m, err := mirror.NewMirror(append([]mirror.Option{
 		mirror.WithXETStorage(xs),
-		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
 		mirror.WithDataDir(st.XETDir()),
 	}, opts...)...)
 	if err != nil {

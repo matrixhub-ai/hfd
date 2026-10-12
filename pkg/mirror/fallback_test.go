@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +67,7 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 	sp := newTestSpool(t, st)
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(xs),
-		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+		xetmirror.WithCacheDir(st.XETMirrorDir()),
 		xetmirror.WithSpool(sp),
 	)
 	if err != nil {
@@ -76,7 +75,7 @@ func TestPrefetchFallsBackToLFSBatch(t *testing.T) {
 	}
 	m, err := NewMirror(
 		WithXETStorage(xs),
-		WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
 		WithXETMirror(engine),
 		WithMirrorSourceFunc(func(ctx context.Context, repoName string) (string, bool, error) {
 			return srv.URL + "/" + repoName, true, nil
