@@ -25,6 +25,7 @@ import (
 	xetlocal "github.com/wzshiming/xet/storage/local"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -60,7 +61,7 @@ func newFixture(t *testing.T) *fixture {
 
 // handler serves the fixture's repositories and xet store with grace disabled unless a request sets it; opts come last.
 func (f *fixture) handler(opts ...Option) *Handler {
-	return NewHandler(append([]Option{WithCollector(gc.NewCollector(f.st.RepositoriesFS(), f.xs)), WithStorage(f.xs), WithGCGrace(-1)}, opts...)...)
+	return NewHandler(append([]Option{WithCollector(gc.NewCollector(f.st.RepositoriesFS(), xetstore.New(f.xs))), WithStorage(f.xs), WithGCGrace(-1)}, opts...)...)
 }
 
 func (f *fixture) put(t *testing.T, seed string) string {
@@ -511,7 +512,7 @@ func TestHandlerUsageSpoolAndMirror(t *testing.T) {
 	if err != nil || xet.Xorbs.Count == 0 || xet.SHA256Index.Count == 0 {
 		t.Fatalf("xet usage = %+v, %v; want stored xorbs and sha256 entries", xet, err)
 	}
-	git, err := gc.NewCollector(f.st.RepositoriesFS(), f.xs).Usage(ctx)
+	git, err := gc.NewCollector(f.st.RepositoriesFS(), xetstore.New(f.xs)).Usage(ctx)
 	if err != nil || git.Objects.Count == 0 {
 		t.Fatalf("repository usage = %+v, %v; want the committed objects", git, err)
 	}
@@ -581,7 +582,7 @@ func TestHandlerUsageStore(t *testing.T) {
 				f.commitPointer(t, "org/a", f.put(t, "usage-h "))
 			}
 			store := &usageStore{Storage: f.xs, err: errors.New("injected xet usage failure")}
-			h := NewHandler(WithCollector(gc.NewCollector(f.st.RepositoriesFS(), store)), WithStorage(store))
+			h := NewHandler(WithCollector(gc.NewCollector(f.st.RepositoriesFS(), xetstore.New(store))), WithStorage(store))
 			rec := do(h, http.MethodGet, "/internal/usage")
 			if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "xet usage: injected xet usage failure") || strings.Contains(rec.Body.String(), `"Repository"`) {
 				t.Errorf("populated=%t: usage %d %q; want 500 with the store error and no partial report", populated, rec.Code, rec.Body)

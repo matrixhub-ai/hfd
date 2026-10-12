@@ -32,12 +32,13 @@ import (
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// gcObject carries the gc.Object fields the test asserts on.
+// gcObject carries the /internal/objects fields the test asserts on.
 type gcObject struct {
 	OID  string `json:"oid"`
 	Size uint64 `json:"size"`
@@ -182,7 +183,7 @@ func TestGCLifecycle(t *testing.T) {
 	// The wiring under test: the internal management API wraps the whole
 	// chain outermost, the way cmd/hfd's internalAPI does.
 	handler = backendinternalapi.NewHandler(
-		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
+		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xetstore.New(xet.xs))),
 		backendinternalapi.WithStorage(xet.xs),
 		backendinternalapi.WithSpool(xet.spool),
 		backendinternalapi.WithMirror(xet.engine),

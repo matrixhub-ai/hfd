@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 	xetlocal "github.com/wzshiming/xet/storage/local"
 
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -91,7 +93,7 @@ func (f *fixture) ageGit(t *testing.T, name string, d time.Duration) {
 }
 
 func (f *fixture) collector() *Collector {
-	return NewCollector(f.st.RepositoriesFS(), f.xs)
+	return NewCollector(f.st.RepositoriesFS(), xetstore.New(f.xs))
 }
 
 func (f *fixture) put(t *testing.T, seed string) string {
@@ -551,7 +553,7 @@ func TestPruneGitGC(t *testing.T) {
 		garbage := f.orphanPointer(t, "org/repo", dead, objectSize)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		c := NewCollector(&cancelOnHEAD{Filesystem: f.st.RepositoriesFS(), cancel: cancel}, f.xs)
+		c := NewCollector(&cancelOnHEAD{Filesystem: f.st.RepositoriesFS(), cancel: cancel}, xetstore.New(f.xs))
 		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
 		if !errors.Is(err, context.Canceled) || res == nil || len(res.Failed) != 0 || len(res.Unlinked) != 0 || res.Repositories != 0 {
 			t.Fatalf("prune = %+v, %v; want context.Canceled with no failed repository and no unlink", res, err)
@@ -576,37 +578,191 @@ func (c *cancelOnHEAD) Stat(name string) (os.FileInfo, error) {
 	return c.Filesystem.Stat(name)
 }
 
-func TestList(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-	c := f.collector()
-	a, b := f.put(t, "list-a "), f.put(t, "list-b ")
-	objects, err := c.List(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	oids := make([]string, 0, len(objects))
-	for _, o := range objects {
-		if o.Size != objectSize {
-			t.Fatalf("object %s: size %d, want %d", o.OID, o.Size, objectSize)
-		}
-		oids = append(oids, o.OID)
-	}
-	slices.Sort(oids)
-	want := []string{a, b}
-	slices.Sort(want)
-	if !slices.Equal(oids, want) {
-		t.Fatalf("list: got %v, want %v", oids, want)
-	}
+// fakeObject is one object a fakeStore holds.
+type fakeObject struct {
+	oid      string
+	storedAt time.Time
 }
 
-func TestParseOIDRejectsInvalid(t *testing.T) {
-	for _, bad := range []string{"zz", strings.Repeat("0", 64)} {
-		if _, err := parseOID(bad); !errors.Is(err, ErrInvalidOID) {
-			t.Fatalf("parseOID %q: got %v, want ErrInvalidOID", bad, err)
+// fakeStore is an LFSStore over fixed objects that records every unlink.
+type fakeStore struct {
+	objects  []fakeObject // in walk order
+	unlinked []string
+	gone     map[string]bool // unlinks of these report the object already absent
+	failOn   string
+	failErr  error
+	walkErr  error
+	entered  chan struct{} // with gate set, Walk signals entered and waits for gate to close
+	gate     chan struct{}
+}
+
+func (s *fakeStore) Walk(_ context.Context, fn func(string, time.Time) error) error {
+	if s.gate != nil {
+		s.entered <- struct{}{}
+		<-s.gate
+	}
+	if s.walkErr != nil {
+		return s.walkErr
+	}
+	for _, o := range s.objects {
+		if err := fn(o.oid, o.storedAt); err != nil {
+			return err
 		}
 	}
-	if _, err := parseOID(strings.Repeat("1", 64)); err != nil {
-		t.Fatalf("parseOID valid digest: %v", err)
+	return nil
+}
+
+func (s *fakeStore) Unlink(_ context.Context, oid string) (bool, error) {
+	s.unlinked = append(s.unlinked, oid)
+	if oid == s.failOn {
+		return false, s.failErr
 	}
+	return !s.gone[oid], nil
+}
+
+// newRepos returns a repositories filesystem of its own, holding no repository yet.
+func newRepos(t *testing.T) billy.Filesystem {
+	t.Helper()
+	st, err := storage.NewStorage(storage.WithRootDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	return st.RepositoriesFS()
+}
+
+// within receives from ch, failing the test after 5s so a stuck run cannot hang it.
+func within[T any](t *testing.T, ch <-chan T, what string) (v T) {
+	t.Helper()
+	select {
+	case v = <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	return v
+}
+
+// TestPruneStore pins the prune pass against the LFSStore port alone, over repositories naming no OID.
+func TestPruneStore(t *testing.T) {
+	ctx := context.Background()
+	old, recent := time.Now().Add(-2*time.Hour), time.Now().Add(-30*time.Minute)
+	hex64 := func(digit string) string { return strings.Repeat(digit, 64) }
+	// storeOf holds every oid, stored two hours ago.
+	storeOf := func(oids ...string) *fakeStore {
+		s := &fakeStore{}
+		for _, oid := range oids {
+			s.objects = append(s.objects, fakeObject{oid, old})
+		}
+		return s
+	}
+	t.Run("UnlinksSorted", func(t *testing.T) {
+		store := storeOf(hex64("c"), hex64("a"), hex64("b"))
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		want := []string{hex64("a"), hex64("b"), hex64("c")}
+		if err != nil || !slices.Equal(res.Unlinked, want) || !slices.Equal(store.unlinked, want) || res.SkippedInGrace != 0 {
+			t.Fatalf("prune = %+v, %v; unlinked %v; want %v unlinked in that order", res, err, store.unlinked, want)
+		}
+	})
+	t.Run("PartialFailure", func(t *testing.T) {
+		injected := errors.New("injected unlink failure")
+		store := storeOf(hex64("3"), hex64("1"), hex64("2"))
+		store.failOn, store.failErr = hex64("2"), injected
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		if !errors.Is(err, injected) || !strings.Contains(err.Error(), "unlink "+hex64("2")) {
+			t.Fatalf("prune error = %v; want the injected failure naming %s", err, hex64("2"))
+		}
+		if res == nil || !slices.Equal(res.Unlinked, []string{hex64("1")}) || len(store.unlinked) != 2 {
+			t.Fatalf("prune = %+v; unlinked %v; want the first unlinked and the third never tried", res, store.unlinked)
+		}
+	})
+	t.Run("DryRunUnlinksNothing", func(t *testing.T) {
+		store := storeOf(hex64("e"), hex64("d"))
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
+		if err != nil || !res.DryRun || !slices.Equal(res.Unlinked, []string{hex64("d"), hex64("e")}) || len(store.unlinked) != 0 {
+			t.Fatalf("dry run = %+v, %v; unlinked %v; want both listed and none unlinked", res, err, store.unlinked)
+		}
+	})
+	t.Run("ZeroStoredAtInGrace", func(t *testing.T) {
+		for _, tc := range []struct {
+			grace   time.Duration
+			skipped int
+			want    []string
+		}{{time.Hour, 1, []string{}}, {-1, 0, []string{hex64("f")}}} {
+			store := &fakeStore{objects: []fakeObject{{hex64("f"), time.Time{}}}}
+			res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: tc.grace})
+			if err != nil || res.SkippedInGrace != tc.skipped || !slices.Equal(res.Unlinked, tc.want) || !slices.Equal(store.unlinked, tc.want) {
+				t.Fatalf("grace %v: prune = %+v, %v; unlinked %v; want %d in grace and %v unlinked", tc.grace, res, err, store.unlinked, tc.skipped, tc.want)
+			}
+		}
+	})
+	t.Run("Busy", func(t *testing.T) {
+		store := storeOf(hex64("8"))
+		store.entered, store.gate = make(chan struct{}, 1), make(chan struct{})
+		release := sync.OnceFunc(func() { close(store.gate) })
+		t.Cleanup(release)
+		c := NewCollector(newRepos(t), store)
+		type outcome struct {
+			res *PruneResult
+			err error
+		}
+		prune := func() <-chan outcome {
+			done := make(chan outcome, 1)
+			go func() {
+				res, err := c.Prune(ctx, PruneOptions{Grace: -1})
+				done <- outcome{res, err}
+			}()
+			return done
+		}
+		first := prune()
+		within(t, store.entered, "the first prune to walk the store")
+		if got := within(t, prune(), "the concurrent prune"); !errors.Is(got.err, ErrBusy) || got.res != nil {
+			t.Fatalf("concurrent prune = %+v, %v; want nil, ErrBusy", got.res, got.err)
+		}
+		release()
+		if got := within(t, first, "the first prune"); got.err != nil || !slices.Equal(got.res.Unlinked, []string{hex64("8")}) {
+			t.Fatalf("first prune = %+v, %v; want %s unlinked", got.res, got.err, hex64("8"))
+		}
+	})
+	t.Run("DefaultGrace", func(t *testing.T) {
+		if DefaultGrace != xetstorage.DefaultSweepGrace {
+			t.Fatalf("DefaultGrace = %v, want xet's sweep default %v", DefaultGrace, xetstorage.DefaultSweepGrace)
+		}
+		store := &fakeStore{objects: []fakeObject{{hex64("4"), recent}, {hex64("5"), old}}}
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{})
+		if err != nil || res.SkippedInGrace != 1 || !slices.Equal(res.Unlinked, []string{hex64("5")}) || !slices.Equal(store.unlinked, []string{hex64("5")}) {
+			t.Fatalf("prune with zero grace = %+v, %v; unlinked %v; want the 30-minute-old object in grace and the two-hour-old one unlinked", res, err, store.unlinked)
+		}
+	})
+	t.Run("NilStore", func(t *testing.T) {
+		repos := newRepos(t)
+		if _, err := repository.Init(ctx, repos, "/org/repo.git", "main"); err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		if res, err := NewCollector(repos, storeOf()).Prune(ctx, PruneOptions{Grace: -1, DryRun: true}); err != nil || res.Repositories != 1 {
+			t.Fatalf("prune with a store = %+v, %v; want the repository walked", res, err)
+		}
+		c := NewCollector(repos, nil)
+		for _, dry := range []bool{false, true} {
+			res, err := c.Prune(ctx, PruneOptions{Grace: -1, DryRun: dry})
+			if err == nil || res == nil || res.Repositories != 0 || len(res.Failed) != 0 {
+				t.Fatalf("prune(dry_run=%t) without a store = %+v, %v; want an error before any Git GC", dry, res, err)
+			}
+		}
+	})
+	t.Run("WalkError", func(t *testing.T) {
+		injected := errors.New("injected walk failure")
+		store := storeOf(hex64("9"))
+		store.walkErr = injected
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		if !errors.Is(err, injected) || !strings.HasPrefix(err.Error(), "walk objects:") || res == nil || len(res.Unlinked) != 0 || len(store.unlinked) != 0 {
+			t.Fatalf("prune = %+v, %v; unlinked %v; want the walk error and nothing unlinked", res, err, store.unlinked)
+		}
+	})
+	t.Run("VanishedNotReported", func(t *testing.T) {
+		store := storeOf(hex64("6"), hex64("7"))
+		store.gone = map[string]bool{hex64("6"): true}
+		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		if err != nil || !slices.Equal(store.unlinked, []string{hex64("6"), hex64("7")}) || !slices.Equal(res.Unlinked, []string{hex64("7")}) {
+			t.Fatalf("prune = %+v, %v; unlinked %v; want both tried and only %s reported", res, err, store.unlinked, hex64("7"))
+		}
+	})
 }
