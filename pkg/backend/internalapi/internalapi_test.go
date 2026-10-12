@@ -20,6 +20,7 @@ import (
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -45,7 +46,7 @@ func newRepos(t *testing.T) billy.Filesystem {
 func newHandler(t *testing.T, repos billy.Filesystem, store xetstorage.Storage) *Handler {
 	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
-	return NewHandler(WithCollector(gc.NewCollector(repos, store)), WithStorage(store), WithGCGrace(-1), WithNext(next))
+	return NewHandler(WithCollector(gc.NewCollector(repos, xetstore.New(store))), WithStorage(store), WithGCGrace(-1), WithNext(next))
 }
 
 // orphanPointer creates name with a live pointer on main and an orphaned pointer commit of four objects: commit, tree, pointer blob and 64 KiB filler.
@@ -142,6 +143,41 @@ func TestHandler(t *testing.T) {
 	}
 }
 
+// TestHandlerListObjects pins that GET /internal/objects lists the stored objects that still have a sha256 index entry.
+func TestHandlerListObjects(t *testing.T) {
+	f := newFixture(t)
+	a, b := f.put(t, "list-a "), f.put(t, "list-b ")
+	h := f.handler()
+	list := func() []string {
+		t.Helper()
+		rec := do(h, http.MethodGet, "/internal/objects")
+		var objects []object
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || json.Unmarshal(rec.Body.Bytes(), &objects) != nil {
+			t.Fatalf("list: status %d, content-type %q, body %s; want 200 JSON", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+		}
+		oids := []string{}
+		for _, o := range objects {
+			if o.Size != objectSize {
+				t.Fatalf("list body %s: object %s has size %d, want %d", rec.Body, o.OID, o.Size, objectSize)
+			}
+			oids = append(oids, o.OID)
+		}
+		slices.Sort(oids)
+		return oids
+	}
+	want := []string{a, b}
+	slices.Sort(want)
+	if got := list(); !slices.Equal(got, want) {
+		t.Fatalf("list = %v, want %v", got, want)
+	}
+	if removed, err := f.xs.DeleteSHA256IndexEntry(context.Background(), a); err != nil || !removed {
+		t.Fatalf("delete the sha256 index entry of %s = %t, %v", a, removed, err)
+	}
+	if got := list(); !slices.Equal(got, []string{b}) {
+		t.Fatalf("list after unindexing %s = %v, want only %s", a, got, b)
+	}
+}
+
 // blockingStore parks the first xorb walk until released and counts the shard walks; prune walks shards, only the storage sweep walks xorbs.
 type blockingStore struct {
 	xetstorage.Storage
@@ -221,6 +257,57 @@ func TestHandlerGCStorageBusyKeepsPrune(t *testing.T) {
 	}
 }
 
+// parkingStore parks the first sha256 index walk until released and lets later walks through, so a request that wrongly
+// proceeds past the busy collector fails fast instead of deadlocking behind the parked prune.
+type parkingStore struct {
+	xetstorage.Storage
+	parked         atomic.Bool
+	enter, release chan struct{}
+	shardWalks     atomic.Int32
+}
+
+func (p *parkingStore) WalkShards(ctx context.Context, fn func(string, int64, time.Time) error) error {
+	p.shardWalks.Add(1)
+	return p.Storage.WalkShards(ctx, fn)
+}
+
+func (p *parkingStore) WalkSHA256Index(ctx context.Context, fn func(string, string) error) error {
+	if p.parked.CompareAndSwap(false, true) {
+		p.enter <- struct{}{}
+		<-p.release
+	}
+	return p.Storage.WalkSHA256Index(ctx, fn)
+}
+
+// TestHandlerCollectorBusy pins that a prune running on the collector outside the handler's lock turns the request away with 409
+// before it walks the store or sweeps.
+func TestHandlerCollectorBusy(t *testing.T) {
+	store := &parkingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
+	h := newHandler(t, newRepos(t), store)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(release)
+	direct := make(chan error, 1)
+	go func() {
+		_, err := h.collector.Prune(context.Background(), gc.PruneOptions{Grace: -1})
+		direct <- err
+	}()
+	<-store.enter
+	walks := store.shardWalks.Load()
+
+	if rec := do(h, http.MethodPost, "/internal/gc"); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "GC already running") {
+		t.Errorf("GC during a direct prune: got %d %q, want 409", rec.Code, rec.Body)
+	}
+	if got := store.shardWalks.Load(); got != walks {
+		t.Errorf("rejected step walked the shards %d more times, want none", got-walks)
+	}
+
+	release()
+	if err := <-direct; err != nil {
+		t.Fatalf("direct prune: %v", err)
+	}
+}
+
 // partialStore accepts the first dead entry's unlink and fails the second.
 type partialStore struct {
 	xetstorage.Storage
@@ -291,7 +378,7 @@ func TestHandlerUsage(t *testing.T) {
 		ChunkIndex:  xetstorage.ObjectUsage{Count: 4, Bytes: 40},
 		SHA256Index: xetstorage.ObjectUsage{Count: 5, Bytes: 50},
 	}}
-	collector := gc.NewCollector(repos, store)
+	collector := gc.NewCollector(repos, xetstore.New(store))
 	gitUsage, err := collector.Usage(ctx)
 	if err != nil || gitUsage.Other.Count == 0 {
 		t.Fatalf("fixture usage = %+v, %v; want git metadata", gitUsage, err)
@@ -347,7 +434,7 @@ func TestHandlerUsage(t *testing.T) {
 		mid, cancelMid := context.WithCancel(ctx)
 		t.Cleanup(cancelMid)
 		store.onUsage = cancelMid
-		h := NewHandler(WithCollector(gc.NewCollector(repos, store)), WithStorage(store))
+		h := NewHandler(WithCollector(gc.NewCollector(repos, xetstore.New(store))), WithStorage(store))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(mid))
 		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), context.Canceled.Error()) || strings.Contains(rec.Body.String(), `"Xet"`) {

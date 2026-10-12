@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/util"
 
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -201,7 +202,7 @@ func TestUsage(t *testing.T) {
 		fixture.commitPointer(t, "org/a", oid)
 		injected := errors.New("injected readdir failure")
 		for _, failing := range []string{"/", "/org"} {
-			collector := NewCollector(readDirFailure{Filesystem: fixture.st.RepositoriesFS(), path: failing, err: injected}, fixture.xs)
+			collector := NewCollector(readDirFailure{Filesystem: fixture.st.RepositoriesFS(), path: failing, err: injected}, xetstore.New(fixture.xs))
 			if got, err := collector.Usage(ctx); !errors.Is(err, injected) || got != (repository.Usage{}) {
 				t.Errorf("ReadDir %s failing: Usage = %+v, %v; want zero, injected error", failing, got, err)
 			}

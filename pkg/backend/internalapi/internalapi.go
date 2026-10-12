@@ -2,6 +2,7 @@
 package internalapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,14 +46,14 @@ type Handler struct {
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
 
-// WithCollector sets the collector that lists objects, reports repository usage and runs the prune pass.
+// WithCollector sets the collector that reports repository usage and runs the prune pass.
 func WithCollector(c *gc.Collector) Option {
 	return func(h *Handler) {
 		h.collector = c
 	}
 }
 
-// WithStorage sets the xet store the usage report and the storage sweep read.
+// WithStorage sets the xet store the object listing, the usage report and the storage sweep read.
 func WithStorage(st xetstorage.Storage) Option {
 	return func(h *Handler) {
 		h.store = st
@@ -177,8 +178,39 @@ func parseGrace(q url.Values, def time.Duration) (time.Duration, error) {
 	return grace, nil
 }
 
+// object is one stored LFS object resolvable by OID.
+type object struct {
+	OID        string `json:"oid"`
+	Size       uint64 `json:"size"`
+	UniqueSize uint64 `json:"unique_size"`
+	SharedSize uint64 `json:"shared_size"`
+}
+
+// listObjects lists the stored objects hfd can resolve by OID, largest first.
+func listObjects(ctx context.Context, st xetstorage.Storage) ([]object, error) {
+	indexed := map[string]struct{}{}
+	err := st.WalkSHA256Index(ctx, func(sha256Hex, _ string) error {
+		indexed[sha256Hex] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk sha256 index: %w", err)
+	}
+	entries, err := xetstorage.ListFiles(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	objects := []object{}
+	for _, e := range entries {
+		if _, ok := indexed[e.SHA256]; ok {
+			objects = append(objects, object{OID: e.SHA256, Size: e.OriginalSize, UniqueSize: e.UniqueSize, SharedSize: e.SharedSize})
+		}
+	}
+	return objects, nil
+}
+
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
-	objects, err := h.collector.List(r.Context())
+	objects, err := listObjects(r.Context(), h.store)
 	if err != nil {
 		http.Error(w, "List failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -273,7 +305,7 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 
 	// A failed prune does not stop the sweep: it only unlinks, and the sweep reclaims nothing an index entry still anchors.
 	pr, err := h.collector.Prune(ctx, gc.PruneOptions{Grace: opts.grace, DryRun: opts.dryRun})
-	if errors.Is(err, xetstorage.ErrGCBusy) {
+	if errors.Is(err, gc.ErrBusy) {
 		http.Error(w, "GC already running", http.StatusConflict)
 		return
 	}

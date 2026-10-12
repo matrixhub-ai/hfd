@@ -33,6 +33,7 @@ import (
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
+	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -310,7 +311,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	handler = xet.casServer(handler)
 	if cfg.internalAPI {
 		handler = backendinternalapi.NewHandler(
-			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xet.xs)),
+			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xetstore.New(xet.xs))),
 			backendinternalapi.WithStorage(xet.xs),
 			backendinternalapi.WithSpool(xet.spool),
 			backendinternalapi.WithMirror(xet.engine),
