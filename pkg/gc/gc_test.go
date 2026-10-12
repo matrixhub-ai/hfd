@@ -92,8 +92,8 @@ func (f *fixture) ageGit(t *testing.T, name string, d time.Duration) {
 	ageFiles(t, filepath.Join(f.root, "repositories", filepath.FromSlash(repository.ResolvePath(name)), "objects"), d)
 }
 
-func (f *fixture) collector() *Collector {
-	return NewCollector(f.st.RepositoriesFS(), xetstore.New(f.xs))
+func (f *fixture) gc() *GC {
+	return NewGC(f.st.RepositoriesFS(), xetstore.New(f.xs))
 }
 
 func (f *fixture) put(t *testing.T, seed string) string {
@@ -272,7 +272,7 @@ func TestPrune(t *testing.T) {
 	ctx := context.Background()
 	t.Run("LeavesDataForSweep", func(t *testing.T) {
 		f := newFixture(t)
-		c := f.collector()
+		c := f.gc()
 		live, dead := f.put(t, "live-j "), f.put(t, "dead-j ")
 		f.commitPointer(t, "org/repo", live)
 		shards, xorbs := f.counts(t)
@@ -304,7 +304,7 @@ func TestPrune(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-a "), f.put(t, "dead-a ")
 		f.commitPointer(t, "org/repo", live)
-		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
+		res, err := f.gc().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -319,7 +319,7 @@ func TestPrune(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-b "), f.put(t, "dead-b ")
 		f.commitPointer(t, "org/repo", live)
-		res, err := f.collector().Prune(ctx, PruneOptions{})
+		res, err := f.gc().Prune(ctx, PruneOptions{})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestPrune(t *testing.T) {
 		live, dead := f.put(t, "live-f "), f.put(t, "dead-f ")
 		f.commitPointer(t, "org/repo", live)
 		f.age(t, 2*time.Hour)
-		res, err := f.collector().Prune(ctx, PruneOptions{Grace: time.Hour})
+		res, err := f.gc().Prune(ctx, PruneOptions{Grace: time.Hour})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -348,7 +348,7 @@ func TestPrune(t *testing.T) {
 		live, dead := f.put(t, "live-c "), f.put(t, "dead-c ")
 		f.commitPointer(t, "org/repo", live)
 		shards, xorbs := f.counts(t)
-		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
+		res, err := f.gc().Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -369,7 +369,7 @@ func TestPrune(t *testing.T) {
 			oids[i] = f.put(t, fmt.Sprintf("live-%d ", i))
 			f.commitPointer(t, name, oids[i])
 		}
-		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
+		res, err := f.gc().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -392,7 +392,7 @@ func TestPrune(t *testing.T) {
 				t.Fatalf("write %s: %v", file, err)
 			}
 		}
-		if _, err := f.collector().Prune(ctx, PruneOptions{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/broken.git") {
+		if _, err := f.gc().Prune(ctx, PruneOptions{Grace: -1}); err == nil || !strings.Contains(err.Error(), "/org/broken.git") {
 			t.Fatalf("prune: expected error naming the broken repository, got %v", err)
 		}
 		if !f.stored(t, dead) {
@@ -401,7 +401,7 @@ func TestPrune(t *testing.T) {
 	})
 	t.Run("MissingRoot", func(t *testing.T) {
 		f := newFixture(t)
-		res, err := f.collector().Prune(ctx, PruneOptions{Grace: -1})
+		res, err := f.gc().Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
@@ -417,7 +417,7 @@ func TestPruneGitGC(t *testing.T) {
 	// A dry run reports the objects, bytes and unlink the following run then performs, without touching Git or xet files.
 	t.Run("PreviewMatchesRun", func(t *testing.T) {
 		f := newFixture(t)
-		c := f.collector()
+		c := f.gc()
 		live, dead := f.put(t, "live-g "), f.put(t, "dead-g ")
 		f.commitPointer(t, "org/repo", live)
 		garbage := f.orphanPointer(t, "org/repo", dead, objectSize)
@@ -456,7 +456,7 @@ func TestPruneGitGC(t *testing.T) {
 	// One grace window shields fresh Git garbage and fresh xet data alike, in the preview and in the run.
 	t.Run("Grace", func(t *testing.T) {
 		f := newFixture(t)
-		c := f.collector()
+		c := f.gc()
 		live, oldDead, oldLoose := f.put(t, "live-k "), f.put(t, "dead-k "), f.put(t, "loose-k ")
 		f.commitPointer(t, "org/repo", live)
 		old := f.orphanPointer(t, "org/repo", oldDead, objectSize)
@@ -487,7 +487,7 @@ func TestPruneGitGC(t *testing.T) {
 	// A repository whose GC fails is reported and keeps every pointer blob live, while the others are still collected and unlinked.
 	t.Run("FailedRepository", func(t *testing.T) {
 		f := newFixture(t)
-		c := f.collector()
+		c := f.gc()
 		live, brokenDead, dead, unrelated := f.put(t, "live-n "), f.put(t, "broken-n "), f.put(t, "dead-n "), f.put(t, "unrelated-n ")
 		f.commitPointer(t, "org/repo", live)
 		garbage := f.orphanPointer(t, "org/repo", dead, objectSize)
@@ -519,7 +519,7 @@ func TestPruneGitGC(t *testing.T) {
 	// Preview-deleted pointer blobs are skipped by Git hash, so an OID another blob or repository still names stays live.
 	t.Run("SharedOIDSurvivesPreviewDeletion", func(t *testing.T) {
 		f := newFixture(t)
-		c := f.collector()
+		c := f.gc()
 		shared, cross, dead := f.put(t, "shared-m "), f.put(t, "cross-m "), f.put(t, "dead-m ")
 		f.commitPointer(t, "org/a", shared)
 		f.commitPointer(t, "org/b", cross)
@@ -553,7 +553,7 @@ func TestPruneGitGC(t *testing.T) {
 		garbage := f.orphanPointer(t, "org/repo", dead, objectSize)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		c := NewCollector(&cancelOnHEAD{Filesystem: f.st.RepositoriesFS(), cancel: cancel}, xetstore.New(f.xs))
+		c := NewGC(&cancelOnHEAD{Filesystem: f.st.RepositoriesFS(), cancel: cancel}, xetstore.New(f.xs))
 		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
 		if !errors.Is(err, context.Canceled) || res == nil || len(res.Failed) != 0 || len(res.Unlinked) != 0 || res.Repositories != 0 {
 			t.Fatalf("prune = %+v, %v; want context.Canceled with no failed repository and no unlink", res, err)
@@ -656,7 +656,7 @@ func TestPruneStore(t *testing.T) {
 	}
 	t.Run("UnlinksSorted", func(t *testing.T) {
 		store := storeOf(hex64("c"), hex64("a"), hex64("b"))
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
 		want := []string{hex64("a"), hex64("b"), hex64("c")}
 		if err != nil || !slices.Equal(res.Unlinked, want) || !slices.Equal(store.unlinked, want) || res.SkippedInGrace != 0 {
 			t.Fatalf("prune = %+v, %v; unlinked %v; want %v unlinked in that order", res, err, store.unlinked, want)
@@ -666,7 +666,7 @@ func TestPruneStore(t *testing.T) {
 		injected := errors.New("injected unlink failure")
 		store := storeOf(hex64("3"), hex64("1"), hex64("2"))
 		store.failOn, store.failErr = hex64("2"), injected
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
 		if !errors.Is(err, injected) || !strings.Contains(err.Error(), "unlink "+hex64("2")) {
 			t.Fatalf("prune error = %v; want the injected failure naming %s", err, hex64("2"))
 		}
@@ -676,7 +676,7 @@ func TestPruneStore(t *testing.T) {
 	})
 	t.Run("DryRunUnlinksNothing", func(t *testing.T) {
 		store := storeOf(hex64("e"), hex64("d"))
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1, DryRun: true})
 		if err != nil || !res.DryRun || !slices.Equal(res.Unlinked, []string{hex64("d"), hex64("e")}) || len(store.unlinked) != 0 {
 			t.Fatalf("dry run = %+v, %v; unlinked %v; want both listed and none unlinked", res, err, store.unlinked)
 		}
@@ -688,7 +688,7 @@ func TestPruneStore(t *testing.T) {
 			want    []string
 		}{{time.Hour, 1, []string{}}, {-1, 0, []string{hex64("f")}}} {
 			store := &fakeStore{objects: []fakeObject{{hex64("f"), time.Time{}}}}
-			res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: tc.grace})
+			res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: tc.grace})
 			if err != nil || res.SkippedInGrace != tc.skipped || !slices.Equal(res.Unlinked, tc.want) || !slices.Equal(store.unlinked, tc.want) {
 				t.Fatalf("grace %v: prune = %+v, %v; unlinked %v; want %d in grace and %v unlinked", tc.grace, res, err, store.unlinked, tc.skipped, tc.want)
 			}
@@ -699,7 +699,7 @@ func TestPruneStore(t *testing.T) {
 		store.entered, store.gate = make(chan struct{}, 1), make(chan struct{})
 		release := sync.OnceFunc(func() { close(store.gate) })
 		t.Cleanup(release)
-		c := NewCollector(newRepos(t), store)
+		c := NewGC(newRepos(t), store)
 		type outcome struct {
 			res *PruneResult
 			err error
@@ -727,7 +727,7 @@ func TestPruneStore(t *testing.T) {
 			t.Fatalf("DefaultGrace = %v, want xet's sweep default %v", DefaultGrace, xetstorage.DefaultSweepGrace)
 		}
 		store := &fakeStore{objects: []fakeObject{{hex64("4"), recent}, {hex64("5"), old}}}
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{})
 		if err != nil || res.SkippedInGrace != 1 || !slices.Equal(res.Unlinked, []string{hex64("5")}) || !slices.Equal(store.unlinked, []string{hex64("5")}) {
 			t.Fatalf("prune with zero grace = %+v, %v; unlinked %v; want the 30-minute-old object in grace and the two-hour-old one unlinked", res, err, store.unlinked)
 		}
@@ -737,10 +737,10 @@ func TestPruneStore(t *testing.T) {
 		if _, err := repository.Init(ctx, repos, "/org/repo.git", "main"); err != nil {
 			t.Fatalf("init: %v", err)
 		}
-		if res, err := NewCollector(repos, storeOf()).Prune(ctx, PruneOptions{Grace: -1, DryRun: true}); err != nil || res.Repositories != 1 {
+		if res, err := NewGC(repos, storeOf()).Prune(ctx, PruneOptions{Grace: -1, DryRun: true}); err != nil || res.Repositories != 1 {
 			t.Fatalf("prune with a store = %+v, %v; want the repository walked", res, err)
 		}
-		c := NewCollector(repos, nil)
+		c := NewGC(repos, nil)
 		for _, dry := range []bool{false, true} {
 			res, err := c.Prune(ctx, PruneOptions{Grace: -1, DryRun: dry})
 			if err == nil || res == nil || res.Repositories != 0 || len(res.Failed) != 0 {
@@ -752,7 +752,7 @@ func TestPruneStore(t *testing.T) {
 		injected := errors.New("injected walk failure")
 		store := storeOf(hex64("9"))
 		store.walkErr = injected
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
 		if !errors.Is(err, injected) || !strings.HasPrefix(err.Error(), "walk objects:") || res == nil || len(res.Unlinked) != 0 || len(store.unlinked) != 0 {
 			t.Fatalf("prune = %+v, %v; unlinked %v; want the walk error and nothing unlinked", res, err, store.unlinked)
 		}
@@ -760,7 +760,7 @@ func TestPruneStore(t *testing.T) {
 	t.Run("VanishedNotReported", func(t *testing.T) {
 		store := storeOf(hex64("6"), hex64("7"))
 		store.gone = map[string]bool{hex64("6"): true}
-		res, err := NewCollector(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
+		res, err := NewGC(newRepos(t), store).Prune(ctx, PruneOptions{Grace: -1})
 		if err != nil || !slices.Equal(store.unlinked, []string{hex64("6"), hex64("7")}) || !slices.Equal(res.Unlinked, []string{hex64("7")}) {
 			t.Fatalf("prune = %+v, %v; unlinked %v; want both tried and only %s reported", res, err, store.unlinked, hex64("7"))
 		}

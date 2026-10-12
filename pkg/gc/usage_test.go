@@ -103,8 +103,8 @@ func TestUsage(t *testing.T) {
 	t.Run("MissingRoot", func(t *testing.T) {
 		fixture := newFixture(t)
 		fixture.put(t, "usage-x ")
-		for name, collector := range map[string]*Collector{"store": fixture.collector(), "nil store": NewCollector(fixture.st.RepositoriesFS(), nil)} {
-			if got, err := collector.Usage(ctx); err != nil || got != (repository.Usage{}) {
+		for name, g := range map[string]*GC{"store": fixture.gc(), "nil store": NewGC(fixture.st.RepositoriesFS(), nil)} {
+			if got, err := g.Usage(ctx); err != nil || got != (repository.Usage{}) {
 				t.Errorf("%s: Usage = %+v, %v; want zero, nil", name, got, err)
 			}
 		}
@@ -116,7 +116,7 @@ func TestUsage(t *testing.T) {
 			t.Fatalf("init: %v", err)
 		}
 		want := gitFiles(t, repos, "/org/empty.git")
-		if got, err := fixture.collector().Usage(ctx); err != nil || want.Other.Count == 0 || got != want {
+		if got, err := fixture.gc().Usage(ctx); err != nil || want.Other.Count == 0 || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v with metadata only, nil", got, err, want)
 		}
 	})
@@ -131,8 +131,8 @@ func TestUsage(t *testing.T) {
 		if want.Objects.Bytes <= 0 || want.Objects.Bytes >= objectSize || want.Other.Count == 0 {
 			t.Fatalf("repositories hold %+v, want objects between 0 and the %d-byte LFS payload plus metadata", want, objectSize)
 		}
-		collector := NewCollector(repos, nil)
-		if got, err := collector.Usage(ctx); err != nil || got != want {
+		g := NewGC(repos, nil)
+		if got, err := g.Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
 		fixture.put(t, "usage-b ")
@@ -146,7 +146,7 @@ func TestUsage(t *testing.T) {
 		if err := util.WriteFile(repos, "/org/README", []byte("no repository\n"), 0o644); err != nil {
 			t.Fatalf("write sibling: %v", err)
 		}
-		if got, err := collector.Usage(ctx); err != nil || got != want {
+		if got, err := g.Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage after xet-only upload and metadata = %+v, %v; want %+v, nil", got, err, want)
 		}
 	})
@@ -157,7 +157,7 @@ func TestUsage(t *testing.T) {
 		want := gitFiles(t, repos, "/org/a.git")
 		want.Objects.Count = 3
 		before := usageSnapshot(t, repos)
-		if got, err := fixture.collector().Usage(ctx); err != nil || got != want {
+		if got, err := fixture.gc().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
 		if !maps.Equal(before, usageSnapshot(t, repos)) {
@@ -179,7 +179,7 @@ func TestUsage(t *testing.T) {
 		}
 		want := gitFiles(t, repos, "/org/a.git")
 		want.Objects.Count = 3
-		if got, err := fixture.collector().Usage(ctx); err != nil || got != want {
+		if got, err := fixture.gc().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
 	})
@@ -187,11 +187,11 @@ func TestUsage(t *testing.T) {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
 		fixture := newFixture(t)
-		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
+		if got, err := fixture.gc().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
 			t.Errorf("missing root: Usage = %+v, %v; want zero, context.Canceled", got, err)
 		}
 		fixture.commitPointer(t, "org/a", fixture.put(t, "usage-c "))
-		if got, err := fixture.collector().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
+		if got, err := fixture.gc().Usage(canceled); !errors.Is(err, context.Canceled) || got != (repository.Usage{}) {
 			t.Errorf("populated: Usage = %+v, %v; want zero, context.Canceled", got, err)
 		}
 	})
@@ -202,8 +202,8 @@ func TestUsage(t *testing.T) {
 		fixture.commitPointer(t, "org/a", oid)
 		injected := errors.New("injected readdir failure")
 		for _, failing := range []string{"/", "/org"} {
-			collector := NewCollector(readDirFailure{Filesystem: fixture.st.RepositoriesFS(), path: failing, err: injected}, xetstore.New(fixture.xs))
-			if got, err := collector.Usage(ctx); !errors.Is(err, injected) || got != (repository.Usage{}) {
+			g := NewGC(readDirFailure{Filesystem: fixture.st.RepositoriesFS(), path: failing, err: injected}, xetstore.New(fixture.xs))
+			if got, err := g.Usage(ctx); !errors.Is(err, injected) || got != (repository.Usage{}) {
 				t.Errorf("ReadDir %s failing: Usage = %+v, %v; want zero, injected error", failing, got, err)
 			}
 		}
@@ -216,7 +216,7 @@ func TestUsage(t *testing.T) {
 				t.Fatalf("write %s: %v", file, err)
 			}
 		}
-		if got, err := fixture.collector().Usage(ctx); err == nil || !strings.Contains(err.Error(), "/org/broken.git") || got != (repository.Usage{}) {
+		if got, err := fixture.gc().Usage(ctx); err == nil || !strings.Contains(err.Error(), "/org/broken.git") || got != (repository.Usage{}) {
 			t.Fatalf("Usage = %+v, %v; want zero and an error naming the broken repository", got, err)
 		}
 	})

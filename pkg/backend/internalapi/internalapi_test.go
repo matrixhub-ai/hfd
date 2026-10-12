@@ -46,7 +46,7 @@ func newRepos(t *testing.T) billy.Filesystem {
 func newHandler(t *testing.T, repos billy.Filesystem, store xetstorage.Storage) *Handler {
 	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
-	return NewHandler(WithCollector(gc.NewCollector(repos, xetstore.New(store))), WithStorage(store), WithGCGrace(-1), WithNext(next))
+	return NewHandler(WithGC(gc.NewGC(repos, xetstore.New(store))), WithStorage(store), WithGCGrace(-1), WithNext(next))
 }
 
 // orphanPointer creates name with a live pointer on main and an orphaned pointer commit of four objects: commit, tree, pointer blob and 64 KiB filler.
@@ -197,7 +197,7 @@ func (b *blockingStore) WalkXorbs(ctx context.Context, fn func(string, int64, ti
 }
 
 // TestHandlerBusy pins that the handler serializes whole GC steps: a step parked in its storage sweep, past the prune pass
-// and the collector's lock, still turns the next request away before it runs a prune of its own.
+// and the GC's lock, still turns the next request away before it runs a prune of its own.
 func TestHandlerBusy(t *testing.T) {
 	store := &blockingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
 	h := newHandler(t, newRepos(t), store)
@@ -230,7 +230,7 @@ func TestHandlerGCStorageBusyKeepsPrune(t *testing.T) {
 	t.Cleanup(release)
 	direct := make(chan error, 1)
 	go func() {
-		_, err := h.gc.SweepStep(context.Background(), xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: -1})
+		_, err := h.sweeper.SweepStep(context.Background(), xetstorage.SweepOptions{Anchor: xetstorage.AnchorSHA256, Grace: -1})
 		direct <- err
 	}()
 	<-store.enter
@@ -258,7 +258,7 @@ func TestHandlerGCStorageBusyKeepsPrune(t *testing.T) {
 }
 
 // parkingStore parks the first sha256 index walk until released and lets later walks through, so a request that wrongly
-// proceeds past the busy collector fails fast instead of deadlocking behind the parked prune.
+// proceeds past the busy GC fails fast instead of deadlocking behind the parked prune.
 type parkingStore struct {
 	xetstorage.Storage
 	parked         atomic.Bool
@@ -279,9 +279,9 @@ func (p *parkingStore) WalkSHA256Index(ctx context.Context, fn func(string, stri
 	return p.Storage.WalkSHA256Index(ctx, fn)
 }
 
-// TestHandlerCollectorBusy pins that a prune running on the collector outside the handler's lock turns the request away with 409
+// TestHandlerGCBusy pins that a prune running on the GC outside the handler's lock turns the request away with 409
 // before it walks the store or sweeps.
-func TestHandlerCollectorBusy(t *testing.T) {
+func TestHandlerGCBusy(t *testing.T) {
 	store := &parkingStore{Storage: newStorage(t), enter: make(chan struct{}), release: make(chan struct{})}
 	h := newHandler(t, newRepos(t), store)
 	var releaseOnce sync.Once
@@ -289,7 +289,7 @@ func TestHandlerCollectorBusy(t *testing.T) {
 	t.Cleanup(release)
 	direct := make(chan error, 1)
 	go func() {
-		_, err := h.collector.Prune(context.Background(), gc.PruneOptions{Grace: -1})
+		_, err := h.gc.Prune(context.Background(), gc.PruneOptions{Grace: -1})
 		direct <- err
 	}()
 	<-store.enter
@@ -378,13 +378,13 @@ func TestHandlerUsage(t *testing.T) {
 		ChunkIndex:  xetstorage.ObjectUsage{Count: 4, Bytes: 40},
 		SHA256Index: xetstorage.ObjectUsage{Count: 5, Bytes: 50},
 	}}
-	collector := gc.NewCollector(repos, xetstore.New(store))
-	gitUsage, err := collector.Usage(ctx)
+	g := gc.NewGC(repos, xetstore.New(store))
+	gitUsage, err := g.Usage(ctx)
 	if err != nil || gitUsage.Other.Count == 0 {
 		t.Fatalf("fixture usage = %+v, %v; want git metadata", gitUsage, err)
 	}
 	want := usageResponse{Repository: gitUsage, Xet: store.usage}
-	h := NewHandler(WithCollector(collector), WithStorage(store))
+	h := NewHandler(WithGC(g), WithStorage(store))
 	get := func(ctx context.Context) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(ctx))
@@ -405,7 +405,7 @@ func TestHandlerUsage(t *testing.T) {
 	if len(store.ctxs) != 1 || store.ctxs[0].Err() == nil {
 		t.Fatalf("store saw %d Usage calls, want exactly one carrying the request context", len(store.ctxs))
 	}
-	if after, err := collector.Usage(ctx); err != nil || after != gitUsage {
+	if after, err := g.Usage(ctx); err != nil || after != gitUsage {
 		t.Fatalf("usage after request = %+v, %v; want unchanged %+v", after, err, gitUsage)
 	}
 
@@ -434,7 +434,7 @@ func TestHandlerUsage(t *testing.T) {
 		mid, cancelMid := context.WithCancel(ctx)
 		t.Cleanup(cancelMid)
 		store.onUsage = cancelMid
-		h := NewHandler(WithCollector(gc.NewCollector(repos, xetstore.New(store))), WithStorage(store))
+		h := NewHandler(WithGC(gc.NewGC(repos, xetstore.New(store))), WithStorage(store))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/usage", nil).WithContext(mid))
 		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), context.Canceled.Error()) || strings.Contains(rec.Body.String(), `"Xet"`) {

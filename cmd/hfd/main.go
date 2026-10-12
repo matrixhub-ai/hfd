@@ -97,7 +97,7 @@ func run(ctx context.Context, cfg *config) error {
 	if cfg.Internal {
 		slog.WarnContext(ctx, "Internal management API enabled; /internal/ endpoints are unauthenticated")
 		opts.InternalOptions = []backendinternalapi.Option{
-			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xetstore.New(st.XETStorage()))),
+			backendinternalapi.WithGC(gc.NewGC(st.RepositoriesFS(), xetstore.New(st.XETStorage()))),
 			backendinternalapi.WithStorage(st.XETStorage()),
 			backendinternalapi.WithSpool(sp),
 			backendinternalapi.WithMirror(engine),

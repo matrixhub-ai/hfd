@@ -10,18 +10,18 @@ import (
 )
 
 // Usage sums the repositories' Git usage; it is not an atomic snapshot.
-func (c *Collector) Usage(ctx context.Context) (repository.Usage, error) {
+func (g *GC) Usage(ctx context.Context) (repository.Usage, error) {
 	if err := ctx.Err(); err != nil {
 		return repository.Usage{}, err
 	}
 	var total repository.Usage
-	_, err := c.repos.Stat("/")
+	_, err := g.repos.Stat("/")
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		err = nil
 	case err == nil:
-		err = repository.Walk(ctx, c.repos, "/", func(path string) error {
-			repo, err := repository.Open(c.repos, path)
+		err = repository.Walk(ctx, g.repos, "/", func(path string) error {
+			repo, err := repository.Open(g.repos, path)
 			if err != nil {
 				return fmt.Errorf("open %s: %w", path, err)
 			}
