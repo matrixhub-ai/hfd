@@ -30,16 +30,27 @@ func TestNewStorageDefaultXETStorage(t *testing.T) {
 			if got, want := st.XETDir(), filepath.Join(root, "xet"); got != want {
 				t.Fatalf("XETDir() = %q, want %q", got, want)
 			}
+			if got, want := st.XETSpoolDir(), filepath.Join(root, "xet", "spool"); got != want {
+				t.Fatalf("XETSpoolDir() = %q, want %q", got, want)
+			}
+			if got, want := st.XETMirrorDir(), filepath.Join(root, "xet", "mirror"); got != want {
+				t.Fatalf("XETMirrorDir() = %q, want %q", got, want)
+			}
 			if st.XETStorage() == nil {
 				t.Fatal("XETStorage() = nil, want default local store")
 			}
 			for _, dir := range []string{
-				filepath.Join("storage", "xorbs"), filepath.Join("storage", "shards"), filepath.Join("storage", "index", "files"),
-				"chunks", "mirror",
+				"xorbs", "shards", filepath.Join("index", "files"), filepath.Join("index", "chunks"), filepath.Join("index", "sha256"),
+				"mirror", "spool",
 			} {
 				fi, err := os.Stat(filepath.Join(root, "xet", dir))
 				if err != nil || !fi.IsDir() {
 					t.Errorf("stat xet/%s: %v, want directory", dir, err)
+				}
+			}
+			for _, dir := range []string{"storage", "chunks"} {
+				if _, err := os.Stat(filepath.Join(root, "xet", dir)); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("stat xet/%s: %v, want not exist", dir, err)
 				}
 			}
 		})
@@ -64,10 +75,10 @@ func TestNewStorageWithXETStorage(t *testing.T) {
 			if got := st.XETStorage(); got != xetstorage.Storage(xs) {
 				t.Fatalf("XETStorage() = %v, want injected store", got)
 			}
-			if _, err := os.Stat(filepath.Join(root, "xet", "storage")); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("stat root/xet/storage: %v, want not exist", err)
+			if _, err := os.Stat(filepath.Join(root, "xet", "xorbs")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("stat root/xet/xorbs: %v, want not exist", err)
 			}
-			for _, dir := range []string{"chunks", "mirror"} {
+			for _, dir := range []string{"mirror", "spool"} {
 				fi, err := os.Stat(filepath.Join(root, "xet", dir))
 				if err != nil || !fi.IsDir() {
 					t.Errorf("stat xet/%s: %v, want directory", dir, err)
@@ -95,7 +106,7 @@ func TestNewStorageXETStorageError(t *testing.T) {
 }
 
 func TestNewStorageXETCacheError(t *testing.T) {
-	for _, dir := range []string{"chunks", "mirror"} {
+	for _, dir := range []string{"mirror", "spool"} {
 		t.Run(dir, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(root, "xet"), 0o755); err != nil {

@@ -39,7 +39,7 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 		t.Fatalf("create storage: %v", err)
 	}
 	xs := st.XETStorage()
-	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), xs)
+	sp, err := spool.NewSpool(st.XETSpoolDir(), xs)
 	if err != nil {
 		t.Fatalf("create xet spool: %v", err)
 	}
@@ -49,14 +49,14 @@ func newXETDataPlane(t *testing.T, hubURL string, gitOpts ...mirror.Option) (*mi
 	}
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
-		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
 		mirror.WithDataDir(st.XETDir()),
 		mirror.WithMintToken(issuer.Sign),
 	}
 	if hubURL != "" {
 		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
-			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+			xetmirror.WithCacheDir(st.XETMirrorDir()),
 			xetmirror.WithSpool(sp),
 		)
 		if err != nil {

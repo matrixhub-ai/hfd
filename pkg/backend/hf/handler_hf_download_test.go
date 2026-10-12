@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,14 +48,14 @@ func newXETDataPlane(t *testing.T, upstreamURL string, wrap func(xetstorage.Stor
 	}
 	opts := []mirror.Option{
 		mirror.WithXETStorage(wrapped),
-		mirror.WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)),
+		mirror.WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
 		mirror.WithDataDir(st.XETDir()),
 		mirror.WithMintToken(issuer.Sign),
 	}
 	if upstreamURL != "" {
 		engine, err := xetmirror.NewMirror(
 			xetmirror.WithStorage(wrapped),
-			xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+			xetmirror.WithCacheDir(st.XETMirrorDir()),
 			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
@@ -98,7 +97,7 @@ func newXETDataDir(t *testing.T) string {
 // newTestSpool opens the spool where cmd/hfd keeps it under st, ingesting into xs.
 func newTestSpool(t *testing.T, st *storage.Storage, xs xetstorage.Storage) *spool.Spool {
 	t.Helper()
-	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), xs)
+	sp, err := spool.NewSpool(st.XETSpoolDir(), xs)
 	if err != nil {
 		t.Fatalf("create xet spool: %v", err)
 	}

@@ -100,13 +100,12 @@ func buildStorage(ctx context.Context, cfg *config) (*storage.Storage, error) {
 
 // buildXETCache opens the storage-rooted cache every xet client shares.
 func buildXETCache(cfg *config, st *storage.Storage) *xetclient.Cache {
-	return xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), cfg.ProxyDownloadCacheSize, cfg.ProxyUploadCacheSize)
+	return xetclient.NewCache(st.XETMirrorDir(), cfg.ProxyDownloadCacheSize, cfg.ProxyUploadCacheSize)
 }
 
-// buildXETSpool opens the spool of the ingest engine, at the engine's
-// default location so its earlier leftovers stay resumable.
+// buildXETSpool opens the ingest spool where xetd keeps it, beside the content store.
 func buildXETSpool(st *storage.Storage) (*spool.Spool, error) {
-	return spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), st.XETStorage())
+	return spool.NewSpool(st.XETSpoolDir(), st.XETStorage())
 }
 
 // buildXETMirror creates the upstream ingest engine over the shared spool
@@ -122,7 +121,7 @@ func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache, sp
 	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(st.XETStorage()),
-		xetmirror.WithCacheDir(filepath.Join(st.XETDir(), "mirror")),
+		xetmirror.WithCacheDir(st.XETMirrorDir()),
 		xetmirror.WithSpool(sp),
 		xetmirror.WithClientOptions(clientOpts...),
 	)

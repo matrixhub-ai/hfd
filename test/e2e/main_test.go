@@ -158,7 +158,7 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
 	}
-	sp, err := spool.NewSpool(filepath.Join(xetDir, "mirror", "spool"), xs)
+	sp, err := spool.NewSpool(st.XETSpoolDir(), xs)
 	if err != nil {
 		t.Fatalf("create xet spool: %v", err)
 	}
@@ -166,7 +166,7 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	if engine {
 		xm, err = xetmirror.NewMirror(
 			xetmirror.WithStorage(xs),
-			xetmirror.WithCacheDir(filepath.Join(xetDir, "mirror")),
+			xetmirror.WithCacheDir(st.XETMirrorDir()),
 			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
@@ -175,7 +175,7 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	}
 	opts := []mirror.Option{
 		mirror.WithXETStorage(xs),
-		mirror.WithXETCache(xetclient.NewCache(filepath.Join(xetDir, "chunks"), 0, 0)),
+		mirror.WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
 		mirror.WithDataDir(xetDir),
 		mirror.WithXETMirror(xm),
 		mirror.WithMintToken(issuer.Sign),

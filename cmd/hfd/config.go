@@ -75,7 +75,7 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP server address")
 	flag.StringVar(&cfg.SSHAddr, "ssh-addr", cfg.SSHAddr, "SSH protocol server address")
 	flag.StringVar(&cfg.SSHHostKeyFile, "ssh-host-key", cfg.SSHHostKeyFile, "Path to SSH host key file (PEM format); if empty, a key is generated")
-	flag.StringVar(&cfg.DataDir, "data", cfg.DataDir, "Directory containing git repositories")
+	flag.StringVar(&cfg.DataDir, "data", cfg.DataDir, "Data directory holding repositories/ and xet/")
 	flag.StringVar(&cfg.S3Endpoint, "s3-endpoint", cfg.S3Endpoint, "S3 endpoint")
 	flag.StringVar(&cfg.S3SignEndpoint, "s3-sign-endpoint", cfg.S3SignEndpoint, "S3 signing endpoint (if different from s3-endpoint)")
 	flag.StringVar(&cfg.S3AccessKey, "s3-access-key", cfg.S3AccessKey, "S3 access key")

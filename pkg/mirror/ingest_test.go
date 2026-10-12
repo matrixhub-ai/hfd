@@ -25,7 +25,7 @@ const ingestSize = 96 << 10
 // newTestSpool opens the engine's spool where cmd/hfd keeps it under st.
 func newTestSpool(t *testing.T, st *storage.Storage) *spool.Spool {
 	t.Helper()
-	sp, err := spool.NewSpool(filepath.Join(st.XETDir(), "mirror", "spool"), st.XETStorage())
+	sp, err := spool.NewSpool(st.XETSpoolDir(), st.XETStorage())
 	if err != nil {
 		t.Fatalf("create xet spool: %v", err)
 	}
@@ -38,7 +38,7 @@ func newDataDirMirror(t *testing.T, dataDir string) *Mirror {
 	if err != nil {
 		t.Fatalf("new storage: %v", err)
 	}
-	m, err := NewMirror(WithXETStorage(st.XETStorage()), WithXETCache(xetclient.NewCache(filepath.Join(st.XETDir(), "chunks"), 0, 0)), WithDataDir(dataDir))
+	m, err := NewMirror(WithXETStorage(st.XETStorage()), WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)), WithDataDir(dataDir))
 	if err != nil {
 		t.Fatalf("new mirror: %v", err)
 	}
