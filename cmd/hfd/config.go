@@ -9,6 +9,8 @@ import (
 
 	xetdownload "github.com/wzshiming/xet/download"
 	xetupload "github.com/wzshiming/xet/upload"
+
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
 // config groups all command line flags for the hfd server.
@@ -24,6 +26,10 @@ type config struct {
 
 	// Storage
 	DataDir string
+
+	// LFS policy
+	MaxRegularFileSize int64
+	MaxBinaryFileSize  int64
 
 	// S3
 	S3Endpoint     string
@@ -54,10 +60,13 @@ type config struct {
 }
 
 func defaultConfig() *config {
+	policy := lfs.DefaultPolicy()
 	return &config{
 		Addr:                    ":8080",
 		SSHAddr:                 ":2222",
 		DataDir:                 "./data",
+		MaxRegularFileSize:      policy.MaxRegularFileSize,
+		MaxBinaryFileSize:       policy.MaxBinaryFileSize,
 		AuthUsername:            "admin",
 		AuthSignKey:             "secret-sign-key",
 		ProxyCacheTTL:           time.Minute,
@@ -76,6 +85,8 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.SSHAddr, "ssh-addr", cfg.SSHAddr, "SSH protocol server address")
 	flag.StringVar(&cfg.SSHHostKeyFile, "ssh-host-key", cfg.SSHHostKeyFile, "Path to SSH host key file (PEM format); if empty, a key is generated")
 	flag.StringVar(&cfg.DataDir, "data", cfg.DataDir, "Data directory holding repositories/ and xet/")
+	flag.Int64Var(&cfg.MaxRegularFileSize, "max-regular-file-size", cfg.MaxRegularFileSize, "Regular (non-LFS) files larger than this many bytes are refused, as on huggingface.co; 0 disables")
+	flag.Int64Var(&cfg.MaxBinaryFileSize, "max-binary-file-size", cfg.MaxBinaryFileSize, "Binary files larger than this many bytes must be LFS, as on huggingface.co; 0 disables")
 	flag.StringVar(&cfg.S3Endpoint, "s3-endpoint", cfg.S3Endpoint, "S3 endpoint")
 	flag.StringVar(&cfg.S3SignEndpoint, "s3-sign-endpoint", cfg.S3SignEndpoint, "S3 signing endpoint (if different from s3-endpoint)")
 	flag.StringVar(&cfg.S3AccessKey, "s3-access-key", cfg.S3AccessKey, "S3 access key")
@@ -102,6 +113,13 @@ func parseConfig() (*config, error) {
 
 	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, usage report under /internal/usage, GC via POST /internal/gc (Git garbage collection in every repository, unlinking of unreferenced LFS objects, then the budgeted sweep of storage, spool and engine index; repeat until done); run GC only while pushes are quiescent); expose only on trusted networks")
 	flag.Parse()
+
+	if cfg.MaxRegularFileSize < 0 {
+		return nil, fmt.Errorf("invalid max-regular-file-size %d: must not be negative", cfg.MaxRegularFileSize)
+	}
+	if cfg.MaxBinaryFileSize < 0 {
+		return nil, fmt.Errorf("invalid max-binary-file-size %d: must not be negative", cfg.MaxBinaryFileSize)
+	}
 
 	if cfg.HostURL == "" {
 		host, port, err := net.SplitHostPort(cfg.Addr)

@@ -17,6 +17,7 @@ import (
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -32,6 +33,7 @@ type Options struct {
 	Authenticate   func(http.Handler) http.Handler // replaces the default authenticate.NewHandler layer when set; the xet CAS routes are answered before it
 	CASAuthorizer  auth.Authorizer                 // gates the xet CAS routes; nil rejects every gated route (xorb downloads and /xet-bridge stay anonymous)
 	Permission     permission.PermissionHookFunc   // nil allows every operation
+	LFSPolicy      *lfs.Policy                     // nil applies huggingface.co's limits (lfs.DefaultPolicy); &lfs.Policy{} disables the rules
 	// Nil hooks are skipped.
 	PreOpen         func(ctx context.Context, repoName string, write bool) error
 	PreReceive      receive.PreReceiveHookFunc
@@ -56,6 +58,13 @@ func chain(tail http.Handler, middlewares ...middleware) http.Handler {
 }
 
 func passthrough(next http.Handler) http.Handler { return next }
+
+func lfsPolicy(o Options) lfs.Policy {
+	if o.LFSPolicy == nil {
+		return lfs.DefaultPolicy()
+	}
+	return *o.LFSPolicy
+}
 
 func requestLogging(writer io.Writer) middleware {
 	if writer == nil {
@@ -98,6 +107,7 @@ func gitHTTPBackend(o Options) middleware {
 			backendhttp.WithPermissionHookFunc(o.Permission),
 			backendhttp.WithPreReceiveHookFunc(o.PreReceive),
 			backendhttp.WithPostReceiveHookFunc(o.PostReceive),
+			backendhttp.WithLFSPolicy(lfsPolicy(o)),
 		}
 		return backendhttp.NewHandler(append(opts, o.GitOptions...)...)
 	}
@@ -126,6 +136,7 @@ func hfBackend(o Options) middleware {
 			backendhf.WithPermissionHookFunc(o.Permission),
 			backendhf.WithPreReceiveHookFunc(o.PreReceive),
 			backendhf.WithPostReceiveHookFunc(o.PostReceive),
+			backendhf.WithLFSPolicy(lfsPolicy(o)),
 		}
 		return backendhf.NewHandler(append(opts, o.HFOptions...)...)
 	}
@@ -186,6 +197,7 @@ func NewSSHServer(o Options, hostKey pkgssh.Signer) *backendssh.Server {
 		backendssh.WithPreOpenHookFunc(o.PreOpen),
 		backendssh.WithPreReceiveHookFunc(o.PreReceive),
 		backendssh.WithPostReceiveHookFunc(o.PostReceive),
+		backendssh.WithLFSPolicy(lfsPolicy(o)),
 		backendssh.WithLFSURL(o.HostURL),
 		backendssh.WithBasicAuthValidator(o.Authenticators.BasicAuth),
 		backendssh.WithPublicKeyValidator(o.Authenticators.PublicKey),

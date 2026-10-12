@@ -22,6 +22,7 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -259,6 +260,34 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 		if strings.Count(logs.String(), want) != 1 {
 			t.Errorf("logs = %s\nwant exactly one %q", logs.String(), want)
 		}
+	}
+}
+
+// TestNewHTTPHandlerLFSPolicy pins the policy the hf backend classifies a preupload above 10 MiB with.
+func TestNewHTTPHandlerLFSPolicy(t *testing.T) {
+	cases := []struct {
+		name    string
+		options Options
+		want    string
+	}{
+		{"nil applies huggingface.co's limits", Options{}, `"uploadMode":"lfs"`},
+		{"zero value disables the rules", Options{LFSPolicy: &lfs.Policy{}}, `"uploadMode":"regular"`},
+		{"HFOptions override the policy", Options{HFOptions: []backendhf.Option{backendhf.WithLFSPolicy(lfs.Policy{})}}, `"uploadMode":"regular"`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			options := test.options
+			options.Storage = newStorage(t)
+			if _, err := repository.Init(context.Background(), options.Storage.RepositoriesFS(), repository.ResolvePath("org/repo"), "main"); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/models/org/repo/preupload/main", strings.NewReader(`{"files":[{"path":"a.txt","size":10485761,"sample":""}]}`))
+			recorder := httptest.NewRecorder()
+			NewHTTPHandler(options).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), test.want) {
+				t.Errorf("preupload = %d %s, want 200 containing %s", recorder.Code, recorder.Body, test.want)
+			}
+		})
 	}
 }
 

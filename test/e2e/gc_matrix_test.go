@@ -716,7 +716,12 @@ func TestGCGitObjects(t *testing.T) {
 		runGit(t, "", env, "clone", remote, dir)
 		runGit(t, dir, env, "config", "user.email", "matrix@test.com")
 		runGit(t, dir, env, "config", "user.name", "Matrix Test")
-		if err := os.WriteFile(filepath.Join(dir, "orphan.raw"), randomData(t, 128<<10, 63), 0o644); err != nil {
+		// Printable ASCII, as the LFS policy refuses binary blobs over 100000 bytes; random, so it still fills the reclaim check's 100 KiB on disk.
+		orphanData := randomData(t, 128<<10, 63)
+		for i, b := range orphanData {
+			orphanData[i] = ' ' + b%95
+		}
+		if err := os.WriteFile(filepath.Join(dir, "orphan.raw"), orphanData, 0o644); err != nil {
 			t.Fatalf("write orphan blob: %v", err)
 		}
 		runGit(t, dir, env, "add", ".")

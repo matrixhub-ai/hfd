@@ -340,3 +340,9 @@ func makeBinaryData(size int, seed byte) []byte {
 	}
 	return data
 }
+
+// makeTextData returns size bytes of repeated English text.
+func makeTextData(size int) []byte {
+	line := []byte("the quick brown fox jumps over the lazy dog\n")
+	return bytes.Repeat(line, size/len(line)+1)[:size]
+}

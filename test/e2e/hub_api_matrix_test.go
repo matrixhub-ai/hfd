@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -147,6 +148,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 	ops := []hubOp{
 		{name: "CreateAndDelete", supported: cliModelOrKernel, run: runHubCreateAndDelete},
 		{name: "UploadAndDownload", supported: anyClientAnyType, run: runHubUploadAndDownload},
+		{name: "LFSPolicy", supported: clientWrites, run: runHubLFSPolicy},
 		{name: "SnapshotDownload", supported: pyOnly, run: runHubSnapshotDownload},
 		{name: "ListFiles", supported: pyOnly, run: runHubListFiles},
 		{name: "ListRepos", supported: func(c hubClient, rt hubRepoType) bool { return pyOnly(c, rt) && clientWrites(c, rt) }, run: runHubListRepos},
@@ -479,6 +481,71 @@ func runHubUploadAndDownload(t *testing.T, s *e2eServer, c hubClient, rt hubRepo
 
 	for _, f := range files {
 		assertResolveContent(t, s, rt, repoID, "main", f.path, f.content)
+	}
+}
+
+// runHubLFSPolicy uploads files huggingface.co keeps out of git beside regular
+// ones: preupload sends big.txt by its size and rand.dat by its binary sample
+// to LFS, the commit tracks both in .gitattributes, and every file downloads
+// through the client byte for byte.
+func runHubLFSPolicy(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	repoID := "hub-user/lfs-policy-" + rt.arg
+	files := []hubFile{
+		{"big.txt", string(makeTextData(11 << 20))},
+		{"notes.txt", string(makeTextData(4 << 10))},
+		{"rand.dat", string(randomData(t, 200000, 93))},
+		{"tiny.png", "an ASCII stand-in for an image\n"},
+	}
+	lfsPaths := []string{"big.txt", "rand.dat"}
+
+	downloaded := t.TempDir()
+	if c.py {
+		dir := t.TempDir()
+		writeHubFiles(t, dir, files)
+		runPyScript(t, s.httpURL, hubPyAPI+hubPyCreateLine(repoID, rt, true)+fmt.Sprintf(`api.upload_folder(folder_path=%q, repo_id=%q, repo_type=%q)
+huggingface_hub.snapshot_download(repo_id=%q, repo_type=%q, local_dir=%q, endpoint=os.environ["HF_ENDPOINT"], token=os.environ["HF_TOKEN"])
+`, dir, repoID, rt.arg, repoID, rt.arg, downloaded))
+	} else {
+		hubCliUpload(t, s, rt, repoID, files, "Upload across the LFS policy")
+		runHFCmd(t, s.httpURL, append([]string{"download", repoID, "--local-dir", downloaded}, rt.cliTypeArgs()...)...)
+	}
+
+	status, body := httpGetContent(t, hubAPIRepoURL(s, rt, repoID)+"/tree/main")
+	type lfsInfo struct {
+		Size int `json:"size"`
+	}
+	var tree []struct {
+		Path string   `json:"path"`
+		LFS  *lfsInfo `json:"lfs"`
+	}
+	if err := json.Unmarshal([]byte(body), &tree); status != http.StatusOK || err != nil {
+		t.Fatalf("tree status = %d (decode error %v): %s", status, err, body)
+	}
+	lfsOf := map[string]*lfsInfo{}
+	for _, e := range tree {
+		lfsOf[e.Path] = e.LFS
+	}
+	for _, f := range files {
+		if got, err := os.ReadFile(filepath.Join(downloaded, f.path)); err != nil || string(got) != f.content {
+			t.Errorf("downloaded %s: %d bytes (%v), want the %d uploaded", f.path, len(got), err, len(f.content))
+		}
+		info, listed := lfsOf[f.path]
+		switch wantLFS := slices.Contains(lfsPaths, f.path); {
+		case !listed:
+			t.Errorf("tree lacks %s: %s", f.path, body)
+		case wantLFS && (info == nil || info.Size != len(f.content)):
+			t.Errorf("%s is not an LFS file of %d bytes: %s", f.path, len(f.content), body)
+		case !wantLFS && info != nil:
+			t.Errorf("%s is an LFS file, want a regular blob: %s", f.path, body)
+		}
+	}
+
+	status, attrs := httpGetContent(t, hubResolveURL(s, rt, repoID, "main", ".gitattributes"))
+	lines := strings.Split(strings.TrimSuffix(attrs, "\n"), "\n")
+	want := []string{"big.txt filter=lfs diff=lfs merge=lfs -text", "rand.dat filter=lfs diff=lfs merge=lfs -text"}
+	if status != http.StatusOK || len(lines) < len(want) || !slices.Equal(lines[len(lines)-len(want):], want) ||
+		strings.Contains(attrs, "tiny.png") || strings.Contains(attrs, "notes.txt") {
+		t.Fatalf(".gitattributes status = %d, want it to end with %q and name neither tiny.png nor notes.txt:\n%s", status, want, attrs)
 	}
 }
 
@@ -1047,6 +1114,78 @@ func TestCreateRepoDefaultGitAttributes(t *testing.T) {
 		if !strings.Contains(body, pattern) {
 			t.Errorf("Expected .gitattributes to contain %q, got:\n%s", pattern, body)
 		}
+	}
+}
+
+// TestHubCommitLFSPolicy posts inline files across huggingface.co's limits to
+// the commit API with no client in between: one byte over a limit is refused
+// with the Hub's message and leaves the branch alone, the limit itself commits.
+func TestHubCommitLFSPolicy(t *testing.T) {
+	t.Parallel()
+	const repoID = "hub-user/commit-policy"
+	s := newE2EServer(t)
+	s.createRepo(t, "hub-user", "commit-policy")
+	refs := func(t *testing.T) string {
+		t.Helper()
+		status, body := httpGetContent(t, s.httpURL+"/api/models/"+repoID+"/refs")
+		if status != http.StatusOK {
+			t.Fatalf("GET refs status = %d: %s", status, body)
+		}
+		return body
+	}
+
+	for _, tc := range []struct {
+		name, path string
+		content    []byte
+		want       []string // the refusal's text; nil commits
+	}{
+		{"LargeRefused", "b2.txt", makeTextData(10<<20 + 1), []string{"Your push was rejected because it contains files larger than 10 MiB.", "- b2.txt (ref: refs/heads/main)"}},
+		{"LargeAtLimit", "b2.txt", makeTextData(10 << 20), nil},
+		{"BinaryRefused", "zeros.dat", make([]byte, 100001), []string{"Your push was rejected because it contains binary files.", "- zeros.dat (ref: refs/heads/main)"}},
+		{"BinaryAtLimit", "zeros.dat", make([]byte, 100000), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := refs(t)
+			var body bytes.Buffer
+			encoder := json.NewEncoder(&body)
+			for _, op := range []map[string]any{
+				{"key": "header", "value": map[string]any{"summary": tc.name}},
+				{"key": "file", "value": map[string]any{"path": tc.path, "content": base64.StdEncoding.EncodeToString(tc.content), "encoding": "base64"}},
+			} {
+				if err := encoder.Encode(op); err != nil {
+					t.Fatalf("encode commit: %v", err)
+				}
+			}
+			resp, err := http.Post(s.httpURL+"/api/models/"+repoID+"/commit/main", "application/x-ndjson", &body)
+			if err != nil {
+				t.Fatalf("POST commit: %v", err)
+			}
+			result, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatalf("read commit response: %v", err)
+			}
+			if tc.want == nil {
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("commit status = %d, want 200: %s", resp.StatusCode, result)
+				}
+				if got := mustGet(t, s.httpURL+"/"+repoID+"/resolve/main/"+tc.path); !bytes.Equal(got, tc.content) {
+					t.Fatalf("resolve %s: got %d bytes, want %d", tc.path, len(got), len(tc.content))
+				}
+				return
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("commit status = %d, want 400: %s", resp.StatusCode, result)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(string(result), w) {
+					t.Errorf("commit response lacks %q: %s", w, result)
+				}
+			}
+			if after := refs(t); after != before {
+				t.Fatalf("refs changed: before=%s after=%s", before, after)
+			}
+		})
 	}
 }
 

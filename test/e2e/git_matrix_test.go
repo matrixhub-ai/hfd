@@ -68,6 +68,8 @@ func TestGitOperationsMatrix(t *testing.T) {
 		{name: "DeleteTag", test: testDeleteTag},
 		{name: "ResolveAfterPush", test: testResolveAfterPush},
 		{name: "CrossProtocolReadBack", test: testCrossProtocolReadBack},
+		{name: "LargeRegularFileRefused", test: testLargeRegularFileRefused},
+		{name: "BinaryFileRefused", test: testBinaryFileRefused},
 		{name: "UnauthorizedKeyDenied", sshOnly: true, test: testUnauthorizedKeyDenied},
 	}
 
@@ -329,6 +331,92 @@ func testCrossProtocolReadBack(t *testing.T, s *e2eServer, remote string, env []
 	}
 	if string(content) != gitMatrixReadme {
 		t.Errorf("Unexpected content from cross-protocol clone: %q", content)
+	}
+}
+
+// testLargeRegularFileRefused pushes a regular blob one byte over 10 MiB, which
+// huggingface.co's LFS policy refuses, then tracks the same file with git-lfs:
+// the amended commit goes through and the file resolves byte for byte.
+func testLargeRegularFileRefused(t *testing.T, s *e2eServer, remote string, env []string) {
+	big := makeTextData(10<<20 + 1)
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(cloneDir, "big.txt"), big, 0644); err != nil {
+		t.Fatalf("Failed to create big.txt: %v", err)
+	}
+	runGit(t, cloneDir, env, "add", "big.txt")
+	runGit(t, cloneDir, env, "commit", "-m", "Add big.txt")
+	requirePushRefused(t, s, cloneDir, env, "big.txt",
+		"Your push was rejected because it contains files larger than 10 MiB.",
+		"- big.txt (ref: refs/heads/main)")
+
+	runGit(t, cloneDir, env, "lfs", "install", "--local")
+	// The SSH server has no LFS endpoint; point git-lfs at the HTTP server.
+	runGit(t, cloneDir, env, "config", "lfs.url", s.httpURL+"/"+gitMatrixRepoID+".git/info/lfs")
+	runGit(t, cloneDir, env, "lfs", "track", "big.txt")
+	runGit(t, cloneDir, env, "rm", "--cached", "big.txt")
+	runGit(t, cloneDir, env, "add", ".gitattributes", "big.txt")
+	runGit(t, cloneDir, env, "commit", "--amend", "-m", "Add big.txt through LFS")
+	runGit(t, cloneDir, env, "push", "origin", "main")
+	if got := mustGet(t, s.httpURL+"/"+gitMatrixRepoID+"/resolve/main/big.txt"); !bytes.Equal(got, big) {
+		t.Fatalf("resolve big.txt after the LFS push: got %d bytes, want %d", len(got), len(big))
+	}
+}
+
+// testBinaryFileRefused pushes random bytes at the binary limit, which land as
+// a regular blob, then one byte over it, which the LFS policy refuses.
+func testBinaryFileRefused(t *testing.T, s *e2eServer, remote string, env []string) {
+	small, blob := randomData(t, 100000, 71), randomData(t, 100001, 72)
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(cloneDir, "small.dat"), small, 0644); err != nil {
+		t.Fatalf("Failed to create small.dat: %v", err)
+	}
+	runGit(t, cloneDir, env, "add", "small.dat")
+	runGit(t, cloneDir, env, "commit", "-m", "Add small.dat")
+	runGit(t, cloneDir, env, "push", "origin", "main")
+	if got := mustGet(t, s.httpURL+"/"+gitMatrixRepoID+"/resolve/main/small.dat"); !bytes.Equal(got, small) {
+		t.Fatalf("resolve small.dat: got %d bytes, want %d", len(got), len(small))
+	}
+
+	if err := os.WriteFile(filepath.Join(cloneDir, "blob.dat"), blob, 0644); err != nil {
+		t.Fatalf("Failed to create blob.dat: %v", err)
+	}
+	runGit(t, cloneDir, env, "add", "blob.dat")
+	runGit(t, cloneDir, env, "commit", "-m", "Add blob.dat")
+	requirePushRefused(t, s, cloneDir, env, "blob.dat",
+		"Your push was rejected because it contains binary files.",
+		"- blob.dat (ref: refs/heads/main)")
+}
+
+// requirePushRefused pushes main from dir and requires the LFS policy's
+// refusal, with each of want in the client's output; the server's main must
+// stay at origin/main and path must not resolve.
+func requirePushRefused(t *testing.T, s *e2eServer, dir string, env []string, path string, want ...string) {
+	t.Helper()
+	before := strings.TrimSpace(runGit(t, dir, env, "rev-parse", "origin/main"))
+	stdout, stderr, err := gitCmd(t, dir, env, "push", "origin", "main")
+	output := stdout + stderr
+	t.Logf("refused push output:\n%s", output)
+	if err == nil {
+		t.Fatalf("push succeeded, want the LFS policy to refuse it:\n%s", output)
+	}
+	for _, w := range append([]string{"Offending files:", "pre-receive hook declined"}, want...) {
+		if !strings.Contains(output, w) {
+			t.Errorf("push output lacks %q:\n%s", w, output)
+		}
+	}
+	// stdout only: ssh warns about the throwaway known_hosts on stderr.
+	stdout, stderr, err = gitCmd(t, dir, env, "ls-remote", "origin", "refs/heads/main")
+	if after := strings.Fields(stdout); err != nil || len(after) == 0 || after[0] != before {
+		t.Fatalf("server main = %q (%v) after the refused push, want %s\n%s", stdout, err, before, stderr)
+	}
+	if status := httpGetStatus(t, s.httpURL+"/"+gitMatrixRepoID+"/resolve/main/"+path); status != http.StatusNotFound {
+		t.Fatalf("resolve %s after the refused push = %d, want 404", path, status)
 	}
 }
 

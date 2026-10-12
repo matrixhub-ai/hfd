@@ -14,6 +14,7 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	xetauth "github.com/wzshiming/xet/auth"
 )
@@ -80,6 +81,7 @@ func run(ctx context.Context, cfg *config) error {
 		Authenticators: auth,
 		CASAuthorizer:  issuer,
 		Permission:     policy,
+		LFSPolicy:      &lfs.Policy{MaxRegularFileSize: cfg.MaxRegularFileSize, MaxBinaryFileSize: cfg.MaxBinaryFileSize},
 		PreOpen:        hooks.PreOpen,
 		PreReceive:     hooks.PreReceive,
 		PostReceive:    hooks.PostReceive,

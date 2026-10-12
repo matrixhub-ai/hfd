@@ -34,6 +34,7 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -250,6 +251,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
+		backendhf.WithLFSPolicy(lfs.DefaultPolicy()),
 	)
 	if preOpen != nil {
 		hfOpts = append(hfOpts, backendhf.WithPreOpenHookFunc(preOpen))
@@ -275,6 +277,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	httpOpts := []backendhttp.Option{
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
+		backendhttp.WithLFSPolicy(lfs.DefaultPolicy()),
 	}
 	if preOpen != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPreOpenHookFunc(preOpen))
@@ -352,6 +355,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendssh.WithStorage(st),
 		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{string(pubKey.Marshal()): ""})),
 		backendssh.WithTokenSignValidator(signValidator),
+		backendssh.WithLFSPolicy(lfs.DefaultPolicy()),
 	}
 	if cfg.sshLFSURL {
 		sshOpts = append(sshOpts, backendssh.WithLFSURL(httpServer.URL))

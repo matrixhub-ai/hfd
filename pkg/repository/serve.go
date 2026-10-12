@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/utils/ioutil"
 
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 )
 
@@ -229,6 +230,8 @@ type ReceivePackHooks struct {
 	PreReceive func(ctx context.Context, updates []receive.RefUpdate) error
 	// PostReceive runs after refs are updated with the successfully applied updates.
 	PostReceive func(ctx context.Context, updates []receive.RefUpdate)
+	// Policy is the LFS policy to apply to the blobs a push introduces; zero value = no check.
+	Policy lfs.Policy
 }
 
 // refUpdates converts packp ref update commands to receive.RefUpdate values.

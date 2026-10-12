@@ -22,6 +22,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/format/packfile"
 	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/utils/ioutil"
 )
@@ -48,12 +49,39 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
+	applied, err := r.applyPush(ctx, w, rd, req, cfg, hooks)
+	// Like git, the report goes out before post-receive runs.
+	if len(applied) > 0 && hooks.PostReceive != nil {
+		hooks.PostReceive(ctx, r.refUpdates(applied))
+	}
+	return err
+}
+
+// applyPush stores the push's pack and, unless PreReceive or the LFS policy refuses the push, updates its refs; it
+// writes the report and returns the commands applied.
+func (r *Repository) applyPush(ctx context.Context, w io.Writer, rd io.Reader, req *packp.UpdateRequests, cfg receiveConfig, hooks ReceivePackHooks) ([]*packp.Command, error) {
+	if hooks.Policy.Enabled() {
+		// A refused push deletes its pack, which an identical push alongside would share.
+		defer lockPushes(cacheKey{r.fs, r.repoPath})()
+	}
 	rs := &packp.ReportStatus{UnpackStatus: "ok"}
+	var pushed *pushedPack
+	kept := false
 	if slices.ContainsFunc(req.Commands, func(c *packp.Command) bool { return c.Action() != packp.Delete }) {
-		if err := packfile.UpdateObjectStorage(st, rd); err != nil {
+		var target storer.Storer = r.repo.Storer
+		if hooks.Policy.Enabled() {
+			pushed = newPushedPack(target)
+			target = pushed
+			defer func() {
+				if !kept {
+					r.dropPack(ctx, pushed)
+				}
+			}()
+		}
+		if err := packfile.UpdateObjectStorage(target, rd); err != nil {
 			// A cancelled request is the caller's failure, not an unpack status to report.
 			if ctx.Err() != nil {
-				return errors.Join(err, ctx.Err())
+				return nil, errors.Join(err, ctx.Err())
 			}
 			rs.UnpackStatus = err.Error()
 		}
@@ -62,13 +90,20 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 		for _, cmd := range req.Commands {
 			rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: cmd.Name, Status: "unpacker error"})
 		}
-		return writeReport(w, &req.Capabilities, rs)
+		return nil, writeReport(w, &req.Capabilities, rs)
 	}
 	if hooks.PreReceive != nil {
 		if denied := hooks.PreReceive(ctx, r.refUpdates(req.Commands)); denied != nil {
-			return rejectReceivePack(w, rd, req, denied)
+			return nil, rejectReceivePack(w, rd, req, denied)
 		}
 	}
+	if pushed != nil {
+		if perr, err := r.lfsPolicyError(hooks.Policy, req.Commands, pushed); perr != nil || err != nil {
+			return nil, r.refusePush(ctx, w, rd, req, perr, err)
+		}
+	}
+	// Judged, the objects stay even where a ref fails to update, as git keeps them.
+	kept = true
 	var applied []*packp.Command
 	for _, cmd := range req.Commands {
 		status := r.updateReference(cmd, cfg)
@@ -78,12 +113,7 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 		}
 		rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: cmd.Name, Status: status})
 	}
-	// Like git, the report goes out before post-receive runs.
-	err = writeReport(w, &req.Capabilities, rs)
-	if len(applied) > 0 && hooks.PostReceive != nil {
-		hooks.PostReceive(ctx, r.refUpdates(applied))
-	}
-	return err
+	return applied, writeReport(w, &req.Capabilities, rs)
 }
 
 func (r *Repository) updateReference(cmd *packp.Command, cfg receiveConfig) string {

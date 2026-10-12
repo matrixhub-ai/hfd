@@ -3,17 +3,20 @@ package hf
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -106,9 +109,6 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 	responseJSON(w, resp, http.StatusOK)
 }
 
-// maxRegularFileSize is the Hub's limit for regular (non-LFS) git files.
-const maxRegularFileSize = 10 << 20
-
 // handlePreupload handles POST /api/{repoType}/{repo}/preupload/{rev}
 func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -130,8 +130,11 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gitAttrs, err := repo.GitAttributes(rev)
-	if err != nil {
+	var gitAttrs *repository.GitAttributes
+	var err error
+	if req.GitAttributes != nil {
+		gitAttrs = repository.ParseGitAttributes([]byte(*req.GitAttributes))
+	} else if gitAttrs, err = repo.GitAttributes(rev); err != nil {
 		responseJSON(w, fmt.Errorf("failed to read .gitattributes for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
 		return
 	}
@@ -139,7 +142,7 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	var respFiles []preuploadResponseFile
 	for _, file := range req.Files {
 		uploadMode := "regular"
-		if gitAttrs.IsLFS(file.Path) || file.Size > maxRegularFileSize {
+		if gitAttrs.IsLFS(file.Path) || h.routesToLFS(file) {
 			uploadMode = "lfs"
 		}
 
@@ -153,6 +156,66 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 		Files: respFiles,
 	}
 	responseJSON(w, resp, http.StatusOK)
+}
+
+// routesToLFS reports whether huggingface.co's preupload sends file to LFS by its size and sample alone.
+func (h *Handler) routesToLFS(file preuploadFile) bool {
+	p := h.lfsPolicy
+	if p.MaxRegularFileSize > 0 && file.Size > p.MaxRegularFileSize {
+		return true
+	}
+	if p.MaxBinaryFileSize <= 0 || file.Size <= p.MaxBinaryFileSize {
+		return false
+	}
+	sample, err := base64.StdEncoding.DecodeString(file.Sample)
+	if err != nil {
+		sample = nil // the Hub only checks that the sample is a string
+	}
+	// The Hub asks isbinaryfile alone; asking libgit2 too sends to LFS the text its commit refuses as
+	// binary (UTF-16, control bytes) whenever the sample shows it.
+	return lfs.IsBinarySample(sample) || lfs.IsBinaryContent(sample)
+}
+
+// policyError is huggingface.co's refusal of the blobs ops add to ref, nil when the policy accepts them.
+// Large files outrank binary ones, and each content is named once, at its first path.
+func (h *Handler) policyError(ops []repository.CommitOperation, ref string) error {
+	var large, binary []lfs.OffendingFile
+	seen := map[[sha256.Size]byte]bool{}
+	for _, op := range ops {
+		v := h.lfsPolicy.Check(int64(len(op.Content)), op.Content[:min(len(op.Content), lfs.BinarySniffSize)])
+		if v == lfs.ViolationNone {
+			continue
+		}
+		sum := sha256.Sum256(op.Content)
+		if seen[sum] {
+			continue
+		}
+		seen[sum] = true
+		file := lfs.OffendingFile{Path: op.Path, Ref: ref}
+		if v == lfs.ViolationLarge {
+			large = append(large, file)
+		} else {
+			binary = append(binary, file)
+		}
+	}
+	switch {
+	case len(large) > 0:
+		return &lfs.PolicyError{Kind: lfs.ViolationLarge, Files: large, Limit: h.lfsPolicy.MaxRegularFileSize}
+	case len(binary) > 0:
+		return &lfs.PolicyError{Kind: lfs.ViolationBinary, Files: binary}
+	}
+	return nil
+}
+
+// commitGitattributes returns the .gitattributes ops leave on branch: the last op on the file decides
+// (nil for a delete), else the branch tip's.
+func commitGitattributes(repo *repository.Repository, branch string, ops []repository.CommitOperation) ([]byte, error) {
+	for _, op := range slices.Backward(ops) {
+		if op.Path == repository.GitattributesFileName {
+			return op.Content, nil
+		}
+	}
+	return repo.BranchGitattributes(branch)
 }
 
 // handleCommit handles POST /api/{repoType}/{repo}/commit/{rev}
@@ -173,6 +236,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	var header commitHeader
 	var ops []repository.CommitOperation
+	var lfsPaths []string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -230,6 +294,7 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 				Path:    lfsFile.Path,
 				Content: []byte(pointerContent),
 			})
+			lfsPaths = append(lfsPaths, lfsFile.Path)
 
 		case "deletedFile":
 			var deleted commitDeletedFile
@@ -247,6 +312,11 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 	if err := scanner.Err(); err != nil {
 		responseJSON(w, fmt.Errorf("failed to read request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := h.policyError(ops, plumbing.NewBranchReferenceName(rev).String()); err != nil {
+		responseJSON(w, err, http.StatusBadRequest)
 		return
 	}
 
@@ -279,6 +349,18 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 			repo.RefUpdate(oldRev, receive.ZeroHash, "refs/heads/"+rev),
 		}, "pre-receive hook denied the commit") {
 			return
+		}
+	}
+
+	// Like huggingface.co, route every uploaded LFS file to LFS in the commit that adds it.
+	if len(lfsPaths) > 0 {
+		attrs, err := commitGitattributes(repo, rev, ops)
+		if err != nil {
+			responseJSON(w, fmt.Errorf("failed to read .gitattributes for repository %q: %v", ri.RepoName, err), http.StatusInternalServerError)
+			return
+		}
+		if tracked, changed := repository.TrackLFS(attrs, lfsPaths...); changed {
+			ops = append(ops, repository.CommitOperation{Type: repository.CommitOperationAdd, Path: repository.GitattributesFileName, Content: tracked})
 		}
 	}
 

@@ -136,10 +136,10 @@ func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service 
 // rejection is reported to the client in-protocol via report-status.
 var errPreReceiveDenied = errors.New("pre-receive hook denied the push")
 
-// receivePackHooks wires the handler's pre/post-receive hook functions into
-// the go-git receive-pack serving path.
+// receivePackHooks wires the handler's pre/post-receive hook functions and LFS
+// policy into the go-git receive-pack serving path.
 func (h *Handler) receivePackHooks(repoName string) repository.ReceivePackHooks {
-	var hooks repository.ReceivePackHooks
+	hooks := repository.ReceivePackHooks{Policy: h.lfsPolicy}
 	if h.preReceiveHookFunc != nil {
 		hooks.PreReceive = func(ctx context.Context, updates []receive.RefUpdate) error {
 			if len(updates) == 0 {

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -31,6 +32,7 @@ type Server struct {
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	tokenSignValidator  authenticate.TokenSignValidator
 	lfsURL              string
+	lfsPolicy           lfs.Policy
 }
 
 type identityKey struct{}
@@ -68,6 +70,13 @@ func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(s *Server) {
 		s.postReceiveHookFunc = fn
+	}
+}
+
+// WithLFSPolicy sets the huggingface.co LFS rules for pushed blobs; without it no rule applies.
+func WithLFSPolicy(policy lfs.Policy) Option {
+	return func(s *Server) {
+		s.lfsPolicy = policy
 	}
 }
 

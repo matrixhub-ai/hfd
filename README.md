@@ -41,6 +41,30 @@ hooks.
   available; otherwise, and for S3, hfd falls back to go-git.
 - Coverage evolves with upstream API and client changes.
 
+## LFS Policy
+
+As on huggingface.co, files larger than 10 MiB and binary files larger than
+100000 bytes must be stored with Git LFS or Xet, not as regular Git blobs:
+
+- The Hub API's preupload routes them to LFS, so `hf` and `huggingface_hub`
+  upload them there; the commit API refuses them inline with 400 and the
+  Hub's message.
+- A commit that adds an LFS file not yet tracked in `.gitattributes` appends
+  `<path> filter=lfs diff=lfs merge=lfs -text` to it, as the Hub does.
+- `git push` of such a regular blob is refused with the Hub's banner and
+  `pre-receive hook declined` for every ref, through the system `git` and
+  go-git alike. The system `git` runs the policy as hfd's own pre-receive
+  hook through `core.hooksPath`, so hooks in a repository's `hooks/`
+  directory do not run while the policy is on. That hook is written under
+  the system temporary directory, which must allow executables (a `noexec`
+  `TMPDIR` makes every push through the system `git` fail closed) and must
+  not be cleaned while hfd runs.
+
+`-max-regular-file-size` and `-max-binary-file-size` set the limits in bytes
+(defaults 10485760 and 100000); 0 disables a rule. Embedders set
+`server.Options.LFSPolicy`: nil applies the Hub's limits, `&lfs.Policy{}`
+disables both rules.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the
