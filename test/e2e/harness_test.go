@@ -311,7 +311,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	handler = xet.casServer(handler)
 	if cfg.internalAPI {
 		handler = backendinternalapi.NewHandler(
-			backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xetstore.New(xet.xs))),
+			backendinternalapi.WithGC(gc.NewGC(st.RepositoriesFS(), xetstore.New(xet.xs))),
 			backendinternalapi.WithStorage(xet.xs),
 			backendinternalapi.WithSpool(xet.spool),
 			backendinternalapi.WithMirror(xet.engine),

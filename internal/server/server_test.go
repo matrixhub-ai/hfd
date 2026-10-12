@@ -135,7 +135,7 @@ func TestNewHTTPHandler(t *testing.T) {
 		{name: "internal default tail", path: "/internal/objects", status: http.StatusNotFound, defaultNext: true},
 		{name: "internal usage disabled", path: "/internal/usage", status: http.StatusTeapot, identity: authenticate.Anonymous},
 		{name: "internal usage enabled", options: Options{InternalOptions: []backendinternalapi.Option{
-			backendinternalapi.WithCollector(gc.NewCollector(xsStorage.RepositoriesFS(), xetstore.New(xs))),
+			backendinternalapi.WithGC(gc.NewGC(xsStorage.RepositoriesFS(), xetstore.New(xs))),
 			backendinternalapi.WithStorage(xs),
 		}}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},

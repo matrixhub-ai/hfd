@@ -183,7 +183,7 @@ func TestGCLifecycle(t *testing.T) {
 	// The wiring under test: the internal management API wraps the whole
 	// chain outermost, the way cmd/hfd's internalAPI does.
 	handler = backendinternalapi.NewHandler(
-		backendinternalapi.WithCollector(gc.NewCollector(st.RepositoriesFS(), xetstore.New(xet.xs))),
+		backendinternalapi.WithGC(gc.NewGC(st.RepositoriesFS(), xetstore.New(xet.xs))),
 		backendinternalapi.WithStorage(xet.xs),
 		backendinternalapi.WithSpool(xet.spool),
 		backendinternalapi.WithMirror(xet.engine),

@@ -22,7 +22,7 @@ import (
 )
 
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate; it assembles the
-// usage report and the GC step from the collector (repositories), the xet store, the spool and the engine:
+// usage report and the GC step from the repository GC, the xet store, the spool and the engine:
 // GET /internal/objects lists stored objects,
 // GET /internal/usage reports repository, xet storage, spool and mirror index usage,
 // POST /internal/gc (?dry_run=&grace=&max=&budget=) runs one GC step: Git GC in every repository, then unlinking of the sha256 index
@@ -32,24 +32,24 @@ import (
 // section per sweep pass that ran and succeeded (storage, spools, mirror), lists failed passes in errors with status 200, and
 // done once every pass finished — repeat until done; only a GC step already in flight (409) or a bad parameter (400) fails the request.
 type Handler struct {
-	collector *gc.Collector
-	store     xetstorage.Storage
-	gc        *xetstorage.GC
-	spool     *spool.Spool
-	mirror    *xetmirror.Mirror
-	gcGrace   time.Duration
-	mu        sync.Mutex // one GC step in flight
-	root      *mux.Router
-	next      http.Handler
+	gc      *gc.GC
+	store   xetstorage.Storage
+	sweeper *xetstorage.GC
+	spool   *spool.Spool
+	mirror  *xetmirror.Mirror
+	gcGrace time.Duration
+	mu      sync.Mutex // one GC step in flight
+	root    *mux.Router
+	next    http.Handler
 }
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
 
-// WithCollector sets the collector that reports repository usage and runs the prune pass.
-func WithCollector(c *gc.Collector) Option {
+// WithGC sets the GC that reports repository usage and runs the prune pass.
+func WithGC(g *gc.GC) Option {
 	return func(h *Handler) {
-		h.collector = c
+		h.gc = g
 	}
 }
 
@@ -97,7 +97,7 @@ func NewHandler(opts ...Option) *Handler {
 		opt(h)
 	}
 	if h.store != nil {
-		h.gc = xetstorage.NewGC(h.store)
+		h.sweeper = xetstorage.NewGC(h.store)
 	}
 	if h.next == nil {
 		h.next = http.NotFoundHandler()
@@ -258,7 +258,7 @@ func (h *Handler) usage(r *http.Request) (usageResponse, error) {
 			return resp, fmt.Errorf("mirror usage: %w", err)
 		}
 	}
-	if resp.Repository, err = h.collector.Usage(ctx); err != nil {
+	if resp.Repository, err = h.gc.Usage(ctx); err != nil {
 		return resp, err
 	}
 	return resp, nil
@@ -304,7 +304,7 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// A failed prune does not stop the sweep: it only unlinks, and the sweep reclaims nothing an index entry still anchors.
-	pr, err := h.collector.Prune(ctx, gc.PruneOptions{Grace: opts.grace, DryRun: opts.dryRun})
+	pr, err := h.gc.Prune(ctx, gc.PruneOptions{Grace: opts.grace, DryRun: opts.dryRun})
 	if errors.Is(err, gc.ErrBusy) {
 		http.Error(w, "GC already running", http.StatusConflict)
 		return
@@ -320,9 +320,9 @@ func (h *Handler) handleGC(w http.ResponseWriter, r *http.Request) {
 		deadline = time.Now().Add(opts.budget)
 	}
 	swept, ended := 0, true
-	if h.gc != nil {
+	if h.sweeper != nil {
 		// hfd sweeps sha256-anchored: once prune drops the OID, the files entry alone keeps nothing alive.
-		xr, err := h.gc.SweepStep(ctx, xetstorage.SweepOptions{
+		xr, err := h.sweeper.SweepStep(ctx, xetstorage.SweepOptions{
 			Anchor: xetstorage.AnchorSHA256, Grace: opts.grace, DryRun: opts.dryRun, MaxDeletes: opts.maxDeletes, Budget: opts.budget,
 		})
 		if err != nil {

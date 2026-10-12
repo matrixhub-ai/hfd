@@ -17,7 +17,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-// ErrBusy reports a Prune already running on this Collector.
+// ErrBusy reports a Prune already running on this GC.
 var ErrBusy = errors.New("gc already running")
 
 // DefaultGrace is the grace window a zero PruneOptions.Grace stands for, the same as the store sweep's default.
@@ -31,22 +31,22 @@ type LFSStore interface {
 	Unlink(ctx context.Context, oid string) (bool, error)
 }
 
-// Collector covers the repository-aware side of GC over the repositories and the LFS object store: the prune pass (Git GC
+// GC is the repository-aware garbage collection over the repositories and the LFS object store: the prune pass (Git GC
 // in every repository, then unlinking of the OIDs no surviving LFS pointer names) and the repositories' usage.
 //
 // Liveness is a git pointer in any repository.
 // The grace window is keyed on the stored time, which a re-push of the same content may not refresh: an OID deleted
 // with one repository and re-pushed to another is exposed until the new ref lands, so Prune
 // only while pushes are quiescent.
-type Collector struct {
+type GC struct {
 	repos billy.Filesystem
 	store LFSStore
 	mu    sync.Mutex // serializes Prune
 }
 
-// NewCollector creates a Collector over the repositories filesystem and the store; without a store only Usage works.
-func NewCollector(repos billy.Filesystem, store LFSStore) *Collector {
-	return &Collector{repos: repos, store: store}
+// NewGC creates a GC over the repositories filesystem and the store; without a store only Usage works.
+func NewGC(repos billy.Filesystem, store LFSStore) *GC {
+	return &GC{repos: repos, store: store}
 }
 
 // PruneOptions configures one prune run.
@@ -71,18 +71,18 @@ type PruneResult struct {
 // Prune runs Git GC in every repository, then unlinks the unreferenced OIDs past the grace window;
 // the data stays until a sweep reclaims it. Busy runs fail with ErrBusy; any other error comes with the partial result,
 // whose Git fields and Unlinked list what already happened.
-func (c *Collector) Prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
-	if !c.mu.TryLock() {
+func (g *GC) Prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
+	if !g.mu.TryLock() {
 		return nil, ErrBusy
 	}
-	defer c.mu.Unlock()
-	return c.prune(ctx, opts)
+	defer g.mu.Unlock()
+	return g.prune(ctx, opts)
 }
 
-// prune is the prune pass; the caller holds c.mu.
-func (c *Collector) prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
+// prune is the prune pass; the caller holds g.mu.
+func (g *GC) prune(ctx context.Context, opts PruneOptions) (*PruneResult, error) {
 	res := &PruneResult{DryRun: opts.DryRun, Unlinked: []string{}}
-	if c.store == nil {
+	if g.store == nil {
 		return res, errors.New("gc: no store configured")
 	}
 	grace := opts.Grace
@@ -95,13 +95,13 @@ func (c *Collector) prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		cutoff = time.Now().Add(-grace).Truncate(time.Second)
 	}
 	live := map[string]struct{}{}
-	if err := c.mark(ctx, res, cutoff, live); err != nil {
+	if err := g.mark(ctx, res, cutoff, live); err != nil {
 		return res, err
 	}
 	res.LiveObjects = len(live)
 
 	candidates := []string{}
-	err := c.store.Walk(ctx, func(oid string, storedAt time.Time) error {
+	err := g.store.Walk(ctx, func(oid string, storedAt time.Time) error {
 		if _, ok := live[oid]; ok {
 			return nil
 		}
@@ -121,7 +121,7 @@ func (c *Collector) prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 		res.Unlinked = candidates
 	} else {
 		for _, oid := range candidates {
-			removed, err := c.store.Unlink(ctx, oid)
+			removed, err := g.store.Unlink(ctx, oid)
 			if err != nil {
 				err = fmt.Errorf("unlink %s: %w", oid, err)
 				slog.ErrorContext(ctx, "gc prune failed after unlinking", "unlinked", len(res.Unlinked), "err", err)
@@ -140,12 +140,12 @@ func (c *Collector) prune(ctx context.Context, opts PruneOptions) (*PruneResult,
 }
 
 // mark runs Git GC in every repository, adding its stats to res, then collects the OIDs the surviving LFS pointers name into live.
-func (c *Collector) mark(ctx context.Context, res *PruneResult, cutoff time.Time, live map[string]struct{}) error {
-	if _, err := c.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
+func (g *GC) mark(ctx context.Context, res *PruneResult, cutoff time.Time, live map[string]struct{}) error {
+	if _, err := g.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	return repository.Walk(ctx, c.repos, "/", func(path string) error {
-		repo, err := repository.Open(c.repos, path)
+	return repository.Walk(ctx, g.repos, "/", func(path string) error {
+		repo, err := repository.Open(g.repos, path)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
