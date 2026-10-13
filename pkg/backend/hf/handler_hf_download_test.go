@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -373,4 +375,312 @@ func TestResolveLFSStreamsFromEngine(t *testing.T) {
 	if got := rec.Result().Header.Get("X-Linked-Size"); got != fmt.Sprint(len(data)) {
 		t.Fatalf("X-Linked-Size = %q, want %d", got, len(data))
 	}
+}
+
+// TestTreeHubShape pins the huggingface.co tree listing hf-mount mounts from:
+// directories are entries of their own, no slot is ever blank, and ingested
+// LFS files carry their xetHash.
+func TestTreeHubShape(t *testing.T) {
+	data := []byte("hf tree model bytes")
+	sum := sha256.Sum256(data)
+	modelOID := hex.EncodeToString(sum[:])
+	missingOID := strings.Repeat("b", 64)
+	const missingSize = 7
+
+	// a.txt sorts before directory a in git tree order, but after it in a plain string sort.
+	files := map[string]string{
+		"top.txt":     "hello",
+		"a.txt":       "a",
+		"a/b.txt":     "b",
+		"a/c/d.txt":   "d",
+		"model.bin":   hfLFSPointerText(modelOID, len(data)),
+		"missing.bin": hfLFSPointerText(missingOID, missingSize),
+	}
+	st, _ := newLFSRepo(t, files)
+	m, _ := newXETDataPlane(t, "", nil)
+	if err := m.PutObject(context.Background(), modelOID, bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+
+	const root = "/api/models/org/repo/tree/main"
+	noMirror := NewHandler(WithStorage(st))
+	withMirror := NewHandler(WithStorage(st), WithMirror(m))
+	handlers := []struct {
+		name string
+		h    *Handler
+	}{
+		{"NoMirror", noMirror},
+		{"Mirror", withMirror},
+	}
+	for _, tc := range handlers {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("RootListsDirectory", func(t *testing.T) {
+				const behavior = "root listing has directory a in tree order, after file a.txt"
+				entries, body := hubTree(t, tc.h, root)
+				requireTreePaths(t, behavior, body, entries, "a.txt", "a", "missing.bin", "model.bin", "top.txt")
+				checkHubDirectory(t, behavior, body, entries[1])
+			})
+
+			t.Run("SubdirectoryListsDirectory", func(t *testing.T) {
+				const behavior = "tree/main/a lists file a/b.txt and directory a/c"
+				entries, body := hubTree(t, tc.h, root+"/a")
+				requireTreePaths(t, behavior, body, entries, "a/b.txt", "a/c")
+				if entries[0]["type"] != "file" {
+					t.Errorf("%s: a/b.txt type = %v, want file\nbody: %s", behavior, entries[0]["type"], body)
+				}
+				checkHubDirectory(t, behavior, body, entries[1])
+			})
+
+			// Regression guard: passes today, as a/c holds no subdirectory to blank.
+			t.Run("NestedSubdirectoryListsFile", func(t *testing.T) {
+				const behavior = "tree/main/a/c lists file a/c/d.txt"
+				entries, body := hubTree(t, tc.h, root+"/a/c")
+				requireTreePaths(t, behavior, body, entries, "a/c/d.txt")
+				if entries[0]["type"] != "file" {
+					t.Errorf("%s: a/c/d.txt type = %v, want file\nbody: %s", behavior, entries[0]["type"], body)
+				}
+			})
+
+			t.Run("RecursiveListsDirectories", func(t *testing.T) {
+				const behavior = "recursive listing has directories a and a/c in tree order"
+				entries, body := hubTree(t, tc.h, root+"?recursive=true")
+				requireTreePaths(t, behavior, body, entries, "a.txt", "a", "a/b.txt", "a/c", "a/c/d.txt", "missing.bin", "model.bin", "top.txt")
+				checkHubDirectory(t, behavior, body, entries[1])
+				checkHubDirectory(t, behavior, body, entries[3])
+			})
+
+			t.Run("NoBlankEntries", func(t *testing.T) {
+				const behavior = "no listing has a blank entry"
+				for _, target := range []string{root, root + "/a", root + "/a/c", root + "?recursive=true"} {
+					entries, body := hubTree(t, tc.h, target)
+					checkNoBlankEntries(t, behavior, target, body, entries)
+				}
+			})
+
+			t.Run("ExpandLastCommit", func(t *testing.T) {
+				const behavior = "expand=true gives every root entry, directory a included, a lastCommit"
+				entries, body := hubTree(t, tc.h, root+"?expand=true")
+				requireTreePaths(t, behavior, body, entries, "a.txt", "a", "missing.bin", "model.bin", "top.txt")
+				for _, e := range entries {
+					lc, _ := e["lastCommit"].(map[string]any)
+					id, _ := lc["id"].(string)
+					title, _ := lc["title"].(string)
+					date, _ := lc["date"].(string)
+					if _, err := time.Parse(repository.TimeFormat, date); id == "" || title == "" || err != nil {
+						t.Errorf("%s: %v lastCommit = %v, want id, title and a %s date\nbody: %s", behavior, e["path"], e["lastCommit"], repository.TimeFormat, body)
+					}
+				}
+				plain, plainBody := hubTree(t, tc.h, root)
+				for _, e := range plain {
+					if _, ok := e["lastCommit"]; ok {
+						t.Errorf("%s: %v has lastCommit without expand\nbody: %s", behavior, e["path"], plainBody)
+					}
+				}
+			})
+
+			t.Run("PlainFile", func(t *testing.T) {
+				const behavior = "plain file top.txt has its byte size and no lfs or xetHash"
+				entries, body := hubTree(t, tc.h, root)
+				e := treeEntryAt(t, behavior, body, entries, "top.txt")
+				if e["type"] != "file" || e["size"] != float64(len("hello")) {
+					t.Errorf("%s: top.txt = %v, want type file and size 5\nbody: %s", behavior, e, body)
+				}
+				for _, k := range []string{"lfs", "xetHash"} {
+					if _, ok := e[k]; ok {
+						t.Errorf("%s: top.txt carries %q\nbody: %s", behavior, k, body)
+					}
+				}
+			})
+
+			t.Run("LFSPointerFiles", func(t *testing.T) {
+				const behavior = "pointer files carry lfs and the pointed-to size"
+				entries, body := hubTree(t, tc.h, root)
+				for _, want := range []struct {
+					path string
+					oid  string
+					size int
+				}{
+					{"model.bin", modelOID, len(data)},
+					{"missing.bin", missingOID, missingSize},
+				} {
+					e := treeEntryAt(t, behavior, body, entries, want.path)
+					block, _ := e["lfs"].(map[string]any)
+					pointerSize := len(hfLFSPointerText(want.oid, want.size))
+					if e["type"] != "file" || e["size"] != float64(want.size) ||
+						block["oid"] != want.oid || block["size"] != float64(want.size) || block["pointerSize"] != float64(pointerSize) {
+						t.Errorf("%s: %s = %v, want size %d and lfs {oid %s, size %d, pointerSize %d}\nbody: %s",
+							behavior, want.path, e, want.size, want.oid, want.size, pointerSize, body)
+					}
+				}
+			})
+		})
+	}
+
+	listings := []string{root, root + "?recursive=true"}
+
+	t.Run("IngestedLFSCarriesXetHash", func(t *testing.T) {
+		const behavior = "with a mirror, ingested LFS file model.bin carries its xetHash"
+		want := m.FileHash(context.Background(), modelOID)
+		if want == "" {
+			t.Fatalf("%s: mirror has no file hash for ingested model.bin", behavior)
+		}
+		head := httptest.NewRecorder()
+		withMirror.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/org/repo/resolve/main/model.bin", nil))
+		if got := strings.TrimSpace(head.Result().Header.Get("X-Xet-Hash")); head.Code != http.StatusOK || got != want {
+			t.Fatalf("%s: HEAD resolve model.bin = %d with X-Xet-Hash %q, want 200 with the mirror's %q", behavior, head.Code, got, want)
+		}
+		for _, target := range listings {
+			entries, body := hubTree(t, withMirror, target)
+			e := treeEntryAt(t, behavior, body, entries, "model.bin")
+			raw, ok := e["xetHash"]
+			got, _ := raw.(string)
+			switch {
+			case !ok:
+				t.Errorf("%s: GET %s model.bin has no xetHash, want %q\nbody: %s", behavior, target, want, body)
+			case len(got) != 64 || strings.Trim(got, "0123456789abcdef") != "":
+				t.Errorf("%s: GET %s model.bin xetHash = %#v, want 64 lowercase hex\nbody: %s", behavior, target, raw, body)
+			case got != want:
+				t.Errorf("%s: GET %s model.bin xetHash = %q, want %q as in X-Xet-Hash\nbody: %s", behavior, target, got, want, body)
+			}
+			block, _ := e["lfs"].(map[string]any)
+			if e["size"] != float64(len(data)) || block["size"] != float64(len(data)) {
+				t.Errorf("%s: GET %s model.bin size = %v and lfs.size = %v, want both %d\nbody: %s", behavior, target, e["size"], block["size"], len(data), body)
+			}
+		}
+	})
+
+	// Regression guards: pass today and pin where xetHash stays absent.
+	t.Run("NoMirrorOmitsXetHash", func(t *testing.T) {
+		const behavior = "without a mirror, LFS file model.bin has lfs but no xetHash"
+		for _, target := range listings {
+			entries, body := hubTree(t, noMirror, target)
+			checkLFSWithoutXetHash(t, behavior, target, body, treeEntryAt(t, behavior, body, entries, "model.bin"))
+		}
+	})
+
+	t.Run("UningestedLFSOmitsXetHash", func(t *testing.T) {
+		const behavior = "un-ingested LFS file missing.bin has lfs but no xetHash"
+		for _, tc := range handlers {
+			t.Run(tc.name, func(t *testing.T) {
+				for _, target := range listings {
+					entries, body := hubTree(t, tc.h, target)
+					checkLFSWithoutXetHash(t, behavior, target, body, treeEntryAt(t, behavior, body, entries, "missing.bin"))
+				}
+			})
+		}
+	})
+
+	t.Run("NonLFSEntriesOmitXetHash", func(t *testing.T) {
+		const behavior = "with a mirror, plain file top.txt and directories a and a/c carry no xetHash"
+		const target = root + "?recursive=true"
+		entries, body := hubTree(t, withMirror, target)
+		for _, path := range []string{"top.txt", "a", "a/c"} {
+			if v, ok := treeEntryAt(t, behavior, body, entries, path)["xetHash"]; ok {
+				t.Errorf("%s: GET %s %s carries xetHash %#v\nbody: %s", behavior, target, path, v, body)
+			}
+		}
+	})
+
+	t.Run("UnreadableBlobOmitted", func(t *testing.T) {
+		const behavior = "top.txt, whose blob cannot be read, is left out instead of leaving a blank slot"
+		// A repository of its own: the shared one must keep top.txt readable.
+		st, _ := newLFSRepo(t, files)
+		const helloBlob = "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0" // git blob id of "hello"
+		loose := filepath.Join(repository.ResolvePath("org/repo"), "objects", helloBlob[:2], helloBlob[2:])
+		if err := st.RepositoriesFS().Remove(loose); err != nil {
+			t.Fatalf("remove the loose blob of top.txt: %v", err)
+		}
+		h := NewHandler(WithStorage(st))
+		for _, want := range []struct {
+			name, target string
+			paths        []string
+		}{
+			{"Root", root, []string{"a.txt", "a", "missing.bin", "model.bin"}},
+			{"Subdirectory", root + "/a", []string{"a/b.txt", "a/c"}},
+			{"Recursive", root + "?recursive=true", []string{"a.txt", "a", "a/b.txt", "a/c", "a/c/d.txt", "missing.bin", "model.bin"}},
+		} {
+			t.Run(want.name, func(t *testing.T) {
+				entries, body := hubTree(t, h, want.target)
+				checkNoBlankEntries(t, behavior, want.target, body, entries)
+				requireTreePaths(t, behavior, body, entries, want.paths...)
+			})
+		}
+	})
+}
+
+// hubTree GETs a tree route and decodes the raw JSON, so absent keys stay absent.
+func hubTree(t *testing.T, h *Handler, target string) ([]map[string]any, string) {
+	t.Helper()
+	rec := serveGet(h, target)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200\nbody: %s", target, rec.Code, body)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("GET %s: decode tree: %v\nbody: %s", target, err, body)
+	}
+	return entries, body
+}
+
+// requireTreePaths stops the test unless the listing holds exactly want, in order.
+func requireTreePaths(t *testing.T, behavior, body string, entries []map[string]any, want ...string) {
+	t.Helper()
+	got := make([]string, len(entries))
+	for i, e := range entries {
+		got[i], _ = e["path"].(string)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s: paths = %q, want %q\nbody: %s", behavior, got, want, body)
+	}
+}
+
+// checkNoBlankEntries reports each entry listed at target with an empty path, type or oid.
+func checkNoBlankEntries(t *testing.T, behavior, target, body string, entries []map[string]any) {
+	t.Helper()
+	for i, e := range entries {
+		for _, k := range []string{"path", "type", "oid"} {
+			if s, _ := e[k].(string); s == "" {
+				t.Errorf("%s: GET %s entry %d has an empty %s: %v\nbody: %s", behavior, target, i, k, e, body)
+				break
+			}
+		}
+	}
+}
+
+// checkHubDirectory reports how an unexpanded entry departs from a hub directory.
+func checkHubDirectory(t *testing.T, behavior, body string, e map[string]any) {
+	t.Helper()
+	oid, _ := e["oid"].(string)
+	if e["type"] != "directory" || e["size"] != float64(0) || len(oid) != 40 || strings.Trim(oid, "0123456789abcdef") != "" {
+		t.Errorf("%s: %v = %v, want type directory, size 0 and a 40-hex oid\nbody: %s", behavior, e["path"], e, body)
+	}
+	for _, k := range []string{"lfs", "xetHash", "lastCommit"} {
+		if _, ok := e[k]; ok {
+			t.Errorf("%s: directory %v carries %q\nbody: %s", behavior, e["path"], k, body)
+		}
+	}
+}
+
+// checkLFSWithoutXetHash reports an entry listed at target that lacks lfs or carries xetHash.
+func checkLFSWithoutXetHash(t *testing.T, behavior, target, body string, e map[string]any) {
+	t.Helper()
+	if _, ok := e["lfs"].(map[string]any); !ok {
+		t.Errorf("%s: GET %s %v has no lfs block\nbody: %s", behavior, target, e["path"], body)
+	}
+	if v, ok := e["xetHash"]; ok {
+		t.Errorf("%s: GET %s %v carries xetHash %#v\nbody: %s", behavior, target, e["path"], v, body)
+	}
+}
+
+// treeEntryAt returns the entry listed at path, stopping the test when there is none.
+func treeEntryAt(t *testing.T, behavior, body string, entries []map[string]any, path string) map[string]any {
+	t.Helper()
+	for _, e := range entries {
+		if e["path"] == path {
+			return e
+		}
+	}
+	t.Fatalf("%s: no entry at %s\nbody: %s", behavior, path, body)
+	return nil
 }
