@@ -51,9 +51,15 @@ type Repository struct {
 	defaultBranch atomic.Pointer[string]
 }
 
+// LargeObjectThreshold is the size in bytes above which loose objects are streamed from disk on every read instead of cached in memory.
+const LargeObjectThreshold = 1 << 20
+
+// storerOptions configures every go-git storer hfd constructs.
+var storerOptions = filesystem.Options{LargeObjectThreshold: LargeObjectThreshold}
+
 // newStorer returns a go-git storer for the bare repository at repoPath on fs, caching objects in c.
 func newStorer(fs billy.Filesystem, repoPath string, c cache.Object) *filesystem.Storage {
-	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), c, filesystem.Options{})
+	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), c, storerOptions)
 }
 
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
