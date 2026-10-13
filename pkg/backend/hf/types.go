@@ -39,6 +39,7 @@ type treeEntry struct {
 	Type       repository.EntryType `json:"type"`
 	Size       int64                `json:"size"`
 	LFS        *lfsPointer          `json:"lfs,omitempty"`
+	XetHash    string               `json:"xetHash,omitempty"`
 	LastCommit *treeLastCommit      `json:"lastCommit,omitempty"`
 }
 

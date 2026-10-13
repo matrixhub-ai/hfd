@@ -60,40 +60,44 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseJSON(w, toHFTreeEntries(r.Context(), entries, expand), http.StatusOK)
+	responseJSON(w, h.toHFTreeEntries(r.Context(), entries, expand), http.StatusOK)
 }
 
-func toHFTreeEntries(ctx context.Context, entries []*repository.TreeEntry, expand bool) []treeEntry {
-	result := make([]treeEntry, len(entries))
-	for i, e := range entries {
-
-		blob, err := e.Blob()
-		if err != nil {
-			slog.WarnContext(ctx, "failed to get blob for tree entry, skipping", "path", e.Path(), "error", err)
-			continue
-		}
-
-		result[i] = treeEntry{
+func (h *Handler) toHFTreeEntries(ctx context.Context, entries []*repository.TreeEntry, expand bool) []treeEntry {
+	result := make([]treeEntry, 0, len(entries))
+	for _, e := range entries {
+		entry := treeEntry{
 			OID:  e.Hash().String(),
 			Path: e.Path(),
 			Type: e.Type(),
-			Size: blob.Size(),
 		}
-		if ptr, _ := blob.LFSPointer(); ptr != nil {
-			result[i].LFS = &lfsPointer{
-				OID:         ptr.OID(),
-				Size:        ptr.Size(),
-				PointerSize: blob.Size(),
+		if e.Type() == repository.EntryTypeFile {
+			blob, err := e.Blob()
+			if err != nil {
+				slog.WarnContext(ctx, "failed to get blob for tree entry, skipping", "path", e.Path(), "error", err)
+				continue
 			}
-			result[i].Size = ptr.Size()
+			entry.Size = blob.Size()
+			if ptr, _ := blob.LFSPointer(); ptr != nil {
+				entry.LFS = &lfsPointer{
+					OID:         ptr.OID(),
+					Size:        ptr.Size(),
+					PointerSize: blob.Size(),
+				}
+				entry.Size = ptr.Size()
+				if h.mirror != nil {
+					entry.XetHash = h.mirror.FileHash(ctx, ptr.OID())
+				}
+			}
 		}
 		if lastCommit := e.LastCommit(); expand && lastCommit != nil {
-			result[i].LastCommit = &treeLastCommit{
+			entry.LastCommit = &treeLastCommit{
 				ID:    lastCommit.Hash().String(),
 				Title: lastCommit.Title(),
 				Date:  lastCommit.Author().When().UTC().Format(repository.TimeFormat),
 			}
 		}
+		result = append(result, entry)
 	}
 	return result
 }
