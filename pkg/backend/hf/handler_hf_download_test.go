@@ -3,11 +3,14 @@ package hf
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -683,4 +686,192 @@ func treeEntryAt(t *testing.T, behavior, body string, entries []map[string]any, 
 	}
 	t.Fatalf("%s: no entry at %s\nbody: %s", behavior, path, body)
 	return nil
+}
+
+// TestResolveRegularFile pins resolve's wire answers for a regular file go-git
+// holds in memory and one above repository.LargeObjectThreshold streamed from disk.
+func TestResolveRegularFile(t *testing.T) {
+	small := patternBytes(4096)
+	weights := patternBytes(repository.LargeObjectThreshold + 1)
+	st, head := newLFSRepo(t, map[string]string{"small.json": string(small), "weights": string(weights)})
+	srv := httptest.NewServer(NewHandler(WithStorage(st)))
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	files := []struct {
+		name        string
+		content     []byte
+		contentType string // empty leaves a sniffed type unpinned
+	}{
+		{"small.json", small, "application/json"},
+		{"weights", weights, ""},
+	}
+	for _, f := range files {
+		t.Run(f.name, func(t *testing.T) {
+			target := srv.URL + "/org/repo/resolve/main/" + f.name
+			size := len(f.content)
+			etag := `"` + gitBlobID(f.content) + `"`
+
+			t.Run("GET", func(t *testing.T) {
+				resp, body := fetch(t, client, http.MethodGet, target, nil)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200", resp.StatusCode)
+				}
+				if !bytes.Equal(body, f.content) {
+					t.Errorf("body differs from the %d committed bytes (got %d bytes)", size, len(body))
+				}
+				checkHeader(t, resp.Header, "Content-Length", fmt.Sprint(size))
+				checkHeader(t, resp.Header, "ETag", etag)
+				checkHeader(t, resp.Header, "X-Repo-Commit", head)
+				cd := resp.Header.Get("Content-Disposition")
+				if _, params, err := mime.ParseMediaType(cd); err != nil || params["filename"] != f.name {
+					t.Errorf("Content-Disposition = %q, want filename %q", cd, f.name)
+				}
+				if resp.Header.Get("Last-Modified") == "" {
+					t.Error("Last-Modified not set")
+				}
+			})
+
+			t.Run("HEAD", func(t *testing.T) {
+				resp, body := fetch(t, client, http.MethodHead, target, nil)
+				if resp.StatusCode != http.StatusOK || len(body) != 0 {
+					t.Fatalf("status = %d with %d body bytes, want 200 with none", resp.StatusCode, len(body))
+				}
+				checkHeader(t, resp.Header, "Content-Length", fmt.Sprint(size))
+				checkHeader(t, resp.Header, "ETag", etag)
+				checkHeader(t, resp.Header, "X-Repo-Commit", head)
+			})
+
+			t.Run("AcceptRanges", func(t *testing.T) {
+				for _, method := range []string{http.MethodGet, http.MethodHead} {
+					t.Run(method, func(t *testing.T) {
+						resp, _ := fetch(t, client, method, target, nil)
+						checkHeader(t, resp.Header, "Accept-Ranges", "bytes")
+					})
+				}
+			})
+
+			for _, rg := range []struct {
+				name, spec  string
+				first, last int // inclusive offsets served
+			}{
+				{"RangeBounded", "bytes=100-199", 100, 199},
+				{"RangeOpenEnded", fmt.Sprintf("bytes=%d-", size-300), size - 300, size - 1},
+				{"RangeSuffix", "bytes=-100", size - 100, size - 1},
+			} {
+				t.Run(rg.name, func(t *testing.T) {
+					resp, body := fetch(t, client, http.MethodGet, target, http.Header{"Range": {rg.spec}})
+					if resp.StatusCode != http.StatusPartialContent {
+						t.Fatalf("Range %s: status = %d, want 206", rg.spec, resp.StatusCode)
+					}
+					checkHeader(t, resp.Header, "Content-Range", fmt.Sprintf("bytes %d-%d/%d", rg.first, rg.last, size))
+					if !bytes.Equal(body, f.content[rg.first:rg.last+1]) {
+						t.Errorf("Range %s: body differs from bytes %d-%d (got %d bytes)", rg.spec, rg.first, rg.last, len(body))
+					}
+				})
+			}
+
+			t.Run("RangeMultiOutOfOrder", func(t *testing.T) {
+				// The second span precedes the first, so a forward-only stream must reopen.
+				spans := [][2]int{{size - 200, size - 101}, {0, 99}}
+				spec := fmt.Sprintf("bytes=%d-%d,%d-%d", spans[0][0], spans[0][1], spans[1][0], spans[1][1])
+				resp, body := fetch(t, client, http.MethodGet, target, http.Header{"Range": {spec}})
+				ct := resp.Header.Get("Content-Type")
+				mediaType, params, err := mime.ParseMediaType(ct)
+				if resp.StatusCode != http.StatusPartialContent || err != nil || mediaType != "multipart/byteranges" {
+					t.Fatalf("Range %s: status = %d, Content-Type = %q, want 206 multipart/byteranges", spec, resp.StatusCode, ct)
+				}
+				mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+				for i, s := range spans {
+					part, err := mr.NextPart()
+					if err != nil {
+						t.Fatalf("Range %s: part %d: %v", spec, i, err)
+					}
+					if got, want := part.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-%d/%d", s[0], s[1], size); got != want {
+						t.Errorf("Range %s: part %d Content-Range = %q, want %q", spec, i, got, want)
+					}
+					data, err := io.ReadAll(part)
+					if err != nil {
+						t.Fatalf("Range %s: read part %d: %v", spec, i, err)
+					}
+					if !bytes.Equal(data, f.content[s[0]:s[1]+1]) {
+						t.Errorf("Range %s: part %d body differs from bytes %d-%d (got %d bytes)", spec, i, s[0], s[1], len(data))
+					}
+				}
+				if _, err := mr.NextPart(); err != io.EOF {
+					t.Errorf("Range %s: NextPart after %d parts = %v, want io.EOF", spec, len(spans), err)
+				}
+			})
+
+			t.Run("RangeNotSatisfiable", func(t *testing.T) {
+				spec := fmt.Sprintf("bytes=%d-", size)
+				resp, _ := fetch(t, client, http.MethodGet, target, http.Header{"Range": {spec}})
+				if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+					t.Fatalf("Range %s: status = %d, want 416", spec, resp.StatusCode)
+				}
+				checkHeader(t, resp.Header, "Content-Range", fmt.Sprintf("bytes */%d", size))
+			})
+
+			t.Run("IfNoneMatch", func(t *testing.T) {
+				resp, body := fetch(t, client, http.MethodGet, target, http.Header{"If-None-Match": {etag}})
+				if resp.StatusCode != http.StatusNotModified || len(body) != 0 {
+					t.Fatalf("If-None-Match %s: status = %d with %d body bytes, want 304 with none", etag, resp.StatusCode, len(body))
+				}
+			})
+
+			if f.contentType != "" {
+				t.Run("ContentType", func(t *testing.T) {
+					resp, _ := fetch(t, client, http.MethodGet, target, nil)
+					checkHeader(t, resp.Header, "Content-Type", f.contentType)
+				})
+			}
+		})
+	}
+}
+
+// patternBytes returns n deterministic bytes that do not sniff as text.
+func patternBytes(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(i*7 + 3)
+	}
+	return b
+}
+
+// gitBlobID returns the SHA-1 Git object id of a blob holding content.
+func gitBlobID(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// fetch sends method to target with header over client and returns the response and its whole body.
+func fetch(t *testing.T, client *http.Client, method, target string, header http.Header) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, target, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, target, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read body: %v", method, target, err)
+	}
+	return resp, body
+}
+
+// checkHeader reports a header whose value is not want.
+func checkHeader(t *testing.T, h http.Header, key, want string) {
+	t.Helper()
+	if got := h.Get(key); got != want {
+		t.Errorf("%s = %q, want %q", key, got, want)
+	}
 }

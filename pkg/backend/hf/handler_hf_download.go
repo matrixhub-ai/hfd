@@ -1,11 +1,9 @@
 package hf
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -15,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/internal/seekable"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -225,42 +224,18 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	// X-Repo-Commit is required by huggingface_hub to identify the commit
 	w.Header().Set("X-Repo-Commit", commitHash)
 
+	// ServeContent matches If-None-Match and If-Range against this header.
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", blob.Hash()))
 
 	// Serve regular file content
-	w.Header().Set("Content-Length", strconv.FormatInt(blob.Size(), 10))
-	w.Header().Set("Last-Modified", blob.ModTime().UTC().Format(http.TimeFormat))
-
-	// Handle HEAD request
-	if r.Method == http.MethodHead {
-		return
-	}
-
-	reader, err := blob.NewReader()
+	rs, err := seekable.New(blob.Size(), blob.NewReader)
 	if err != nil {
 		responseJSON(w, fmt.Errorf("failed to get blob reader for file %q in repository %q at revision %q: %v", path, ri.RepoName, rev, err), http.StatusInternalServerError)
 		return
 	}
 	defer func() {
-		_ = reader.Close()
+		_ = rs.Close()
 	}()
 
-	if r.Header.Get("Range") != "" {
-		// TODO: Unfortunately, go-git does not support ranged reading of blobs,
-		// so we have to read the entire content into memory before serving.
-		// This is not ideal for large files.
-		// We should consider implementing ranged reading in go-git in the future.
-		content, err := io.ReadAll(reader)
-		if err != nil {
-			responseJSON(w, fmt.Errorf("failed to read blob content for file %q in repository %q at revision %q: %v", path, ri.RepoName, rev, err), http.StatusInternalServerError)
-			return
-		}
-		http.ServeContent(w, r, blob.Name(), blob.ModTime(), bytes.NewReader(content))
-	} else {
-		_, err = io.Copy(w, reader)
-		if err != nil {
-			// Log but don't send error - we may have already written partial content
-			return
-		}
-	}
+	http.ServeContent(w, r, name, blob.ModTime(), rs)
 }

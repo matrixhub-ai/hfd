@@ -51,7 +51,7 @@ func (fileLoader) Load(u *url.URL) (storage.Storer, error) {
 	if fi, err := os.Stat(filepath.Join(path, "config")); err != nil || fi.IsDir() {
 		return nil, transport.ErrRepositoryNotFound
 	}
-	return filesystem.NewStorageWithOptions(osfs.New(path), cache.NewObjectLRUDefault(), filesystem.Options{}), nil
+	return filesystem.NewStorageWithOptions(osfs.New(path), cache.NewObjectLRUDefault(), storerOptions), nil
 }
 
 // mirrorClientOptions configures the transport client used for mirror operations.
