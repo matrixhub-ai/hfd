@@ -201,7 +201,8 @@ type superSquashRequest struct {
 
 // preuploadRequest represents the preupload request body.
 type preuploadRequest struct {
-	Files []preuploadFile `json:"files"`
+	Files         []preuploadFile `json:"files"`
+	GitAttributes *string         `json:"gitAttributes"` // replaces the repository's .gitattributes; null counts as absent
 }
 
 // preuploadFile represents a file in the preupload request.

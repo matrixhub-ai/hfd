@@ -101,10 +101,10 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 // rejection is reported to the client in-protocol via report-status.
 var errPreReceiveDenied = errors.New("pre-receive hook denied the push")
 
-// receivePackHooks wires the server's pre/post-receive hook functions into
-// the go-git receive-pack serving path.
+// receivePackHooks wires the server's pre/post-receive hook functions and LFS
+// policy into the go-git receive-pack serving path.
 func (s *Server) receivePackHooks(repoName string) repository.ReceivePackHooks {
-	var hooks repository.ReceivePackHooks
+	hooks := repository.ReceivePackHooks{Policy: s.lfsPolicy}
 	if s.preReceiveHookFunc != nil {
 		hooks.PreReceive = func(ctx context.Context, updates []receive.RefUpdate) error {
 			if len(updates) == 0 {

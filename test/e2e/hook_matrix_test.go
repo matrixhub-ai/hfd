@@ -484,6 +484,27 @@ func TestPreReceiveHookDenyMatrix(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Expected tag push to fail, but it succeeded: %s", output)
 			}
+
+			// PreReceive runs before the LFS policy: a regular 11 MiB file gets
+			// the policy's banner on a branch the hook allows, but on a tag the
+			// client sees only the hook's denial.
+			if err := os.WriteFile(filepath.Join(cloneDir, "big.txt"), makeTextData(11<<20), 0644); err != nil {
+				t.Fatalf("Failed to create file: %v", err)
+			}
+			runGit(t, cloneDir, env, "add", "big.txt")
+			runGit(t, cloneDir, env, "commit", "-m", "Add big.txt")
+			runGit(t, cloneDir, env, "tag", "v2.0")
+			const banner = "Your push was rejected because it contains files larger than 10 MiB."
+			stdout, stderr, err := gitCmd(t, cloneDir, env, "push", "origin", "HEAD:refs/heads/big")
+			if out := stdout + stderr; err == nil || !strings.Contains(out, banner) || !strings.Contains(out, "- big.txt (ref: refs/heads/big)") {
+				t.Fatalf("branch push err = %v, want the LFS policy's refusal:\n%s", err, out)
+			}
+			stdout, stderr, err = gitCmd(t, cloneDir, env, "push", "origin", "v2.0")
+			out := stdout + stderr
+			t.Logf("hook-denied push output:\n%s", out)
+			if err == nil || !strings.Contains(out, "pre-receive hook denied the push") || strings.Contains(out, banner) || strings.Contains(out, "Offending files") {
+				t.Fatalf("tag push err = %v, want the pre-receive hook's denial without the policy banner:\n%s", err, out)
+			}
 		})
 	}
 }

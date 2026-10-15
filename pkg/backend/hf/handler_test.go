@@ -21,6 +21,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -117,6 +118,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 
 	handler = hf.NewHandler(append(catalogOptions(storage),
 		hf.WithStorage(storage),
+		hf.WithLFSPolicy(lfs.DefaultPolicy()),
 	)...)
 
 	handler = backendlfs.NewHandler(
@@ -295,6 +297,27 @@ func TestHuggingFacePreupload(t *testing.T) {
 	}
 	if result.Files[3].UploadMode != "regular" {
 		t.Errorf("Expected regular mode for small.txt at exactly 10 MiB, got %s", result.Files[3].UploadMode)
+	}
+}
+
+// TestHuggingFacePreuploadWithoutLFSPolicy pins that a handler without WithLFSPolicy applies no size rule.
+func TestHuggingFacePreuploadWithoutLFSPolicy(t *testing.T) {
+	st := newStorage(t, t.TempDir())
+	if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("org/repo"), "main"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	hf.NewHandler(hf.WithStorage(st)).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/models/org/repo/preupload/main",
+		strings.NewReader(`{"files":[{"path":"notes.txt","size":10485761,"sample":""}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var result preuploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].UploadMode != "regular" {
+		t.Errorf("files = %+v, want notes.txt in regular mode", result.Files)
 	}
 }
 

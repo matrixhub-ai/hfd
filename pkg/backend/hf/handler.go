@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
@@ -27,6 +28,7 @@ type Handler struct {
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 	mirror              *mirror.Mirror
+	lfsPolicy           lfs.Policy
 
 	createRepoFunc         CreateRepoFunc
 	deleteRepoFunc         DeleteRepoFunc
@@ -92,6 +94,13 @@ func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 func WithMirror(m *mirror.Mirror) Option {
 	return func(h *Handler) {
 		h.mirror = m
+	}
+}
+
+// WithLFSPolicy sets the huggingface.co LFS rules for Hub uploads; without it no rule applies.
+func WithLFSPolicy(policy lfs.Policy) Option {
+	return func(h *Handler) {
+		h.lfsPolicy = policy
 	}
 }
 

@@ -176,7 +176,18 @@ func (r *Repository) serveGit(ctx context.Context, dir, service, gitProtocol str
 	if stateless {
 		args = append(args, "--stateless-rpc")
 	}
-	cmd := gitCmd(ctx, gitProtocol, nil, append(args, dir)...)
+	var config, env []string
+	if service == GitReceivePack && hooks.Policy.Enabled() {
+		hooksDir, err := lfsPolicyHooks(ctx)
+		if err != nil {
+			return fmt.Errorf("installing the LFS policy hook: %w", err)
+		}
+		// As a pre-receive hook the policy sees git's quarantine, which a refused push never leaves.
+		// The hooks path stands in for the repository's own hooks/ directory, whose hooks then do not run.
+		config, env = []string{"core.hooksPath=" + hooksDir}, lfsPolicyEnv(hooks.Policy)
+	}
+	cmd := gitCmd(ctx, gitProtocol, config, append(args, dir)...)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdout = output
 	cmd.Stderr = &tailBuffer{sink: stderr}
 	input = ioutil.NewContextReader(ctx, input)
@@ -285,18 +296,23 @@ func readReceiveCommands(rd *bufio.Reader) (*packp.UpdateRequests, []byte, error
 
 // rejectReceivePack answers every command with reason in-protocol, draining the unread pack so the client gets to read the report.
 func rejectReceivePack(output io.Writer, input io.Reader, req *packp.UpdateRequests, reason error) error {
+	if err := refuseCommands(output, input, req, reason.Error()); err != nil {
+		return errors.Join(reason, err)
+	}
+	return reason
+}
+
+// refuseCommands reports status for every command, then drains the unread pack so the client gets to read the report.
+func refuseCommands(output io.Writer, input io.Reader, req *packp.UpdateRequests, status string) error {
 	rs := &packp.ReportStatus{UnpackStatus: "ok"}
 	for _, cmd := range req.Commands {
-		rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: cmd.Name, Status: reason.Error()})
+		rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: cmd.Name, Status: status})
 	}
 	err := writeReport(output, &req.Capabilities, rs)
 	if err == nil {
 		_, err = io.Copy(io.Discard, input)
 	}
-	if err != nil {
-		return errors.Join(reason, err)
-	}
-	return reason
+	return err
 }
 
 // Sideband termination is required even when report-status was not requested.

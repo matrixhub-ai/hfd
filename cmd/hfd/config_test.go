@@ -44,6 +44,37 @@ func TestParseConfigInvalidAddress(t *testing.T) {
 	}
 }
 
+func TestParseConfigLFSPolicy(t *testing.T) {
+	cases := []struct {
+		name            string
+		args            []string
+		regular, binary int64
+	}{
+		{"default", nil, 10485760, 100000},
+		{"custom", []string{"-max-regular-file-size", "5242880", "-max-binary-file-size", "1024"}, 5242880, 1024},
+		{"disabled", []string{"-max-regular-file-size", "0", "-max-binary-file-size", "0"}, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseConfigArgs(t, tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.MaxRegularFileSize != tc.regular || cfg.MaxBinaryFileSize != tc.binary {
+				t.Errorf("limits = %d, %d, want %d, %d", cfg.MaxRegularFileSize, cfg.MaxBinaryFileSize, tc.regular, tc.binary)
+			}
+		})
+	}
+}
+
+func TestParseConfigNegativeFileSize(t *testing.T) {
+	for _, arg := range []string{"-max-regular-file-size=-1", "-max-binary-file-size=-1"} {
+		if _, err := parseConfigArgs(t, []string{arg}); err == nil {
+			t.Errorf("%s: expected negative size error", arg)
+		}
+	}
+}
+
 func parseConfigArgs(t *testing.T, args []string) (*config, error) {
 	t.Helper()
 	oldFlags, oldArgs := flag.CommandLine, os.Args

@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
+	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -22,6 +23,7 @@ type Handler struct {
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
+	lfsPolicy           lfs.Policy
 }
 
 // PreOpenHookFunc is called before opening a repository for a git service request.
@@ -71,6 +73,13 @@ func WithPreReceiveHookFunc(fn receive.PreReceiveHookFunc) Option {
 func WithPostReceiveHookFunc(fn receive.PostReceiveHookFunc) Option {
 	return func(h *Handler) {
 		h.postReceiveHookFunc = fn
+	}
+}
+
+// WithLFSPolicy sets the huggingface.co LFS rules for pushed blobs; without it no rule applies.
+func WithLFSPolicy(policy lfs.Policy) Option {
+	return func(h *Handler) {
+		h.lfsPolicy = policy
 	}
 }
 

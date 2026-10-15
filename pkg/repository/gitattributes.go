@@ -2,9 +2,14 @@ package repository
 
 import (
 	_ "embed"
+	"errors"
 	"io"
 	"path"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -98,14 +103,137 @@ func matchPattern(pattern string, segs []string) bool {
 			}
 			continue
 		}
-		p = strings.ReplaceAll(strings.ReplaceAll(p, "**", "*"), "[!", "[^")
+		glob, ok := globSegment(p)
+		if !ok {
+			return false
+		}
 		for j := len(segs); j > 0; j-- {
-			ok, _ := path.Match(p, segs[j-1])
+			ok, _ := path.Match(glob, segs[j-1])
 			matched[j] = matched[j-1] && ok
 		}
 		matched[0] = false
 	}
 	return matched[len(segs)]
+}
+
+// globSegment rewrites a wildmatch pattern segment into path.Match syntax: a run of '*' is one '*'
+// within a segment and a bracket expression becomes a set of escaped members. It reports false for
+// a segment git never matches.
+func globSegment(p string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
+		case '\\':
+			b.WriteString(p[i:min(i+2, len(p))])
+			i++
+		case '*':
+			b.WriteByte('*')
+			for i+1 < len(p) && p[i+1] == '*' {
+				i++
+			}
+		case '[':
+			set, n := bracketSet(p[i:])
+			if n == 0 {
+				return "", false
+			}
+			b.WriteString(set)
+			i += n - 1
+		default:
+			b.WriteByte(p[i])
+		}
+	}
+	return b.String(), true
+}
+
+// bracketSet translates the bracket expression opening p and returns it with the length of p it
+// spans, 0 when it is not terminated. As in git, a leading ']' is a member, '-' spans a range only
+// after a plain member, and POSIX classes such as [:space:] expand to their ranges. Unlike git,
+// whose wildmatch never matches a pattern naming an unknown class, [:foo:] reads as plain members.
+func bracketSet(p string) (string, int) {
+	var b strings.Builder
+	b.WriteByte('[')
+	i := 1
+	if i < len(p) && (p[i] == '!' || p[i] == '^') {
+		b.WriteByte('^')
+		i++
+	}
+	first, afterMember := i, false
+	for i < len(p) {
+		if ranges, n := posixClass(p[i:]); n > 0 {
+			for ; ranges != ""; ranges = ranges[2:] {
+				b.WriteString(`\` + ranges[:1] + `-\` + ranges[1:2])
+			}
+			i += n
+			afterMember = false
+			continue
+		}
+		switch {
+		case p[i] == ']' && i > first:
+			return b.String() + "]", i + 1
+		case p[i] == '-' && afterMember && i+1 < len(p) && p[i+1] != ']':
+			hi, n := setMember(p[i+1:])
+			if n == 0 {
+				return "", 0
+			}
+			b.WriteString("-" + hi)
+			i += 1 + n
+			afterMember = false
+		default:
+			member, n := setMember(p[i:])
+			if n == 0 {
+				return "", 0
+			}
+			b.WriteString(member)
+			i += n
+			afterMember = true
+		}
+	}
+	return "", 0
+}
+
+// setMember reads the rune, escaped or not, at the start of p and returns it escaped for path.Match
+// with its length in p, 0 when p is a lone backslash.
+func setMember(p string) (string, int) {
+	start := 0
+	if p[0] == '\\' {
+		start = 1
+	}
+	if start == len(p) {
+		return "", 0
+	}
+	_, size := utf8.DecodeRuneInString(p[start:])
+	return `\` + p[start:start+size], start + size
+}
+
+// posixClasses are git's bracket classes as lo-hi byte pairs; git's ctype is ASCII-only and its
+// space omits \v and \f.
+var posixClasses = map[string]string{
+	"alnum":  "09AZaz",
+	"alpha":  "AZaz",
+	"blank":  "\t\t  ",
+	"cntrl":  "\x00\x1f\x7f\x7f",
+	"digit":  "09",
+	"graph":  "!~",
+	"lower":  "az",
+	"print":  " ~",
+	"punct":  "!/:@[`{~",
+	"space":  "\t\n\r\r  ",
+	"upper":  "AZ",
+	"xdigit": "09AFaf",
+}
+
+// posixClass returns the ranges and length of the class "[:name:]" opening p; n is 0 for anything
+// else, including an unknown name, which then reads as plain members.
+func posixClass(p string) (ranges string, n int) {
+	if !strings.HasPrefix(p, "[:") {
+		return "", 0
+	}
+	before, _, found := strings.Cut(p[2:], "]")
+	name, ok := strings.CutSuffix(before, ":")
+	if !found || !ok || posixClasses[name] == "" {
+		return "", 0
+	}
+	return posixClasses[name], len(before) + 3
 }
 
 var lruGitattributesCache = lru.New[Hash, *GitAttributes](128)
@@ -119,32 +247,90 @@ func (r *Repository) GitAttributes(rev string) (*GitAttributes, error) {
 	}
 
 	ga, _ := lruGitattributesCache.GetOrNew(blob.Hash(), func() (*GitAttributes, bool) {
-		parsed, parseErr := parseGitAttributes(blob)
-		err = parseErr
-		return parsed, parseErr == nil
+		var reader io.ReadCloser
+		if reader, err = blob.NewReader(); err != nil {
+			return nil, false
+		}
+		defer reader.Close()
+		var content []byte
+		if content, err = io.ReadAll(reader); err != nil {
+			return nil, false
+		}
+		return ParseGitAttributes(content), true
 	})
 	return ga, err
 }
 
-func parseGitAttributes(blob *Blob) (*GitAttributes, error) {
-	reader, err := blob.NewReader()
-	if err != nil {
+// BranchGitattributes returns the .gitattributes content at the tip of branch, nil when the branch is
+// unborn or has none. Unlike Blob, it reports every other read failure instead of a missing revision.
+func (r *Repository) BranchGitattributes(branch string) ([]byte, error) {
+	ref, err := r.repo.Storer.Reference(plumbing.NewBranchReferenceName(branch))
+	if errors.Is(err, plumbing.ErrReferenceNotFound) || (err == nil && ref.Hash().IsZero()) {
 		return nil, nil
 	}
-	defer reader.Close()
-
-	ga, err := parseGitAttributesReader(reader)
-	if err != nil {
-		return nil, nil
-	}
-	return ga, nil
-}
-
-func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
-	content, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
+	commit, err := r.repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, err
+	}
+	file, err := commit.File(GitattributesFileName)
+	if errors.Is(err, object.ErrFileNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	content, err := file.Contents()
+	return []byte(content), err
+}
+
+// TrackLFS appends to .gitattributes content a line for each path it does not route to LFS yet, as
+// huggingface.co's commit API does for LFS uploads; changed is false when every path is routed.
+func TrackLFS(content []byte, paths ...string) (updated []byte, changed bool) {
+	attrs := ParseGitAttributes(content)
+	var lines strings.Builder
+	seen := map[string]bool{}
+	for _, p := range paths {
+		if seen[p] || attrs.IsLFS(p) {
+			continue
+		}
+		seen[p] = true
+		lines.WriteString(lfsTrackLine(p))
+	}
+	if lines.Len() == 0 {
+		return content, false
+	}
+	updated = make([]byte, 0, len(content)+1+lines.Len())
+	updated = append(updated, content...)
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		updated = append(updated, '\n')
+	}
+	return append(updated, lines.String()...), true
+}
+
+// lfsTrackLine is the line huggingface.co appends for an LFS upload at filePath, escaped so that git
+// matches it where the Hub's escaping does not (a leading '!' or '"', backslash, TAB, CR, LF).
+func lfsTrackLine(filePath string) string {
+	var b strings.Builder
+	for i := 0; i < len(filePath); i++ {
+		switch c := filePath[i]; {
+		case strings.IndexByte(attrBlanks, c) >= 0:
+			b.WriteString("[[:space:]]")
+		case strings.IndexByte(`\[]*?#`, c) >= 0, i == 0 && (c == '!' || c == '"'):
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteString(" filter=lfs diff=lfs merge=lfs -text\n")
+	return b.String()
+}
+
+// ParseGitAttributes parses .gitattributes content.
+func ParseGitAttributes(content []byte) *GitAttributes {
 	ga := &GitAttributes{macros: map[string][]attribute{}}
 	for _, line := range strings.Split(strings.TrimPrefix(string(content), "\ufeff"), "\n") {
 		pattern, attrs, ok := parseAttrLine(line)
@@ -158,7 +344,7 @@ func parseGitAttributesReader(r io.Reader) (*GitAttributes, error) {
 			ga.rules = append(ga.rules, attrRule{pattern, attrs})
 		}
 	}
-	return ga, nil
+	return ga
 }
 
 // maxAttrLine is git's attribute line limit; longer lines are ignored.

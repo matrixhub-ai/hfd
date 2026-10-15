@@ -336,12 +336,33 @@ func updateStrings(updates []receive.RefUpdate) []string {
 	return out
 }
 
+// receiveRequest encodes receive-pack commands, the first carrying caps, followed by pack.
+func receiveRequest(t *testing.T, caps string, pack []byte, cmds ...string) []byte {
+	t.Helper()
+	lines := make([]string, 0, len(cmds)+1)
+	for i, cmd := range cmds {
+		if i == 0 {
+			cmd += "\x00" + caps
+		}
+		lines = append(lines, cmd+"\n")
+	}
+	return append(pktLines(t, append(lines, "")...), pack...)
+}
+
 // reportLines decodes the report-status filling out, demultiplexed when mux is set, as git's "unpack", "ok" and "ng" lines.
 func reportLines(t *testing.T, out *bytes.Buffer, mux bool) []string {
 	t.Helper()
+	return reportLinesProgress(t, out, mux, nil)
+}
+
+// reportLinesProgress is reportLines handing every band-2 packet to progress.
+func reportLinesProgress(t *testing.T, out *bytes.Buffer, mux bool, progress io.Writer) []string {
+	t.Helper()
 	var rd io.Reader = out
 	if mux {
-		rd = sideband.NewDemuxer(sideband.Sideband64k, out)
+		demux := sideband.NewDemuxer(sideband.Sideband64k, out)
+		demux.Progress = progress
+		rd = demux
 	}
 	var rs packp.ReportStatus
 	if err := rs.Decode(rd); err != nil {
@@ -432,16 +453,8 @@ func testReceivePackHooks(t *testing.T, native bool, proto string) {
 			post = append(post, updates)
 		},
 	}
-	// request encodes commands (the first carrying caps) followed by pack.
 	request := func(caps string, pack []byte, cmds ...string) []byte {
-		lines := make([]string, 0, len(cmds)+1)
-		for i, cmd := range cmds {
-			if i == 0 {
-				cmd += "\x00" + caps
-			}
-			lines = append(lines, cmd+"\n")
-		}
-		return append(pktLines(t, append(lines, "")...), pack...)
+		return receiveRequest(t, caps, pack, cmds...)
 	}
 	reset := func(denyWith error) {
 		pre, post, deny = nil, nil, denyWith
