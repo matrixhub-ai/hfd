@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -125,9 +126,10 @@ func (f *fixture) commitPointer(t *testing.T, name, oid string) {
 	}
 }
 
-// storer opens a fresh go-git storer on the repository at name, so no cached object can stand in for the stored ones.
+// storer opens a fresh go-git storer on the repository at name, reading the shared pool through its alternates, so no cached object can stand in for the stored ones.
 func (f *fixture) storer(name string) *filesystem.Storage {
-	return filesystem.NewStorage(chroot.New(f.st.RepositoriesFS(), repository.ResolvePath(name)), cache.NewObjectLRUDefault())
+	return filesystem.NewStorageWithOptions(chroot.New(f.st.RepositoriesFS(), repository.ResolvePath(name)), cache.NewObjectLRUDefault(),
+		filesystem.Options{AlternatesFS: f.st.FS()})
 }
 
 // orphanPointer commits a pointer for oid plus 64 KiB of random filler on a throwaway branch and deletes the branch,
@@ -228,16 +230,12 @@ func (f *fixture) snapshot(t *testing.T) map[string]string {
 	return files
 }
 
-// requireGitStats asserts res reports exactly the garbage objects and their payload bytes, plus a smaller objects directory unless it was a dry run, which measures none.
-func requireGitStats(t *testing.T, label string, res *PruneResult, garbage map[plumbing.Hash]int64) {
+// requireNoGitStats asserts res deleted no Git object and reclaimed nothing: hfd writes every object to the shared pool, which GC never collects.
+func requireNoGitStats(t *testing.T, label string, res *PruneResult) {
 	t.Helper()
-	var size int64
-	for _, n := range garbage {
-		size += n
-	}
-	if res.DeletedGitObjects != len(garbage) || res.DeletedGitBytes != size || (res.ReclaimedBytes > 0) == res.DryRun {
-		t.Fatalf("%s: deleted %d objects, %d bytes, reclaimed %d; want %d objects, %d bytes, reclaimed > 0 unless dry run (%t)",
-			label, res.DeletedGitObjects, res.DeletedGitBytes, res.ReclaimedBytes, len(garbage), size, res.DryRun)
+	if res.DeletedGitObjects != 0 || res.DeletedGitBytes != 0 || res.ReclaimedBytes != 0 {
+		t.Fatalf("%s: deleted %d objects, %d bytes, reclaimed %d; want none while the shared pool holds the garbage",
+			label, res.DeletedGitObjects, res.DeletedGitBytes, res.ReclaimedBytes)
 	}
 }
 
@@ -386,9 +384,9 @@ func TestPrune(t *testing.T) {
 		f := newFixture(t)
 		live, dead := f.put(t, "live-e "), f.put(t, "dead-e ")
 		f.commitPointer(t, "org/repo", live)
-		// go-git opens a HEAD-only dir as an empty repo; a file where objects/ belongs makes the scan fail.
-		for _, file := range []string{"HEAD", "objects"} {
-			if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/"+file, []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		// The scan reads only what refs reach, so the ref sends it into objects/, where a file makes the read fail.
+		for file, data := range map[string]string{"HEAD": "ref: refs/heads/main\n", "refs/heads/main": strings.Repeat("1", 40) + "\n", "objects": ""} {
+			if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/"+file, []byte(data), 0o644); err != nil {
 				t.Fatalf("write %s: %v", file, err)
 			}
 		}
@@ -414,7 +412,7 @@ func TestPrune(t *testing.T) {
 // Prune runs Git GC in every repository before marking, so an orphaned pointer stops keeping its object alive.
 func TestPruneGitGC(t *testing.T) {
 	ctx := context.Background()
-	// A dry run reports the objects, bytes and unlink the following run then performs, without touching Git or xet files.
+	// A dry run reports the unlink the following run then performs, without touching Git or xet files; neither reports the orphan's Git objects, which the shared pool keeps.
 	t.Run("PreviewMatchesRun", func(t *testing.T) {
 		f := newFixture(t)
 		c := f.gc()
@@ -427,7 +425,7 @@ func TestPruneGitGC(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dry-run prune: %v", err)
 		}
-		requireGitStats(t, "dry-run prune", preview, garbage)
+		requireNoGitStats(t, "dry-run prune", preview)
 		if !preview.DryRun || len(preview.Failed) != 0 || !slices.Equal(preview.Unlinked, []string{dead}) || preview.Repositories != 1 || preview.LiveObjects != 1 {
 			t.Fatalf("unexpected dry-run result: %+v", preview)
 		}
@@ -443,17 +441,17 @@ func TestPruneGitGC(t *testing.T) {
 		if err != nil {
 			t.Fatalf("prune: %v", err)
 		}
-		requireGitStats(t, "prune", res, garbage)
+		requireNoGitStats(t, "prune", res)
 		if res.DryRun || len(res.Failed) != 0 || !slices.Equal(res.Unlinked, []string{dead}) || res.Repositories != 1 || res.LiveObjects != 1 {
 			t.Fatalf("unexpected result: %+v", res)
 		}
 		if f.stored(t, dead) || !f.stored(t, live) {
 			t.Fatalf("live stored=%v dead stored=%v", f.stored(t, live), f.stored(t, dead))
 		}
-		f.requireObjects(t, "org/repo", garbage, false)
+		f.requireObjects(t, "org/repo", garbage, true)
 		f.requirePointer(t, "org/repo", "model.bin", live)
 	})
-	// One grace window shields fresh Git garbage and fresh xet data alike, in the preview and in the run.
+	// One grace window shields fresh xet data in the preview and in the run; the Git garbage stays in the shared pool.
 	t.Run("Grace", func(t *testing.T) {
 		f := newFixture(t)
 		c := f.gc()
@@ -471,12 +469,12 @@ func TestPruneGitGC(t *testing.T) {
 			if err != nil {
 				t.Fatalf("prune(dry_run=%t): %v", dry, err)
 			}
-			requireGitStats(t, fmt.Sprintf("prune(dry_run=%t)", dry), res, old)
-			// The fresh orphan's pointer survives GC, so its object is live rather than in grace; only the fresh loose object is.
-			if !slices.Equal(res.Unlinked, want) || res.SkippedInGrace != 1 || res.LiveObjects != 2 || len(res.Failed) != 0 {
+			requireNoGitStats(t, fmt.Sprintf("prune(dry_run=%t)", dry), res)
+			// The fresh orphan's pointer survives GC but no ref reaches it, so its object waits in grace like the fresh loose one.
+			if !slices.Equal(res.Unlinked, want) || res.SkippedInGrace != 2 || res.LiveObjects != 1 || len(res.Failed) != 0 {
 				t.Fatalf("prune(dry_run=%t): unexpected result %+v", dry, res)
 			}
-			f.requireObjects(t, "org/repo", old, dry)
+			f.requireObjects(t, "org/repo", old, true)
 			f.requireObjects(t, "org/repo", fresh, true)
 		}
 		if !f.stored(t, live) || !f.stored(t, freshDead) || !f.stored(t, freshLoose) || f.stored(t, oldDead) || f.stored(t, oldLoose) {
@@ -484,39 +482,39 @@ func TestPruneGitGC(t *testing.T) {
 				f.stored(t, live), f.stored(t, freshDead), f.stored(t, freshLoose), f.stored(t, oldDead), f.stored(t, oldLoose))
 		}
 	})
-	// A repository whose GC fails is reported and keeps every pointer blob live, while the others are still collected and unlinked.
+	// A repository whose GC fails is reported and keeps its garbage and reachable pointers, while the others are still collected and unlinked.
 	t.Run("FailedRepository", func(t *testing.T) {
 		f := newFixture(t)
 		c := f.gc()
-		live, brokenDead, dead, unrelated := f.put(t, "live-n "), f.put(t, "broken-n "), f.put(t, "dead-n "), f.put(t, "unrelated-n ")
+		live, brokenLive, dead, unrelated := f.put(t, "live-n "), f.put(t, "broken-n "), f.put(t, "dead-n "), f.put(t, "unrelated-n ")
 		f.commitPointer(t, "org/repo", live)
 		garbage := f.orphanPointer(t, "org/repo", dead, objectSize)
-		f.commitPointer(t, "org/broken", live)
-		brokenGarbage := f.orphanPointer(t, "org/broken", brokenDead, objectSize)
-		// A ref to a missing object fails both engines before they delete anything, while every blob stays readable.
-		if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/refs/heads/dangling", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+		f.commitPointer(t, "org/broken", brokenLive)
+		// The orphan names the OID main keeps live, so no outcome hinges on an unreachable pointer.
+		brokenGarbage := f.orphanPointer(t, "org/broken", brokenLive, objectSize+1)
+		// An undecodable loose object fails the object inventory a run starts from, while every reachable object stays readable from the pool.
+		if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/objects/11/"+strings.Repeat("1", 38), []byte("garbage"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		want := []string{dead, unrelated}
 		slices.Sort(want)
-		for _, dry := range []bool{true, false} {
-			res, err := c.Prune(ctx, PruneOptions{Grace: -1, DryRun: dry})
-			if err == nil || !strings.Contains(err.Error(), "git gc failed in 1 repositories") || res == nil {
-				t.Fatalf("prune(dry_run=%t) = %+v, %v; want the partial result and the GC failure", dry, res, err)
-			}
-			requireGitStats(t, fmt.Sprintf("prune(dry_run=%t)", dry), res, garbage)
-			if len(res.Failed) != 1 || res.Failed["/org/broken.git"] == "" || !slices.Equal(res.Unlinked, want) || res.Repositories != 2 || res.LiveObjects != 2 {
-				t.Fatalf("prune(dry_run=%t): unexpected result %+v", dry, res)
-			}
-			f.requireObjects(t, "org/repo", garbage, dry)
-			f.requireObjects(t, "org/broken", brokenGarbage, true)
+		// A pool member's preview reports nothing, so the failure shows in the run.
+		res, err := c.Prune(ctx, PruneOptions{Grace: -1})
+		if err == nil || !strings.Contains(err.Error(), "git gc failed in 1 repositories") || res == nil {
+			t.Fatalf("prune = %+v, %v; want the partial result and the GC failure", res, err)
 		}
-		if !f.stored(t, live) || !f.stored(t, brokenDead) || f.stored(t, dead) || f.stored(t, unrelated) {
-			t.Fatalf("stored: live=%v brokenDead=%v dead=%v unrelated=%v", f.stored(t, live), f.stored(t, brokenDead), f.stored(t, dead), f.stored(t, unrelated))
+		requireNoGitStats(t, "prune", res)
+		if len(res.Failed) != 1 || res.Failed["/org/broken.git"] == "" || !slices.Equal(res.Unlinked, want) || res.Repositories != 2 || res.LiveObjects != 2 {
+			t.Fatalf("prune: unexpected result %+v", res)
 		}
-		f.requirePointer(t, "org/broken", "model.bin", live)
+		f.requireObjects(t, "org/repo", garbage, true)
+		f.requireObjects(t, "org/broken", brokenGarbage, true)
+		if !f.stored(t, live) || !f.stored(t, brokenLive) || f.stored(t, dead) || f.stored(t, unrelated) {
+			t.Fatalf("stored: live=%v brokenLive=%v dead=%v unrelated=%v", f.stored(t, live), f.stored(t, brokenLive), f.stored(t, dead), f.stored(t, unrelated))
+		}
+		f.requirePointer(t, "org/broken", "model.bin", brokenLive)
 	})
-	// Preview-deleted pointer blobs are skipped by Git hash, so an OID another blob or repository still names stays live.
+	// An OID another blob or repository still names stays live, in the preview and the run, while the shared pool keeps the orphans.
 	t.Run("SharedOIDSurvivesPreviewDeletion", func(t *testing.T) {
 		f := newFixture(t)
 		c := f.gc()
@@ -535,11 +533,11 @@ func TestPruneGitGC(t *testing.T) {
 			if err != nil {
 				t.Fatalf("prune(dry_run=%t): %v", dry, err)
 			}
-			requireGitStats(t, fmt.Sprintf("prune(dry_run=%t)", dry), res, garbage)
+			requireNoGitStats(t, fmt.Sprintf("prune(dry_run=%t)", dry), res)
 			if !slices.Equal(res.Unlinked, []string{dead}) || res.Repositories != 2 || res.LiveObjects != 2 || len(res.Failed) != 0 {
 				t.Fatalf("prune(dry_run=%t): unexpected result %+v", dry, res)
 			}
-			f.requireObjects(t, "org/a", garbage, dry)
+			f.requireObjects(t, "org/a", garbage, true)
 		}
 		if !f.stored(t, shared) || !f.stored(t, cross) || f.stored(t, dead) {
 			t.Fatalf("stored: shared=%v cross=%v dead=%v", f.stored(t, shared), f.stored(t, cross), f.stored(t, dead))
@@ -563,6 +561,139 @@ func TestPruneGitGC(t *testing.T) {
 			t.Fatal("dead object unlinked after cancellation")
 		}
 	})
+}
+
+// A ref to a missing object fails the pointer scan, which aborts the prune before anything is unlinked.
+func TestPruneDanglingRefAborts(t *testing.T) {
+	ctx := context.Background()
+	repos := newRepos(t)
+	for _, name := range []string{"/org/broken.git", "/org/repo.git"} {
+		repo, err := repository.Init(ctx, repos, name, "main")
+		if err != nil {
+			t.Fatalf("init %s: %v", name, err)
+		}
+		if _, err := repo.CreateCommit(ctx, "main", "add model", "Test", "test@test.com",
+			[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "model.bin", Content: pointer(strings.Repeat("a", 64), 1)}}, ""); err != nil {
+			t.Fatalf("commit %s: %v", name, err)
+		}
+	}
+	if err := util.WriteFile(repos, "/org/broken.git/refs/heads/broken", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{objects: []fakeObject{{strings.Repeat("d", 64), time.Now().Add(-2 * time.Hour)}}}
+	res, err := NewGC(repos, store).Prune(ctx, PruneOptions{Grace: -1})
+	if err == nil || !strings.Contains(err.Error(), "scan /org/broken.git:") || res == nil || len(res.Unlinked) != 0 || len(store.unlinked) != 0 {
+		t.Fatalf("prune = %+v, %v; unlinked %v; want the scan error of /org/broken.git and nothing unlinked", res, err, store.unlinked)
+	}
+}
+
+// Pointer blobs hfd writes live only in the shared pool; Prune reads them there and keeps their OID, previewing and running alike.
+func TestPruneKeepsPooledPointers(t *testing.T) {
+	ctx := context.Background()
+	repos := newRepos(t)
+	live, dead := strings.Repeat("a", 64), strings.Repeat("d", 64)
+	for _, name := range []string{"/org/a.git", "/datasets/org/b.git"} {
+		repo, err := repository.Init(ctx, repos, name, "main")
+		if err != nil {
+			t.Fatalf("init %s: %v", name, err)
+		}
+		if _, err := repo.CreateCommit(ctx, "main", "add model", "Test", "test@test.com",
+			[]repository.CommitOperation{{Type: repository.CommitOperationAdd, Path: "model.bin", Content: pointer(live, 1)}}, ""); err != nil {
+			t.Fatalf("commit %s: %v", name, err)
+		}
+		b, err := repo.Blob("main", "model.bin")
+		if err != nil {
+			t.Fatalf("blob %s:model.bin: %v", name, err)
+		}
+		h := b.Hash().String()
+		if _, err := repos.Stat(name + "/objects/" + h[:2] + "/" + h[2:]); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("stat %s's own copy of pointer blob %s: %v; want the blob only in the shared pool", name, h, err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, dry := range []bool{true, false} {
+		store := &fakeStore{objects: []fakeObject{{live, old}, {dead, old}}}
+		res, err := NewGC(repos, store).Prune(ctx, PruneOptions{Grace: -1, DryRun: dry})
+		if err != nil || len(res.Failed) != 0 || res.Repositories != 2 || res.LiveObjects != 1 || !slices.Equal(res.Unlinked, []string{dead}) {
+			t.Fatalf("prune(dry_run=%t) = %+v, %v; want both repositories collected, %s live and only %s unlinked", dry, res, err, live, dead)
+		}
+	}
+}
+
+// A pointer blob a repository also holds itself stays live when GC drops that copy, since the shared pool still stores the blob.
+func TestPruneKeepsPointerDuplicatedInLocalPack(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	const name = "org/repo"
+	live, dead := strings.Repeat("a", 64), strings.Repeat("d", 64)
+	f.commitPointer(t, name, live)
+	repoPath := repository.ResolvePath(name)
+	repo, err := repository.Open(f.st.RepositoriesFS(), repoPath)
+	if err != nil {
+		t.Fatalf("open %s: %v", name, err)
+	}
+	b, err := repo.Blob("main", "model.bin")
+	if err != nil {
+		t.Fatalf("blob %s:model.bin: %v", name, err)
+	}
+	blob := b.Hash()
+	// local reports whether the repository stores blob itself, as GC's object inventory sees it.
+	local := func() bool {
+		t.Helper()
+		st := f.storer(name)
+		defer func() { _ = st.Close() }()
+		iter, err := st.IterEncodedObjects(plumbing.BlobObject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		if err := iter.ForEach(func(o plumbing.EncodedObject) error {
+			found = found || o.Hash() == blob
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	// The repository package picks native GC by this same lookup.
+	gitPath, lookErr := exec.LookPath("git")
+	native := lookErr == nil
+	if native {
+		// Without -l, repack copies every pooled object a ref reaches into a pack of the repository's own.
+		cmd := exec.CommandContext(ctx, gitPath, "-C", filepath.Join(f.root, "repositories", filepath.FromSlash(repoPath)), "repack", "-a", "-d", "-q")
+		cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git repack -a -d: %v\n%s", err, out)
+		}
+	} else {
+		// Without git, a loose copy of the pooled blob stands in for the pack.
+		hex := blob.String()
+		pooled, err := util.ReadFile(f.st.FS(), "/git/sha1/objects/"+hex[:2]+"/"+hex[2:])
+		if err != nil {
+			t.Fatalf("read pooled pointer blob %s: %v", hex, err)
+		}
+		if err := util.WriteFile(f.st.RepositoriesFS(), repoPath+"/objects/"+hex[:2]+"/"+hex[2:], pooled, 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !local() {
+		t.Fatalf("fixture: %s stores no copy of pointer blob %s itself", name, blob)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	store := &fakeStore{objects: []fakeObject{{live, old}, {dead, old}}}
+	res, err := NewGC(f.st.RepositoriesFS(), store).Prune(ctx, PruneOptions{Grace: -1})
+	if err != nil || len(res.Failed) != 0 || res.LiveObjects != 1 || !slices.Equal(res.Unlinked, []string{dead}) || !slices.Equal(store.unlinked, []string{dead}) {
+		t.Fatalf("prune = %+v, %v; unlinked %v; want %s live and only %s unlinked", res, err, store.unlinked, live, dead)
+	}
+	if res.DeletedGitObjects != 0 || res.DeletedGitBytes != 0 {
+		t.Errorf("prune deleted %d Git objects of %d bytes; want none while the pool stores every object", res.DeletedGitObjects, res.DeletedGitBytes)
+	}
+	// Native gc repacks with -l, dropping the copy the pool makes redundant; go-git only prunes unreachable loose objects.
+	if got := local(); got == native {
+		t.Errorf("%s stores its own copy of pointer blob %s after GC = %t, want %t", name, blob, got, !native)
+	}
+	f.requireObjects(t, name, map[plumbing.Hash]int64{blob: 0}, true)
 }
 
 // cancelOnHEAD cancels the run as Walk stats a repository's HEAD, so the first GC itself sees the cancellation.

@@ -34,11 +34,19 @@ type GCResult struct {
 // errGCPreviewUnsupported: the repository is in a state whose GC outcome cannot be predicted without running it.
 var errGCPreviewUnsupported = errors.New("dry-run GC not supported for this repository")
 
-// GC requires quiescent writes; a zero cutoff disables grace. A dry run predicts the engine's deletions from refs, loose objects and pack indexes and writes nowhere.
+// GC requires quiescent writes; a zero cutoff disables grace. A dry run predicts the engine's deletions from refs, loose objects and pack indexes and writes nowhere, but reports none for a repository with alternates.
 // Cancellation stops a GC before it starts and a preview at once, but a native gc already running is waited for; the cancellation is still reported.
 func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCResult, error) {
 	if err := ctx.Err(); err != nil {
 		return GCResult{}, err
+	}
+	_, err := r.fs.Stat(filepath.Join(r.repoPath, "objects", "info", "alternates"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return GCResult{}, err
+	}
+	borrows := err == nil
+	if borrows && dryRun {
+		return GCResult{}, nil
 	}
 	before, err := objectInventory(ctx, r.fs, r.repoPath)
 	if err != nil {
@@ -54,7 +62,8 @@ func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCR
 	if dir := r.gitDir(); dir != "" {
 		err = gcGit(ctx, dir, cutoff)
 	} else {
-		err = gcGoGit(ctx, r.repo, cutoff)
+		// A go-git repack would copy every borrowed object a ref reaches into a local pack.
+		err = gcGoGit(ctx, r.repo, cutoff, borrows)
 	}
 	// Packs may have moved even when git failed, so the handle is refreshed either way.
 	err = errors.Join(err, r.reindex())
@@ -63,18 +72,15 @@ func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCR
 	if err = joinCtx(ctx, err); err != nil {
 		return GCResult{}, err
 	}
-	return gcResult(ctx, r.fs, r.repoPath, before, size)
+	var alternates storer.EncodedObjectStorer
+	if borrows {
+		alternates = r.repo.Storer
+	}
+	return gcResult(ctx, r.fs, r.repoPath, before, size, alternates)
 }
 
 // previewGC diffs before against the objects r's engine would leave behind; what a repack would save on disk stays unknown.
 func (r *Repository) previewGC(ctx context.Context, cutoff time.Time, before map[plumbing.Hash]int64) (GCResult, error) {
-	// Native git may drop local copies of borrowed objects, so alternates have no exact preview.
-	if _, err := r.fs.Stat(filepath.Join(r.repoPath, "objects", "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			err = fmt.Errorf("%w: objects/info/alternates", errGCPreviewUnsupported)
-		}
-		return GCResult{}, err
-	}
 	packs, err := packInfos(ctx, r.fs, r.repoPath)
 	if err != nil {
 		return GCResult{}, err
@@ -309,8 +315,8 @@ func hasFiles(fs billy.Filesystem, dir string) (bool, error) {
 	return found, err
 }
 
-// gcResult diffs the objects still stored at path against before, measuring how much smaller objects/ got.
-func gcResult(ctx context.Context, fs billy.Filesystem, path string, before map[plumbing.Hash]int64, size int64) (GCResult, error) {
+// gcResult diffs the objects still stored at path, or readable through alternates when set, against before, measuring how much smaller objects/ got.
+func gcResult(ctx context.Context, fs billy.Filesystem, path string, before map[plumbing.Hash]int64, size int64, alternates storer.EncodedObjectStorer) (GCResult, error) {
 	after, err := objectInventory(ctx, fs, path)
 	if err != nil {
 		return GCResult{}, err
@@ -318,6 +324,20 @@ func gcResult(ctx context.Context, fs billy.Filesystem, path string, before map[
 	now, err := objectsSize(fs, path)
 	if err != nil {
 		return GCResult{}, err
+	}
+	if alternates != nil {
+		for h := range before {
+			if _, ok := after[h]; ok {
+				continue
+			}
+			// Native gc drops local copies of objects an alternate holds; those are still stored.
+			switch err := alternates.HasEncodedObject(h); {
+			case err == nil:
+				after[h] = 0
+			case !errors.Is(err, plumbing.ErrObjectNotFound):
+				return GCResult{}, err
+			}
+		}
 	}
 	res := deletedFrom(before, after)
 	res.ReclaimedBytes = max(size-now, 0)
@@ -382,15 +402,15 @@ func objectsSize(fs billy.Filesystem, path string) (int64, error) {
 	return total, err
 }
 
-// gcGoGit prunes unreachable loose objects, then repacks only when a ref exists and loose objects or several packs remain.
-func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time) error {
+// gcGoGit prunes unreachable loose objects, then, unless pruneOnly, repacks only when a ref exists and loose objects or several packs remain.
+func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time, pruneOnly bool) error {
 	err := repo.Prune(git.PruneOptions{OnlyObjectsOlderThan: cutoff, Handler: func(h plumbing.Hash) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		return repo.DeleteObject(h)
 	}})
-	if err != nil {
+	if err != nil || pruneOnly {
 		return err
 	}
 	s, ok := repo.Storer.(repackable)

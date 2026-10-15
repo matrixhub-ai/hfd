@@ -5,7 +5,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
@@ -91,12 +90,12 @@ func (r *Repository) Blob(rev string, path string) (b *Blob, err error) {
 		rev = r.DefaultBranch()
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := r.resolveRevision(rev)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
 
-	commit, err := r.repo.CommitObject(*hash)
+	commit, err := r.repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit object: %w", err)
 	}

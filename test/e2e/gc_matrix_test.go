@@ -20,12 +20,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v6"
-	"github.com/go-git/go-billy/v6/helper/chroot"
-	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/go-git/go-billy/v6/util"
-	"github.com/go-git/go-git/v6/plumbing"
-	"github.com/go-git/go-git/v6/plumbing/cache"
-	"github.com/go-git/go-git/v6/storage/filesystem"
 
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -684,14 +679,14 @@ func TestGCPrune(t *testing.T) {
 }
 
 // TestGCGitObjects force-pushes main back two commits, leaving them, their LFS pointer and a 128 KiB blob unreachable, then drives
-// POST /internal/gc over the assembled chain: the dry run reports exactly those objects and bytes without touching storage,
-// the live step removes them, unlinks the orphaned pointer's LFS object and reclaims its data. The expected objects come from the
-// clone's own object graph sized by native git, never from the server.
+// POST /internal/gc over the assembled chain. Every pushed object lives in the shared pool, which GC never collects, so neither the
+// dry run nor the live step deletes or reclaims Git objects; both unlink the orphaned pointer's LFS object, whose data the live step
+// reclaims. The expected objects come from the clone's own object graph sized by native git, never from the server.
 func TestGCGitObjects(t *testing.T) {
 	const repoID = "gc-org/git-objects"
 	s := newE2EServer(t, withInternalAPI())
 	s.createRepo(t, "gc-org", "git-objects")
-	repos, repoPath := s.storage.RepositoriesFS(), repository.ResolvePath(repoID)
+	dataFS, repos, repoPath := s.storage.FS(), s.storage.RepositoriesFS(), repository.ResolvePath(repoID)
 	keepData, dropData := randomData(t, 64<<10, 61), randomData(t, 64<<10, 62)
 	keepSum, dropSum := sha256.Sum256(keepData), sha256.Sum256(dropData)
 	keepOID, dropOID := hex.EncodeToString(keepSum[:]), hex.EncodeToString(dropSum[:])
@@ -705,10 +700,8 @@ func TestGCGitObjects(t *testing.T) {
 		}
 	}
 
-	// all is every object the clone pushed, kept what main still reaches after the force push; the difference is the expected garbage.
+	// all is every object the clone pushed, kept what main still reaches after the force push; the difference is garbage the pool keeps.
 	var all, kept map[string]int64
-	var wantDeleted int
-	var wantBytes int64
 	step("ForcePush", func(t *testing.T) {
 		pushViaXetBatch(t, s, repoID, keepData)
 		pushViaXetBatch(t, s, repoID, dropData)
@@ -727,10 +720,6 @@ func TestGCGitObjects(t *testing.T) {
 		orphan := strings.TrimSpace(runGit(t, dir, env, "rev-parse", "HEAD:orphan.raw"))
 		garbage := maps.Clone(all)
 		maps.DeleteFunc(garbage, func(hash string, _ int64) bool { _, ok := kept[hash]; return ok })
-		for _, size := range garbage {
-			wantBytes += size
-		}
-		wantDeleted = len(garbage)
 		if _, ok := garbage[dropPointer]; !ok || garbage[orphan] != 128<<10 || len(garbage) != 6 || len(kept) != 6 {
 			t.Fatalf("garbage = %v, kept = %v; want 6 objects each, garbage holding pointer %s and the 128 KiB blob %s", garbage, kept, dropPointer, orphan)
 		}
@@ -740,12 +729,9 @@ func TestGCGitObjects(t *testing.T) {
 			t.Fatalf("main resolve after force push: got %d bytes, want the retained %d bytes", len(got), len(keepData))
 		}
 		assertGCNotFound(t, s.httpURL+"/"+repoID+"/resolve/main/orphan.raw")
-		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, all) {
-			t.Fatalf("server stores %v, want every pushed object %v", stored, all)
-		}
-		// go-git repacks only around loose objects or several packs; native git always does.
-		if loose, packs := gitObjectFiles(t, repos, repoPath); loose == 0 && packs <= 1 {
-			t.Fatalf("objects/ holds %d loose objects and %d packs, want a layout the go-git repack acts on", loose, packs)
+		requirePooled(t, dataFS, all)
+		if loose, packs := gitObjectFiles(t, repos, repoPath); loose != 0 || packs != 0 {
+			t.Fatalf("objects/ holds %d loose objects and %d packs, want none: the pool stores every pushed object", loose, packs)
 		}
 		assertGCObjects(t, s.httpURL, keepObject, dropObject)
 	})
@@ -753,15 +739,10 @@ func TestGCGitObjects(t *testing.T) {
 	requirePrune := func(t *testing.T, label string, got gcResult, dryRun bool) {
 		t.Helper()
 		res := got.Prune
-		// A preview measures no disk saving; the run must shrink objects/ by at least the 128 KiB orphan blob's worth.
-		reclaimedOK := res.ReclaimedBytes == 0
-		if !dryRun {
-			reclaimedOK = res.ReclaimedBytes >= 100<<10
-		}
 		if res.DryRun != dryRun || res.Repositories != 1 || res.LiveObjects != 1 || res.SkippedInGrace != 0 || len(res.Failed) != 0 ||
-			res.DeletedGitObjects != wantDeleted || res.DeletedGitBytes != wantBytes || !reclaimedOK || !slices.Equal(res.Unlinked, []string{dropOID}) {
-			t.Fatalf("%s = %+v, want dry_run=%t, 1 repository, 1 live object, %d Git objects (%d bytes) deleted, at least 100 KiB reclaimed unless dry run (then 0), [%s] unlinked, nothing failed or skipped",
-				label, *res, dryRun, wantDeleted, wantBytes, dropOID)
+			res.DeletedGitObjects != 0 || res.DeletedGitBytes != 0 || res.ReclaimedBytes != 0 || !slices.Equal(res.Unlinked, []string{dropOID}) {
+			t.Fatalf("%s = %+v, want dry_run=%t, 1 repository, 1 live object, no Git object deleted and nothing reclaimed, [%s] unlinked, nothing failed or skipped",
+				label, *res, dryRun, dropOID)
 		}
 		if !got.Done || got.Errors != nil || got.Storage.DryRun != dryRun {
 			t.Fatalf("%s: GC = %+v, storage = %+v, want a finished step without errors, dry_run=%t", label, got, *got.Storage, dryRun)
@@ -780,9 +761,7 @@ func TestGCGitObjects(t *testing.T) {
 		if !maps.Equal(before, snapshotRepository(t, repos, repoPath)) {
 			t.Fatal("dry run changed the repository files")
 		}
-		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, all) {
-			t.Fatalf("server stores %v after dry run, want every pushed object %v", stored, all)
-		}
+		requirePooled(t, dataFS, all)
 		assertGCObjects(t, s.httpURL, keepObject, dropObject)
 		for oid, data := range map[string][]byte{keepOID: keepData, dropOID: dropData} {
 			if got := mustGet(t, s.httpURL+"/objects/"+oid); !bytes.Equal(got, data) {
@@ -797,11 +776,10 @@ func TestGCGitObjects(t *testing.T) {
 		if st := res.Storage; st.SweptShards <= 0 || st.SweptXorbs <= 0 || st.ReclaimedBytes <= 0 || st.RemainingShards != 0 || st.RemainingXorbs != 0 {
 			t.Fatalf("storage = %+v, want shards, xorbs and bytes reclaimed, nothing remaining", *st)
 		}
-		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {
-			t.Fatalf("server stores %v after GC, want exactly what main reaches %v", stored, kept)
-		}
-		if loose, packs := gitObjectFiles(t, repos, repoPath); loose != 0 || packs != 1 {
-			t.Fatalf("objects/ holds %d loose objects and %d packs after GC, want one pack", loose, packs)
+		// The force-pushed-away objects stay pooled too.
+		requirePooled(t, dataFS, all)
+		if loose, packs := gitObjectFiles(t, repos, repoPath); loose != 0 || packs != 0 {
+			t.Fatalf("objects/ holds %d loose objects and %d packs after GC, want none", loose, packs)
 		}
 		assertGCObjects(t, s.httpURL, keepObject)
 		assertGCNotFound(t, s.httpURL+"/objects/"+dropOID)
@@ -838,9 +816,7 @@ func TestGCGitObjects(t *testing.T) {
 				t.Fatalf("GC?%s after GC = %+v, storage = %+v, want a finished step sweeping nothing", query, got, *st)
 			}
 		}
-		if stored := storedGitObjects(t, repos, repoPath); !maps.Equal(stored, kept) {
-			t.Fatalf("server stores %v after repeated prune, want %v", stored, kept)
-		}
+		requirePooled(t, dataFS, all)
 	})
 }
 
@@ -867,45 +843,19 @@ func gitObjects(t *testing.T, dir, rev string) map[string]int64 {
 	return objects
 }
 
-// storedGitObjects maps the objects the bare repository at repoPath on fs holds to their payload sizes through a fresh go-git storer;
-// on the host filesystem native git must list the same.
-func storedGitObjects(t *testing.T, fs billy.Filesystem, repoPath string) map[string]int64 {
+// requirePooled fails unless every object of objects is a loose file in the shared pool at /git/sha1/objects on the data filesystem.
+func requirePooled(t *testing.T, dataFS billy.Filesystem, objects map[string]int64) {
 	t.Helper()
-	st := filesystem.NewStorage(chroot.New(fs, repoPath), cache.NewObjectLRUDefault())
-	defer st.Close()
-	iter, err := st.IterEncodedObjects(plumbing.AnyObject)
-	if err != nil {
-		t.Fatalf("iterate objects of %s: %v", repoPath, err)
-	}
-	objects := map[string]int64{}
-	err = iter.ForEach(func(o plumbing.EncodedObject) error {
-		objects[o.Hash().String()] = o.Size()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("iterate objects of %s: %v", repoPath, err)
-	}
-	host, ok := fs.(*osfs.BoundOS)
-	if !ok {
-		return objects
-	}
-	out, _, err := gitCmd(t, filepath.Join(host.Root(), repoPath), nil, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objectsize)")
-	if err != nil {
-		t.Fatalf("cat-file --batch-all-objects: %v", err)
-	}
-	native := map[string]int64{}
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		hash, size, _ := strings.Cut(line, " ")
-		n, err := strconv.ParseInt(size, 10, 64)
-		if err != nil {
-			t.Fatalf("cat-file --batch-all-objects line %q: %v", line, err)
+	var missing []string
+	for hash := range objects {
+		if _, err := dataFS.Stat(filepath.Join("/git/sha1/objects", hash[:2], hash[2:])); err != nil {
+			missing = append(missing, hash+": "+err.Error())
 		}
-		native[hash] = n
 	}
-	if !maps.Equal(objects, native) {
-		t.Fatalf("go-git lists %v, native git lists %v", objects, native)
+	if len(missing) != 0 {
+		slices.Sort(missing)
+		t.Fatalf("shared pool lacks %d of the pushed objects %v:\n%s", len(missing), objects, strings.Join(missing, "\n"))
 	}
-	return objects
 }
 
 // gitObjectFiles counts the loose objects and packfiles under objects/ of the bare repository at repoPath on fs.

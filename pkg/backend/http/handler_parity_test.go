@@ -236,6 +236,33 @@ func newServeParityFixture(t *testing.T, native bool) *serveParityFixture {
 	f.pushBoth(t, "refs/heads/main", "refs/heads/topic/nested", "refs/tags/v1", "refs/tags/v2")
 	f.resetHooks(nil)
 
+	// Either engine stores the pushed objects in the shared pool, leaving the repository no pack of its own.
+	for _, extension := range []string{"*.pack", "*.idx"} {
+		files, err := filepath.Glob(filepath.Join(f.hfdRepo, "objects", "pack", extension))
+		if err != nil || len(files) != 0 {
+			t.Errorf("repository %s files = %v, %v; want none", extension, files, err)
+		}
+	}
+	pooled, err := filepath.Glob(filepath.Join(root, "hfd", "git", "sha1", "objects", "[0-9a-f][0-9a-f]", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasPooledObject := false
+	for _, file := range pooled {
+		if info, err := os.Stat(file); err == nil && info.Mode().IsRegular() {
+			hasPooledObject = true
+			break
+		}
+	}
+	if !hasPooledObject {
+		t.Error("shared pool has no loose object in a two-hex-digit fan-out directory")
+	}
+	runGitCmd(t, f.hfdRepo, "fsck", "--full", "--strict")
+	const wantAlternates = "../../../git/sha1/objects\n"
+	if alternates, err := os.ReadFile(filepath.Join(f.hfdRepo, "objects", "info", "alternates")); err != nil || string(alternates) != wantAlternates {
+		t.Errorf("alternates = %q, %v; want %q", alternates, err, wantAlternates)
+	}
+
 	return f
 }
 
@@ -450,6 +477,7 @@ func TestHTTPServeGitParity(t *testing.T) {
 
 			t.Run("PackedPushRefreshesHandle", func(t *testing.T) {
 				// Store the pushed objects in a pack the cached go-git handle has not indexed yet.
+				// The shared pool now takes the push loose under either engine, so only the refresh over new loose objects stays covered.
 				runGitCmd(t, f.hfdRepo, "config", "receive.unpackLimit", "1")
 				repo, err := repository.Open(f.storage.RepositoriesFS(), "/repo.git")
 				if err != nil {

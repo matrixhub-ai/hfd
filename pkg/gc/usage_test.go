@@ -126,15 +126,29 @@ func TestUsage(t *testing.T) {
 		fixture.commitPointer(t, "org/a", oid)
 		fixture.commitPointer(t, "datasets/org/b", oid)
 		repos := fixture.st.RepositoriesFS()
+		// hfd pools every object it writes, so the repositories count none.
 		want := gitFiles(t, repos, "/org/a.git", "/datasets/org/b.git")
-		want.Objects.Count = 6
-		if want.Objects.Bytes <= 0 || want.Objects.Bytes >= objectSize || want.Other.Count == 0 {
-			t.Fatalf("repositories hold %+v, want objects between 0 and the %d-byte LFS payload plus metadata", want, objectSize)
+		if want.Other.Count == 0 {
+			t.Fatalf("repositories hold %+v, want metadata", want)
 		}
 		g := NewGC(repos, nil)
 		if got, err := g.Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
+		heads := map[string]bool{}
+		for _, name := range []string{"/org/a.git", "/datasets/org/b.git"} {
+			repo, err := repository.Open(repos, name)
+			if err != nil {
+				t.Fatalf("open %s: %v", name, err)
+			}
+			head, err := repo.ResolveRevision("main")
+			if err != nil {
+				t.Fatalf("resolve main in %s: %v", name, err)
+			}
+			heads[head] = true
+		}
+		// The repositories share the pointer blob and its tree, and their commit too when both fall in one second.
+		requireSharedObjects(t, g, fixture.root, int64(2+len(heads)))
 		fixture.put(t, "usage-b ")
 		for name, content := range map[string]string{"/org/a.git/hooks/objects/nested": "hooked\n", "/datasets/org/b.git/note": "root\n"} {
 			if err := util.WriteFile(repos, name, []byte(content), 0o644); err != nil {
@@ -155,7 +169,6 @@ func TestUsage(t *testing.T) {
 		fixture.commitPointer(t, "org/a", fixture.put(t, "usage-x "))
 		repos := fixture.st.RepositoriesFS()
 		want := gitFiles(t, repos, "/org/a.git")
-		want.Objects.Count = 3
 		before := usageSnapshot(t, repos)
 		if got, err := fixture.gc().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
@@ -163,6 +176,7 @@ func TestUsage(t *testing.T) {
 		if !maps.Equal(before, usageSnapshot(t, repos)) {
 			t.Fatal("Usage changed repository files")
 		}
+		requireSharedObjects(t, fixture.gc(), fixture.root, 3)
 	})
 	t.Run("ToleratesGarbage", func(t *testing.T) {
 		fixture := newFixture(t)
@@ -178,10 +192,10 @@ func TestUsage(t *testing.T) {
 			}
 		}
 		want := gitFiles(t, repos, "/org/a.git")
-		want.Objects.Count = 3
 		if got, err := fixture.gc().Usage(ctx); err != nil || got != want {
 			t.Fatalf("Usage = %+v, %v; want %+v, nil", got, err, want)
 		}
+		requireSharedObjects(t, fixture.gc(), fixture.root, 3)
 	})
 	t.Run("Canceled", func(t *testing.T) {
 		canceled, cancel := context.WithCancel(ctx)

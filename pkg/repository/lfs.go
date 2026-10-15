@@ -5,14 +5,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 )
 
-// ScanLFSPointers scans all branches in the repository for LFS pointer files
-// and returns a list of unique LFS pointers
+// ScanLFSPointers returns the LFS pointers of the blobs reachable from the
+// repository's refs, one per blob, ordered by blob hash.
 func (r *Repository) ScanLFSPointers(ctx context.Context) ([]*lfs.Pointer, error) {
 	return r.ScanLFSPointersExcept(ctx, nil)
 }
@@ -22,47 +25,74 @@ func (r *Repository) ScanLFSPointersExcept(ctx context.Context, ignored []plumbi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	skip := make(map[plumbing.Hash]struct{}, len(ignored))
-	for _, h := range ignored {
-		skip[h] = struct{}{}
-	}
-	blobIter, err := r.repo.BlobObjects()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get blob objects: %w", err)
-	}
-
-	result := []*lfs.Pointer{}
-	err = blobIter.ForEach(func(obj *object.Blob) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if _, ok := skip[obj.Hash]; ok || obj.Size >= lfs.MaxLFSPointerSize {
-			return nil
-		}
-
-		reader, err := obj.Reader()
-		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
-		}
-		data, err := io.ReadAll(reader)
-		_ = reader.Close()
-		if err != nil {
-			return fmt.Errorf("read blob %s: %w", obj.Hash, err)
-		}
-		// Only a decode failure means "not a pointer"; read errors above must surface.
-		ptr, _ := lfs.DecodePointer(bytes.NewReader(data))
-		if ptr == nil {
-			return nil
-		}
-
-		result = append(result, ptr)
-		return nil
-	})
+	set, err := r.reachable(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	s := &lfsScan{
+		store:    r.repo.Storer,
+		ignored:  make(map[plumbing.Hash]struct{}, len(ignored)),
+		pointers: map[plumbing.Hash]*lfs.Pointer{},
+	}
+	for _, h := range ignored {
+		s.ignored[h] = struct{}{}
+	}
+	walk := &treeWalk{store: r.repo.Storer, seen: map[plumbing.Hash]struct{}{}}
+	err = set.walkTrees(ctx, walk, func(h plumbing.Hash) error { return s.blob(ctx, h) })
+	if err != nil {
+		return nil, err
+	}
+
+	hashes := slices.Collect(maps.Keys(s.pointers))
+	plumbing.HashesSort(hashes)
+	result := make([]*lfs.Pointer, 0, len(hashes))
+	for _, h := range hashes {
+		result = append(result, s.pointers[h])
+	}
 	return result, ctx.Err()
+}
+
+// lfsScan judges the blobs a tree walk hands it.
+type lfsScan struct {
+	store    storer.EncodedObjectStorer
+	ignored  map[plumbing.Hash]struct{}
+	pointers map[plumbing.Hash]*lfs.Pointer
+}
+
+// blob records the pointer in hash, reading only blobs small enough to be one; ignored blobs are never read.
+func (s *lfsScan) blob(ctx context.Context, hash plumbing.Hash) error {
+	if _, ok := s.ignored[hash]; ok {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	size, err := s.store.EncodedObjectSize(hash)
+	if err != nil {
+		return fmt.Errorf("read blob %s: %w", hash, err)
+	}
+	if size >= lfs.MaxLFSPointerSize {
+		return nil
+	}
+	obj, err := s.store.EncodedObject(plumbing.BlobObject, hash)
+	if err != nil {
+		return fmt.Errorf("read blob %s: %w", hash, err)
+	}
+	reader, err := obj.Reader()
+	if err != nil {
+		return fmt.Errorf("read blob %s: %w", hash, err)
+	}
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		return fmt.Errorf("read blob %s: %w", hash, err)
+	}
+	// Only a decode failure means "not a pointer"; read errors above must surface.
+	if ptr, _ := lfs.DecodePointer(bytes.NewReader(data)); ptr != nil {
+		s.pointers[hash] = ptr
+	}
+	return nil
 }
 
 // LFSFile pairs an LFS pointer with the file path it occupies at a revision.
@@ -78,12 +108,12 @@ func (r *Repository) ListLFSPointers(rev string) ([]LFSFile, error) {
 		rev = r.DefaultBranch()
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := r.resolveRevision(rev)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
 
-	commit, err := r.repo.CommitObject(*hash)
+	commit, err := r.repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit object: %w", err)
 	}

@@ -1,4 +1,4 @@
-// Package gc runs Git GC in every repository and unlinks from the LFS object store the OIDs no surviving pointer names;
+// Package gc runs Git GC in every repository and unlinks from the LFS object store the OIDs no reachable pointer names;
 // reclaiming their data is the store's sweep, which the internal API runs after a prune.
 package gc
 
@@ -32,9 +32,9 @@ type LFSStore interface {
 }
 
 // GC is the repository-aware garbage collection over the repositories and the LFS object store: the prune pass (Git GC
-// in every repository, then unlinking of the OIDs no surviving LFS pointer names) and the repositories' usage.
+// in every repository, then unlinking of the OIDs no reachable LFS pointer names) and the repositories' usage.
 //
-// Liveness is a git pointer in any repository.
+// Liveness is a pointer reachable from the refs of any repository.
 // The grace window is keyed on the stored time, which a re-push of the same content may not refresh: an OID deleted
 // with one repository and re-pushed to another is exposed until the new ref lands, so Prune
 // only while pushes are quiescent.
@@ -62,7 +62,7 @@ type PruneResult struct {
 	DeletedGitObjects int               `json:"deleted_git_objects"`
 	DeletedGitBytes   int64             `json:"deleted_git_bytes"` // payload of the deleted objects
 	ReclaimedBytes    int64             `json:"reclaimed_bytes"`   // shrink of the objects directories on disk; 0 in a dry run, which repacks nothing
-	Failed            map[string]string `json:"failed,omitempty"`  // repository path -> Git GC error; all its pointers stay live
+	Failed            map[string]string `json:"failed,omitempty"`  // repository path -> Git GC error; its reachable pointers stay live
 	LiveObjects       int               `json:"live_objects"`
 	Unlinked          []string          `json:"unlinked"` // sorted OIDs; dry run: what would be unlinked
 	SkippedInGrace    int               `json:"skipped_in_grace"`
@@ -139,7 +139,7 @@ func (g *GC) prune(ctx context.Context, opts PruneOptions) (*PruneResult, error)
 	return res, nil
 }
 
-// mark runs Git GC in every repository, adding its stats to res, then collects the OIDs the surviving LFS pointers name into live.
+// mark runs Git GC in every repository, adding its stats to res, then collects the OIDs the reachable LFS pointers name into live.
 func (g *GC) mark(ctx context.Context, res *PruneResult, cutoff time.Time, live map[string]struct{}) error {
 	if _, err := g.repos.Stat("/"); errors.Is(err, fs.ErrNotExist) {
 		return nil

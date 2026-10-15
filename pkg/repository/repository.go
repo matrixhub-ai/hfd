@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/helper/chroot"
@@ -17,7 +18,9 @@ import (
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"github.com/go-git/go-git/v6/storage/filesystem"
+	"github.com/go-git/go-git/v6/storage/filesystem/dotgit"
 
 	"github.com/matrixhub-ai/hfd/internal/lru"
 )
@@ -49,6 +52,7 @@ type Repository struct {
 	repoPath      string
 	localDir      string // host directory when fs is OS-backed, else ""
 	defaultBranch atomic.Pointer[string]
+	reach         reachCache
 }
 
 // LargeObjectThreshold is the size in bytes above which loose objects are streamed from disk on every read instead of cached in memory.
@@ -59,7 +63,12 @@ var storerOptions = filesystem.Options{LargeObjectThreshold: LargeObjectThreshol
 
 // newStorer returns a go-git storer for the bare repository at repoPath on fs, caching objects in c.
 func newStorer(fs billy.Filesystem, repoPath string, c cache.Object) *filesystem.Storage {
-	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), c, storerOptions)
+	opts := storerOptions
+	if bound, ok := fs.(*sharedObjectsFS); ok {
+		// go-git resolves a relative alternates line from the root of AlternatesFS.
+		opts.AlternatesFS = bound.dataFS
+	}
+	return filesystem.NewStorageWithOptions(chroot.New(fs, repoPath), c, opts)
 }
 
 // IsRepository checks if the given path is a valid git repository by looking for the HEAD file and ensuring it's not empty.
@@ -170,7 +179,17 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
 		var r *git.Repository
 		c := cache.NewObjectLRUDefault()
-		r, err = git.Open(newStorer(fs, repoPath, c), nil)
+		st := newStorer(fs, repoPath, c)
+		if bound, ok := fs.(*sharedObjectsFS); ok {
+			// A DotGit is not safe to share, so each handle writes through its own.
+			pool := filesystem.NewObjectStorage(dotgit.New(chroot.New(bound.dataFS, bound.objectsDir)), c)
+			r, err = git.Open(&sharedStorer{Storer: st, local: st, pool: pool}, nil)
+			if err == nil {
+				err = bound.ensure(repoPath)
+			}
+		} else {
+			r, err = git.Open(st, nil)
+		}
 		if err != nil {
 			return nil, false
 		}
@@ -326,14 +345,62 @@ func (r *Repository) Tags() ([]string, error) {
 
 // ResolveRevision resolves a revision string (branch name, tag, or commit SHA) to a commit hash.
 func (r *Repository) ResolveRevision(rev string) (string, error) {
-	if rev == "" {
-		rev = r.DefaultBranch()
-	}
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := r.resolveRevision(rev)
 	if err != nil {
 		return "", err
 	}
 	return hash.String(), nil
+}
+
+// resolveRevision maps a user-supplied revision to a reachable commit: a ref name first, then a unique hex prefix of a reachable commit or tag.
+func (r *Repository) resolveRevision(rev string) (plumbing.Hash, error) {
+	if rev == "" {
+		rev = r.DefaultBranch()
+	}
+	set, err := r.reachable(context.Background())
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	// git rev-parse's order, taking the name as given only for HEAD or refs/: dotgit refuses e.g. "main".
+	rules := plumbing.RefRevParseRules
+	if rev != plumbing.HEAD.String() && !strings.HasPrefix(rev, plumbing.RefPrefix) {
+		rules = rules[1:]
+	}
+	for _, rule := range rules {
+		ref, err := storer.ResolveReference(r.repo.Storer, plumbing.ReferenceName(fmt.Sprintf(rule, rev)))
+		// git treats a file where a directory is expected, or an invalid name, as a missing ref.
+		if errors.Is(err, plumbing.ErrReferenceNotFound) || errors.Is(err, os.ErrNotExist) ||
+			errors.Is(err, syscall.ENOTDIR) || errors.Is(err, plumbing.ErrInvalidReferenceName) {
+			continue
+		}
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		if commit, ok := set.peel(ref.Hash()); ok {
+			return commit, nil
+		}
+		return plumbing.ZeroHash, ErrRevisionNotFound
+	}
+
+	// git abbreviates to no fewer than 4 hex digits.
+	hex := strings.ToLower(rev)
+	if len(hex) < 4 || len(hex) > 40 || strings.Trim(hex, "0123456789abcdef") != "" {
+		return plumbing.ZeroHash, ErrRevisionNotFound
+	}
+	var h plumbing.Hash
+	if len(hex) == 40 {
+		h, _ = plumbing.FromHex(hex) // a full hash needs no scan of the index
+	} else if matches := set.byPrefix(hex); len(matches) == 1 {
+		h = matches[0]
+	} else {
+		return plumbing.ZeroHash, ErrRevisionNotFound
+	}
+	commit, ok := set.peel(h)
+	if !ok {
+		return plumbing.ZeroHash, ErrRevisionNotFound
+	}
+	return commit, nil
 }
 
 // CreateBranch creates a new branch pointing to the given revision.
@@ -344,12 +411,12 @@ func (r *Repository) CreateBranch(name string, revision string) error {
 	if revision == "" {
 		revision = r.DefaultBranch()
 	}
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(revision))
+	hash, err := r.resolveRevision(revision)
 	if err != nil {
 		return fmt.Errorf("failed to resolve revision %q: %w", revision, err)
 	}
 	refName := plumbing.NewBranchReferenceName(name)
-	ref := plumbing.NewHashReference(refName, *hash)
+	ref := plumbing.NewHashReference(refName, hash)
 	return r.repo.Storer.SetReference(ref)
 }
 
@@ -367,12 +434,12 @@ func (r *Repository) CreateTag(name string, revision string) error {
 	if revision == "" {
 		revision = r.DefaultBranch()
 	}
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(revision))
+	hash, err := r.resolveRevision(revision)
 	if err != nil {
 		return fmt.Errorf("failed to resolve revision %q: %w", revision, err)
 	}
 	refName := plumbing.NewTagReferenceName(name)
-	rev := plumbing.NewHashReference(refName, *hash)
+	rev := plumbing.NewHashReference(refName, hash)
 	return r.repo.Storer.SetReference(rev)
 }
 
@@ -451,7 +518,14 @@ func (r *Repository) Move(newPath string) error {
 	}
 	lruCache.Remove(cacheKey{r.fs, r.repoPath})
 	lruCache.Remove(cacheKey{r.fs, newPath})
-	return r.fs.Rename(r.repoPath, newPath)
+	if err := r.fs.Rename(r.repoPath, newPath); err != nil {
+		return err
+	}
+	if bound, ok := r.fs.(*sharedObjectsFS); ok {
+		// The relative line depends on the depth, and native git reads it before any Open rewrites it.
+		return bound.ensure(newPath)
+	}
+	return nil
 }
 
 // DiskUsage returns the total disk usage of the repository in bytes.
