@@ -132,10 +132,11 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/kernels/{namespace}/{repo}/lfs-files/duplicate` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/POST/api/kernels/{namespace}/{repo}/lfs-files/duplicate) | Duplicate xet files |
 | ❌ | `GET` | `/api/kernels/{namespace}/{repo}/likers` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/likers) | List likers |
 | ✅ | `GET` | `/api/kernels/{namespace}/{repo}/revision/{rev}` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/revision/{rev}) | Get kernel |
+| ❌ | `GET` | `/api/kernels/{namespace}/{repo}/scan` | [kernels](https://huggingface.co/spaces/huggingface/openapi#tag/kernels/GET/api/kernels/{namespace}/{repo}/scan) | Get security status |
 | ✅ | `POST` | `/api/repos/create` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/create) | Create repository |
 | ✅ | `POST` | `/api/repos/move` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/repos/move) | Move repo |
-| ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
-| ❌ | `GET` | `/api/{repoType}/{namespace}/{repo}/duplicate/status` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/GET/api/{repoType}/{namespace}/{repo}/duplicate/status) | Duplication status |
+| ✅ | `POST` | `/api/{repoType}/{namespace}/{repo}/duplicate` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/POST/api/{repoType}/{namespace}/{repo}/duplicate) | Duplicate a repository |
+| ✅ | `GET` | `/api/{repoType}/{namespace}/{repo}/duplicate/status` | [repos](https://huggingface.co/spaces/huggingface/openapi#tag/repos/GET/api/{repoType}/{namespace}/{repo}/duplicate/status) | Duplication status |
 | ✅ | `GET` | `/api/agent-harnesses` | [agents](https://huggingface.co/spaces/huggingface/openapi#tag/agents/GET/api/agent-harnesses) | Get agent harnesses |
 | ❌ | `GET` | `/api/avatars/{namespace}` | [users](https://huggingface.co/spaces/huggingface/openapi#tag/users/GET/api/avatars/{namespace}), [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/avatars/{namespace}) | Get avatar |
 | ❌ | `GET` | `/api/blog/zh` | [blogs](https://huggingface.co/spaces/huggingface/openapi#tag/blogs/GET/api/blog/zh) | List blogs |
@@ -224,6 +225,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `GET` | `/api/organizations/{name}/billing/usage-by-inference-session` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage-by-inference-session) | Session inference usage |
 | ❌ | `GET` | `/api/organizations/{name}/billing/usage-by-resource-group` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage-by-resource-group) | Resource group usage |
 | ❌ | `GET` | `/api/organizations/{name}/billing/usage-v2` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage-v2) | Get org usage |
+| ❌ | `GET` | `/api/organizations/{name}/billing/usage/inference` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage/inference) | Inference usage |
 | ❌ | `GET` | `/api/organizations/{name}/billing/usage/live` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/billing/usage/live) | Stream usage |
 | ❌ | `GET` | `/api/organizations/{name}/members` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/GET/api/organizations/{name}/members) | Get organization members |
 | ❌ | `PUT` | `/api/organizations/{name}/members/{username}/role` | [orgs](https://huggingface.co/spaces/huggingface/openapi#tag/orgs/PUT/api/organizations/{name}/members/{username}/role) | Change member role |
@@ -359,6 +361,7 @@ Compared against the [HuggingFace OpenAPI v3](https://huggingface.co/.well-known
 | ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/POST/api/{repoType}/{namespace}/{repo}/sql-console/embed) | Create embed |
 | ❌ | `PATCH` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/PATCH/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}) | Update embed |
 | ❌ | `DELETE` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/DELETE/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}) | Delete embed |
+| ❌ | `POST` | `/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}/hide` | [sql-console](https://huggingface.co/spaces/huggingface/openapi#tag/sql-console/POST/api/{repoType}/{namespace}/{repo}/sql-console/embed/{id}/hide) | Hide embed |
 | ❌ | `GET` | `/buckets/{namespace}/{repo}/resolve/{path}` | [buckets](https://huggingface.co/spaces/huggingface/openapi#tag/buckets/GET/buckets/{namespace}/{repo}/resolve/{path}) | Get file metadata |
 | ❌ | `GET` | `/containers/{namespace}/{repo}/resolve/{path}` | [containers](https://huggingface.co/spaces/huggingface/openapi#tag/containers/GET/containers/{namespace}/{repo}/resolve/{path}) | Get file metadata |
 | ❌ | `POST` | `/oauth/device` | [oauth](https://huggingface.co/spaces/huggingface/openapi#tag/oauth/POST/oauth/device) | Initiate device authorization |

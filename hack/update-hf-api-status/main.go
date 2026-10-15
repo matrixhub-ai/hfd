@@ -114,6 +114,7 @@ func buildRouter() *mux.Router {
 		backendhf.WithCreateRepoFunc(hooks.CreateRepo),
 		backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
 		backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+		backendhf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
 		backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 		backendhf.WithListReposFunc(hooks.ListRepos),
 		backendhf.WithWhoamiFunc(hooks.Whoami),
@@ -253,6 +254,9 @@ func openAPIPathToTestURL(path string) string {
 			// Simulate an org/name style repo identifier, which mux captures
 			// with the greedy pattern {repo:.+} allowing slashes.
 			return "testorg/testrepo"
+		case "repoType":
+			// mux restricts {repoType} to models|datasets|spaces|kernels.
+			return "models"
 		case "revision":
 			return "main"
 		case "filename", "path", "treeid":

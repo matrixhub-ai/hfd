@@ -193,13 +193,14 @@ func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, str
 	}
 }
 
-// catalogOptions enables the six catalog routes with the server defaults like cmd/hfd does.
+// catalogOptions enables the seven catalog routes with the server defaults like cmd/hfd does.
 func catalogOptions(st *storage.Storage) []backendhf.Option {
 	hooks := &server.Hooks{Storage: st}
 	return []backendhf.Option{
 		backendhf.WithCreateRepoFunc(hooks.CreateRepo),
 		backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
 		backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+		backendhf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
 		backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 		backendhf.WithListReposFunc(hooks.ListRepos),
 		backendhf.WithWhoamiFunc(hooks.Whoami),
@@ -657,6 +658,22 @@ func runHFCmdJSON(t *testing.T, endpoint string, v any, args ...string) {
 func runHFCmd(t *testing.T, endpoint string, args ...string) string {
 	t.Helper()
 	return runHFCmdXet(t, endpoint, false, args...)
+}
+
+// runHFCmdFail is runHFCmd for a call that must fail: a zero exit or a
+// watchdog kill fails the test; the combined output is returned for asserts.
+func runHFCmdFail(t *testing.T, endpoint string, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "hf", args...)
+	cmd.Env = hfEnv(t, endpoint, false)
+	cmd.WaitDelay = 10 * time.Second
+	output, err := cmd.CombinedOutput()
+	if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() <= 0 {
+		t.Fatalf("hf %s: want a non-zero exit, got %v (%v)\nOutput: %s", strings.Join(args, " "), err, ctx.Err(), output)
+	}
+	return string(output)
 }
 
 // runPyScript runs a Python3 script with HF_ENDPOINT and HF_TOKEN set and

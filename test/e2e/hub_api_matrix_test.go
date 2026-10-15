@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -155,6 +156,7 @@ func TestHubAPIOperationsMatrix(t *testing.T) {
 		{name: "Branch", supported: anyClientAnyType, run: runHubBranch},
 		{name: "Tag", supported: anyClientAnyType, run: runHubTag},
 		{name: "Move", supported: cliModelOrKernel, run: runHubMove},
+		{name: "Duplicate", supported: func(c hubClient, rt hubRepoType) bool { return cliModelOnly(c, rt) && clientWrites(c, rt) }, run: runHubDuplicate},
 		{name: "Settings", supported: func(c hubClient, rt hubRepoType) bool { return cliModelOnly(c, rt) && clientWrites(c, rt) }, run: runHubSettings},
 		{name: "DeleteFile", supported: func(c hubClient, rt hubRepoType) bool { return cliModelOnly(c, rt) && clientWrites(c, rt) }, run: runHubDeleteFile},
 		{name: "RepoInfo", supported: pyOnly, run: runHubRepoInfo},
@@ -384,6 +386,26 @@ func assertResolveContent(t *testing.T, s *e2eServer, rt hubRepoType, repoID, re
 	}
 }
 
+// hubRefTargets maps each ref repoID lists to its target commit.
+func hubRefTargets(t *testing.T, s *e2eServer, rt hubRepoType, repoID string) map[string]string {
+	t.Helper()
+	status, body := httpGetContent(t, hubAPIRepoURL(s, rt, repoID)+"/refs")
+	var listed struct {
+		Branches, Converts, Tags []struct {
+			Ref          string `json:"ref"`
+			TargetCommit string `json:"targetCommit"`
+		}
+	}
+	if err := json.Unmarshal([]byte(body), &listed); status != http.StatusOK || err != nil {
+		t.Fatalf("GET %s refs = %d %s (decode error %v)", repoID, status, body, err)
+	}
+	targets := map[string]string{}
+	for _, ref := range slices.Concat(listed.Branches, listed.Converts, listed.Tags) {
+		targets[ref.Ref] = ref.TargetCommit
+	}
+	return targets
+}
+
 func hubCliDownloadAndAssert(t *testing.T, s *e2eServer, rt hubRepoType, repoID string, files []hubFile) {
 	t.Helper()
 	dir := t.TempDir()
@@ -589,19 +611,23 @@ func runHubTag(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 }
 
 // runHubMove: upload -> move to a new namespace -> old API URL 404 -> new
-// resolve serves the content. The python row runs setup and move in one
-// script; both asserts check final state, so they stay in Go.
+// resolve serves the content and the new repo lists the source's refs. The
+// python row seeds the source over HTTP so its refs are read before the one
+// move script; the asserts check final state, so they stay in Go.
 func runHubMove(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 	fromID := "old-user/move-" + rt.arg
 	toID := "new-user/move-" + rt.arg
 	file := hubFile{"README.md", "# Move Test\n"}
 
 	if c.py {
-		script := hubPyAPI + hubPySetupLines(t, s, fromID, rt, []hubFile{file}) +
-			fmt.Sprintf("api.move_repo(from_id=%q, to_id=%q, repo_type=%q)\n", fromID, toID, rt.arg)
-		runPyScript(t, s.httpURL, script)
+		hubSeedFiles(t, s, rt, fromID, []hubFile{file}, "Initial commit")
 	} else {
 		hubCliUpload(t, s, rt, fromID, []hubFile{file}, "Initial commit")
+	}
+	want := hubRefTargets(t, s, rt, fromID)
+	if c.py {
+		runPyScript(t, s.httpURL, hubPyAPI+fmt.Sprintf("api.move_repo(from_id=%q, to_id=%q, repo_type=%q)\n", fromID, toID, rt.arg))
+	} else {
 		runHFCmd(t, s.httpURL, append([]string{"repos", "move", fromID, toID}, rt.cliTypeArgs()...)...)
 	}
 
@@ -609,6 +635,77 @@ func runHubMove(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
 		t.Fatalf("expected 404 for old location, got %d", status)
 	}
 	assertResolveContent(t, s, rt, toID, "main", file.path, file.content)
+	if got := hubRefTargets(t, s, rt, toID); !maps.Equal(got, want) {
+		t.Fatalf("moved refs = %v, want the source's %v", got, want)
+	}
+}
+
+// runHubDuplicate: main, a dev branch with one more file, and tag v1.0 ->
+// duplicate into a new namespace -> a repeat is a 409 that exist_ok accepts
+// -> the copy serves every ref at the source's targets with no copy pending
+// and the source stays intact. The python row runs setup and all three
+// duplicate calls in one script; the asserts on final state stay in Go.
+func runHubDuplicate(t *testing.T, s *e2eServer, c hubClient, rt hubRepoType) {
+	fromID := "hub-user/dup-src-" + rt.arg
+	toID := "dup-user/dup-copy-" + rt.arg
+	readme := hubFile{"README.md", "# Duplicate Test\n"}
+	dev := hubFile{"dev.txt", "dev only\n"}
+
+	if c.py {
+		requirePythonHFHubAttr(t, "duplicate_repo")
+		script := hubPyAPI + hubPySetupLines(t, s, fromID, rt, []hubFile{readme}) + fmt.Sprintf(`from huggingface_hub.utils import HfHubHTTPError
+src, dst, repo_type = %q, %q, %q
+api.create_branch(repo_id=src, branch="dev", repo_type=repo_type)
+api.upload_file(path_or_fileobj=b%q, path_in_repo=%q, repo_id=src, repo_type=repo_type, revision="dev")
+api.create_tag(repo_id=src, tag="v1.0", repo_type=repo_type)
+url = api.duplicate_repo(from_id=src, to_id=dst, repo_type=repo_type)
+assert (url.repo_id, url.repo_type) == (dst, repo_type), f"duplicate url {url!r}, want {repo_type} {dst}"
+assert url.files_copy_pending is False, f"files_copy_pending {url.files_copy_pending!r}, want False"
+try:
+    api.duplicate_repo(from_id=src, to_id=dst, repo_type=repo_type)
+except HfHubHTTPError as error:
+    assert error.response.status_code == 409, f"repeat duplicate status={error.response.status_code}, want 409: {error}"
+else:
+    raise AssertionError("repeat duplicate onto the existing copy succeeded")
+url = api.duplicate_repo(from_id=src, to_id=dst, repo_type=repo_type, exist_ok=True)
+assert url.repo_id == dst, f"exist_ok duplicate url {url!r}, want {dst}"
+`, fromID, toID, rt.arg, dev.content, dev.path)
+		runPyScript(t, s.httpURL, script)
+	} else {
+		hubCliUpload(t, s, rt, fromID, []hubFile{readme}, "Initial commit")
+		runHFCmd(t, s.httpURL, append([]string{"repos", "branch", "create", fromID, "dev"}, rt.cliTypeArgs()...)...)
+		dir := t.TempDir()
+		writeHubFiles(t, dir, []hubFile{dev})
+		runHFCmd(t, s.httpURL, append([]string{"upload", fromID, dir, ".", "--revision", "dev", "--commit-message", "Add dev file"}, rt.cliTypeArgs()...)...)
+		runHFCmd(t, s.httpURL, append([]string{"repos", "tag", "create", fromID, "v1.0"}, rt.cliTypeArgs()...)...)
+		duplicate := append([]string{"repos", "duplicate", fromID, toID}, rt.cliTypeArgs()...)
+		runHFCmd(t, s.httpURL, duplicate...)
+		// The reason phrase is httpx's wording and the hf CLI is unpinned, so only the code is matched.
+		if output := runHFCmdFail(t, s.httpURL, duplicate...); !strings.Contains(output, "409") {
+			t.Fatalf("repeat hf repos duplicate failed without a 409 conflict:\n%s", output)
+		}
+		runHFCmd(t, s.httpURL, append(duplicate, "--exist-ok")...)
+	}
+
+	if status := httpGetStatus(t, hubAPIRepoURL(s, rt, toID)); status != http.StatusOK {
+		t.Fatalf("expected 200 for the copy, got %d", status)
+	}
+	assertResolveContent(t, s, rt, toID, "main", readme.path, readme.content)
+	assertResolveContent(t, s, rt, toID, "dev", dev.path, dev.content)
+	assertResolveContent(t, s, rt, toID, "v1.0", readme.path, readme.content)
+	// Compared by ref, not by listing order, which follows each repo's ref storage.
+	if want, got := hubRefTargets(t, s, rt, fromID), hubRefTargets(t, s, rt, toID); !maps.Equal(got, want) {
+		t.Fatalf("copy refs = %v, want the source's %v", got, want)
+	}
+	if status := httpGetStatus(t, hubAPIRepoURL(s, rt, fromID)); status != http.StatusOK {
+		t.Fatalf("expected 200 for the source after duplicate, got %d", status)
+	}
+	assertResolveContent(t, s, rt, fromID, "main", readme.path, readme.content)
+	status, body := httpGetContent(t, hubAPIRepoURL(s, rt, toID)+"/duplicate/status")
+	var progress map[string]any
+	if err := json.Unmarshal([]byte(body), &progress); status != http.StatusOK || err != nil || !maps.Equal(progress, map[string]any{"pending": false}) {
+		t.Fatalf("GET %s/duplicate/status = %d %s (decode error %v), want 200 {\"pending\":false}", toID, status, body, err)
+	}
 }
 
 // runHubSettings: --private and --gated auto both succeed. The server

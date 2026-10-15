@@ -18,6 +18,9 @@ type DeleteRepoFunc func(ctx context.Context, repoName string) error
 // MoveRepoFunc renames fromName to toName.
 type MoveRepoFunc func(ctx context.Context, fromName, toName string) error
 
+// DuplicateRepoFunc copies fromName into toName.
+type DuplicateRepoFunc func(ctx context.Context, fromName, toName string, req DuplicateRepoRequest) error
+
 // UpdateRepoSettingsFunc applies settings to repoName.
 type UpdateRepoSettingsFunc func(ctx context.Context, repoName string, settings RepoSettings) error
 
@@ -56,6 +59,13 @@ func WithDeleteRepoFunc(fn DeleteRepoFunc) Option {
 func WithMoveRepoFunc(fn MoveRepoFunc) Option {
 	return func(h *Handler) {
 		h.moveRepoFunc = fn
+	}
+}
+
+// WithDuplicateRepoFunc registers POST /api/{repoType}/{namespace}/{repo}/duplicate and GET .../duplicate/status.
+func WithDuplicateRepoFunc(fn DuplicateRepoFunc) Option {
+	return func(h *Handler) {
+		h.duplicateRepoFunc = fn
 	}
 }
 

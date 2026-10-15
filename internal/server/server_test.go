@@ -186,7 +186,7 @@ func TestNewHTTPHandler(t *testing.T) {
 	}
 }
 
-// TestNewHTTPHandlerCatalogLifecycle drives the six catalog routes through the chain with Hooks wired like cmd/hfd.
+// TestNewHTTPHandlerCatalogLifecycle drives every catalog route through the chain with Hooks wired like cmd/hfd.
 func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
@@ -204,6 +204,7 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 			backendhf.WithCreateRepoFunc(hooks.CreateRepo),
 			backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
 			backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+			backendhf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
 			backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 			backendhf.WithListReposFunc(hooks.ListRepos),
 			backendhf.WithWhoamiFunc(hooks.Whoami),
@@ -236,13 +237,30 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 		t.Errorf("organizations/other/settings/repositories = %s, want []", body)
 	}
 	do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
-	do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
+	if body := do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK); strings.TrimSpace(body) != `{"url":"http://example.com/datasets/org/moved"}` {
+		t.Errorf("move = %s, want only url http://example.com/datasets/org/moved", body)
+	}
 	if !repository.IsRepository(st.RepositoriesFS(), repoPath("datasets/org/moved")) {
 		t.Fatal("move did not rename the repository on the storage")
 	}
+	do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusNotFound)
+	do(t, http.MethodGet, "/api/datasets/org/moved", "", http.StatusOK)
 	do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
 	if repository.IsRepository(st.RepositoriesFS(), repoPath("datasets/org/moved")) {
 		t.Fatal("delete left the repository on the storage")
+	}
+	do(t, http.MethodPost, "/api/repos/create", `{"name":"src","organization":"org"}`, http.StatusOK)
+	if body := do(t, http.MethodPost, "/api/models/org/src/duplicate", `{"repository":"org/copy"}`, http.StatusOK); !strings.Contains(body, `"url":"http://example.com/org/copy"`) || !strings.Contains(body, `"filesCopyPending":false`) {
+		t.Errorf("duplicate = %s, want url http://example.com/org/copy and filesCopyPending false", body)
+	}
+	if !repository.IsRepository(st.RepositoriesFS(), repoPath("org/copy")) {
+		t.Fatal("duplicate did not create org/copy on the storage")
+	}
+	if body := do(t, http.MethodGet, "/api/models/org/copy/duplicate/status", "", http.StatusOK); strings.TrimSpace(body) != `{"pending":false}` {
+		t.Errorf("duplicate status = %s, want pending false", body)
+	}
+	if body := do(t, http.MethodPost, "/api/models/org/src/duplicate", `{"repository":"org/copy","private":true}`, http.StatusConflict); !strings.Contains(body, `"error":`) || !strings.Contains(body, `"url":"http://example.com/org/copy"`) {
+		t.Errorf("duplicate onto existing = %s, want an error and url http://example.com/org/copy", body)
 	}
 	if body := do(t, http.MethodGet, "/api/whoami-v2", "", http.StatusOK); !strings.Contains(body, `"name":"bob"`) {
 		t.Errorf("whoami = %s, want bob", body)
@@ -254,10 +272,21 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 		`msg="Update repository settings" user=bob repo=datasets/org/repo`,
 		`msg="Move repository" user=bob from=datasets/org/repo to=datasets/org/moved`,
 		`msg="Delete repository" user=bob repo=datasets/org/moved`,
+		`msg="Duplicate repository" user=bob from=org/src to=org/copy private=false`,
+		`msg="Duplicate repository" user=bob from=org/src to=org/copy private=true`,
 		`msg=Whoami user=bob`,
 	} {
 		if strings.Count(logs.String(), want) != 1 {
 			t.Errorf("logs = %s\nwant exactly one %q", logs.String(), want)
+		}
+	}
+	// Move and duplicate leave post-receive to their callbacks, and Hooks runs none.
+	for _, unwanted := range []string{
+		`msg="Post-receive hook" user=bob repo=datasets/org/moved`,
+		`msg="Post-receive hook" user=bob repo=org/copy`,
+	} {
+		if strings.Contains(logs.String(), unwanted) {
+			t.Errorf("logs = %s\nwant no %q", logs.String(), unwanted)
 		}
 	}
 }

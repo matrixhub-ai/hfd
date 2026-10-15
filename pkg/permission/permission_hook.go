@@ -16,6 +16,8 @@ const (
 
 	operationAboutRepo
 	operationAboutList
+	operationAboutDuplicate
+	operationAboutMove
 
 	// OperationUnknown represents an unknown or unrecognized operation.
 	OperationUnknown Operation = 0
@@ -29,6 +31,10 @@ const (
 	OperationUpdateRepo = operationAboutUpdate | operationAboutRepo
 	// OperationListRepos lists a type (repoName), optionally scoped by Context.Author.
 	OperationListRepos = operationAboutRead | operationAboutList
+	// OperationDuplicateRepo copies repoName into Context.DestRepo: it reads the source and creates the destination.
+	OperationDuplicateRepo = operationAboutCreate | operationAboutRepo | operationAboutDuplicate
+	// OperationMoveRepo renames repoName to Context.DestRepo: it is update-class so update-only policies such as PullMirrorReadOnly cover both names.
+	OperationMoveRepo = operationAboutUpdate | operationAboutRepo | operationAboutMove
 )
 
 // String returns a human-readable name for the operation.
@@ -44,6 +50,10 @@ func (o Operation) String() string {
 		return "update_repo"
 	case OperationListRepos:
 		return "list_repos"
+	case OperationDuplicateRepo:
+		return "duplicate_repo"
+	case OperationMoveRepo:
+		return "move_repo"
 	default:
 		return "unknown"
 	}
@@ -75,7 +85,7 @@ func (o Operation) IsWrite() bool {
 type Context struct {
 	// Ref is the branch, tag, or revision name being operated on.
 	Ref string
-	// DestRepo is the destination repository name (for move operations).
+	// DestRepo is the destination repository name (for move and duplicate operations).
 	DestRepo string
 	// Author is the namespace a list operation is scoped to; empty means all namespaces.
 	Author string

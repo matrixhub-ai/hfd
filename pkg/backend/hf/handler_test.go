@@ -87,13 +87,14 @@ func newStorage(t *testing.T, dir string) *storage.Storage {
 	return st
 }
 
-// catalogOptions enables the six catalog routes with the server defaults over st.
+// catalogOptions enables the seven catalog routes with the server defaults over st.
 func catalogOptions(st *storage.Storage) []hf.Option {
 	hooks := &server.Hooks{Storage: st}
 	return []hf.Option{
 		hf.WithCreateRepoFunc(hooks.CreateRepo),
 		hf.WithDeleteRepoFunc(hooks.DeleteRepo),
 		hf.WithMoveRepoFunc(hooks.MoveRepo),
+		hf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
 		hf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 		hf.WithListReposFunc(hooks.ListRepos),
 		hf.WithWhoamiFunc(hooks.Whoami),
@@ -137,7 +138,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 // TestHuggingFacePreOpenHook pins what the pre-open hook observes: the
 // request's repository name and write flag, that it runs before the open so
 // it can create the repository, that its errors map like open errors, and
-// that direct operations never reach it.
+// that delete and super-squash never reach it.
 func TestHuggingFacePreOpenHook(t *testing.T) {
 	ctx := context.Background()
 	st := newStorage(t, t.TempDir())
@@ -202,10 +203,13 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		do(t, http.MethodPost, "/api/datasets/org/repo/branch/feature", `{"startingPoint":"main"}`, http.StatusOK)
 		do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
 		do(t, http.MethodPost, "/api/datasets/org/repo/super-squash/main", `{"message":"squash"}`, http.StatusOK)
-		do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
-		do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
 		if len(calls) != 0 {
 			t.Fatalf("hook calls = %v, want none", calls)
+		}
+		do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
+		do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
+		if want := []call{{"datasets/org/repo", false}}; !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want only the move's %v", calls, want)
 		}
 	})
 }
