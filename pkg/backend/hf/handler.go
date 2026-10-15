@@ -31,6 +31,7 @@ type Handler struct {
 	createRepoFunc         CreateRepoFunc
 	deleteRepoFunc         DeleteRepoFunc
 	moveRepoFunc           MoveRepoFunc
+	duplicateRepoFunc      DuplicateRepoFunc
 	updateRepoSettingsFunc UpdateRepoSettingsFunc
 	listReposFunc          ListReposFunc
 	whoamiFunc             WhoamiFunc
@@ -147,6 +148,10 @@ func (h *Handler) registryHuggingFace(r *mux.Router) {
 	if h.moveRepoFunc != nil {
 		r.HandleFunc("/api/repos/move", h.handleMoveRepo).Methods(http.MethodPost)
 	}
+	if h.duplicateRepoFunc != nil {
+		r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/duplicate", h.handleDuplicateRepo).Methods(http.MethodPost)
+		r.HandleFunc("/api/{repoType:models|datasets|spaces|kernels}/{namespace}/{repo}/duplicate/status", h.handleDuplicateStatus).Methods(http.MethodGet)
+	}
 
 	// YAML validation endpoint - used by huggingface_hub to validate README YAML front matter
 	r.HandleFunc("/api/validate-yaml", h.handleValidateYAML).Methods(http.MethodPost)
@@ -258,7 +263,7 @@ func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoNa
 }
 
 // openRepoDirect opens the repository without the pre-open hook, for
-// operations that must not trigger a mirror sync (delete/move/squash).
+// operations that must not trigger a mirror sync (delete/squash).
 func (h *Handler) openRepoDirect(w http.ResponseWriter, repoName string) (*repository.Repository, bool) {
 	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {

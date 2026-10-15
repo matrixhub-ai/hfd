@@ -16,6 +16,8 @@ func TestOperationConstants(t *testing.T) {
 		permission.OperationReadRepo,
 		permission.OperationUpdateRepo,
 		permission.OperationListRepos,
+		permission.OperationDuplicateRepo,
+		permission.OperationMoveRepo,
 	}
 	seen := map[permission.Operation]bool{}
 	for _, op := range ops {
@@ -38,6 +40,67 @@ func TestOperationConstants(t *testing.T) {
 	}
 }
 
+func TestOperationDuplicateRepoPredicates(t *testing.T) {
+	predicates := []struct {
+		name string
+		is   func(permission.Operation) bool
+		want bool
+	}{
+		{"IsCreate", permission.Operation.IsCreate, true},
+		{"IsWrite", permission.Operation.IsWrite, true},
+		{"IsRead", permission.Operation.IsRead, false},
+		{"IsUpdate", permission.Operation.IsUpdate, false},
+		{"IsDelete", permission.Operation.IsDelete, false},
+	}
+	for _, p := range predicates {
+		if got := p.is(permission.OperationDuplicateRepo); got != p.want {
+			t.Errorf("OperationDuplicateRepo.%s() = %v, want %v", p.name, got, p.want)
+		}
+	}
+	for _, op := range []permission.Operation{
+		permission.OperationCreateRepo,
+		permission.OperationDeleteRepo,
+		permission.OperationReadRepo,
+		permission.OperationUpdateRepo,
+		permission.OperationListRepos,
+	} {
+		if op == permission.OperationDuplicateRepo {
+			t.Errorf("OperationDuplicateRepo must differ from %s", op)
+		}
+	}
+}
+
+func TestOperationMoveRepoPredicates(t *testing.T) {
+	predicates := []struct {
+		name string
+		is   func(permission.Operation) bool
+		want bool
+	}{
+		{"IsUpdate", permission.Operation.IsUpdate, true},
+		{"IsWrite", permission.Operation.IsWrite, true},
+		{"IsRead", permission.Operation.IsRead, false},
+		{"IsCreate", permission.Operation.IsCreate, false},
+		{"IsDelete", permission.Operation.IsDelete, false},
+	}
+	for _, p := range predicates {
+		if got := p.is(permission.OperationMoveRepo); got != p.want {
+			t.Errorf("OperationMoveRepo.%s() = %v, want %v", p.name, got, p.want)
+		}
+	}
+	for _, op := range []permission.Operation{
+		permission.OperationCreateRepo,
+		permission.OperationDeleteRepo,
+		permission.OperationReadRepo,
+		permission.OperationUpdateRepo,
+		permission.OperationListRepos,
+		permission.OperationDuplicateRepo,
+	} {
+		if op == permission.OperationMoveRepo {
+			t.Errorf("OperationMoveRepo must differ from %s", op)
+		}
+	}
+}
+
 func TestOperationString(t *testing.T) {
 	tests := []struct {
 		op   permission.Operation
@@ -49,6 +112,8 @@ func TestOperationString(t *testing.T) {
 		{permission.OperationReadRepo, "read_repo"},
 		{permission.OperationUpdateRepo, "update_repo"},
 		{permission.OperationListRepos, "list_repos"},
+		{permission.OperationDuplicateRepo, "duplicate_repo"},
+		{permission.OperationMoveRepo, "move_repo"},
 		{permission.Operation(99), "unknown"},
 	}
 	for _, tt := range tests {
@@ -88,7 +153,9 @@ func TestAuthHookFineGrainedOperations(t *testing.T) {
 			return nil
 		case permission.OperationCreateRepo,
 			permission.OperationDeleteRepo,
-			permission.OperationUpdateRepo:
+			permission.OperationUpdateRepo,
+			permission.OperationDuplicateRepo,
+			permission.OperationMoveRepo:
 			return errors.New("access denied for " + op.String())
 		default:
 			return errors.New("unknown operation")
@@ -103,6 +170,8 @@ func TestAuthHookFineGrainedOperations(t *testing.T) {
 		{permission.OperationCreateRepo, true},
 		{permission.OperationDeleteRepo, true},
 		{permission.OperationUpdateRepo, true},
+		{permission.OperationDuplicateRepo, true},
+		{permission.OperationMoveRepo, true},
 	}
 
 	for _, tt := range tests {

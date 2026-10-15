@@ -215,6 +215,23 @@ func (h *Hooks) MoveRepo(ctx context.Context, fromName, toName string) error {
 	return nil
 }
 
+// DuplicateRepo copies the repository with every ref; an existing destination is a conflict.
+func (h *Hooks) DuplicateRepo(ctx context.Context, fromName, toName string, request backendhf.DuplicateRepoRequest) error {
+	slog.InfoContext(ctx, "Duplicate repository", "user", authenticate.IdentityFrom(ctx).Name(), "from", fromName, "to", toName, "private", request.Private)
+	repo, err := h.openRepo(fromName)
+	if err != nil {
+		return err
+	}
+	toPath := repository.ResolvePath(toName)
+	if repository.IsRepository(h.Storage.RepositoriesFS(), toPath) {
+		return fmt.Errorf("destination repository %q: %w", toName, repository.ErrRepositoryAlreadyExists)
+	}
+	if _, err := repo.Duplicate(ctx, toPath); err != nil {
+		return fmt.Errorf("failed to duplicate repository: %w", err)
+	}
+	return nil
+}
+
 // UpdateRepoSettings accepts the payload; private and gated are not enforced here.
 func (h *Hooks) UpdateRepoSettings(ctx context.Context, repoName string, _ backendhf.RepoSettings) error {
 	slog.InfoContext(ctx, "Update repository settings", "user", authenticate.IdentityFrom(ctx).Name(), "repo", repoName)

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,12 +82,16 @@ func TestHooksCatalogDefaults(t *testing.T) {
 		t.Errorf("MoveRepo missing = %v, want ErrRepositoryNotExists", err)
 	}
 	logs.Reset()
+	head := mainRef(t, fs, repository.ResolvePath("datasets/org/repo"))
 	if err := hooks.MoveRepo(ctx, "datasets/org/repo", "datasets/org/moved"); err != nil {
 		t.Fatalf("MoveRepo: %v", err)
 	}
-	logs.Reset()
+	logged(t, `msg="Move repository" user=alice from=datasets/org/repo to=datasets/org/moved`)
 	if !repository.IsRepository(fs, repository.ResolvePath("datasets/org/moved")) || repository.IsRepository(fs, repository.ResolvePath("datasets/org/repo")) {
 		t.Error("MoveRepo did not rename datasets/org/repo to datasets/org/moved")
+	}
+	if got := mainRef(t, fs, repository.ResolvePath("datasets/org/moved")); got != head {
+		t.Errorf("moved main = %s, want the source's %s", got, head)
 	}
 
 	if err := hooks.UpdateRepoSettings(ctx, "datasets/org/moved", backendhf.RepoSettings{}); err != nil {
@@ -156,6 +162,96 @@ func TestHooksCatalogDefaults(t *testing.T) {
 		t.Errorf("Whoami = %+v, %v; want %+v", who, err, want)
 	}
 	logged(t, `msg=Whoami user=alice`)
+}
+
+// TestHooksDuplicateRepo pins that DuplicateRepo copies every ref, commit and the default branch into a new repository, leaves the source alone, and logs each call once.
+func TestHooksDuplicateRepo(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	logged := func(t *testing.T, want string) {
+		t.Helper()
+		if got := logs.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, want) {
+			t.Errorf("log = %q, want one line containing %q", got, want)
+		}
+		logs.Reset()
+	}
+
+	alice := authenticate.NewIdentity("alice", "alice@example.com")
+	ctx := authenticate.WithIdentity(context.Background(), alice)
+	hooks := &Hooks{Storage: newStorage(t)}
+	fs := hooks.Storage.RepositoriesFS()
+
+	created, err := hooks.CreateRepo(ctx, "datasets/org/src", backendhf.CreateRepoRequest{})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("CreateRepo = %v, %v; want the initial commit", created, err)
+	}
+	initial := created[0].NewRev()
+	src, err := repository.Open(fs, repository.ResolvePath("datasets/org/src"))
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+	second := addCommit(t, src, "README.md")
+	// dev stays on the initial commit so each copied ref must keep its own hash.
+	if err := src.CreateBranch("dev", initial); err != nil {
+		t.Fatalf("create branch dev: %v", err)
+	}
+	if err := src.CreateTag("v1", "main"); err != nil {
+		t.Fatalf("create tag v1: %v", err)
+	}
+	srcRefs, err := src.Refs()
+	if err != nil {
+		t.Fatalf("source refs: %v", err)
+	}
+	logs.Reset()
+
+	if err := hooks.DuplicateRepo(ctx, "datasets/org/src", "datasets/org/copy", backendhf.DuplicateRepoRequest{Repository: "org/copy"}); err != nil {
+		t.Fatalf("DuplicateRepo: %v", err)
+	}
+	logged(t, `msg="Duplicate repository" user=alice from=datasets/org/src to=datasets/org/copy private=false`)
+
+	dst, err := repository.Open(fs, repository.ResolvePath("datasets/org/copy"))
+	if err != nil {
+		t.Fatalf("open copy: %v", err)
+	}
+	if refs, err := dst.Refs(); err != nil || !maps.Equal(refs, srcRefs) {
+		t.Errorf("copy refs = %v, %v; want the source's %v", refs, err, srcRefs)
+	}
+	if branch := dst.DefaultBranch(); branch != "main" {
+		t.Errorf("copy default branch = %q, want main", branch)
+	}
+	commits, err := dst.Commits("main", nil)
+	var hashes []string
+	for _, c := range commits {
+		hashes = append(hashes, c.Hash().String())
+	}
+	if want := []string{second, initial}; err != nil || !slices.Equal(hashes, want) {
+		t.Errorf("copy main commits = %v, %v; want the source's %v", hashes, err, want)
+	}
+	if _, err := dst.Blob("main", "README.md"); err != nil {
+		t.Errorf("copy lacks README.md: %v", err)
+	}
+	if refs, err := src.Refs(); err != nil || !maps.Equal(refs, srcRefs) {
+		t.Errorf("source refs after DuplicateRepo = %v, %v; want unchanged %v", refs, err, srcRefs)
+	}
+
+	if err := hooks.DuplicateRepo(ctx, "datasets/org/src", "datasets/org/copy", backendhf.DuplicateRepoRequest{Repository: "org/copy"}); !errors.Is(err, repository.ErrRepositoryAlreadyExists) || !strings.Contains(err.Error(), `destination repository "datasets/org/copy"`) {
+		t.Errorf("DuplicateRepo onto existing = %v, want a named destination ErrRepositoryAlreadyExists", err)
+	}
+	logged(t, `msg="Duplicate repository" user=alice from=datasets/org/src to=datasets/org/copy private=false`)
+	if err := hooks.DuplicateRepo(ctx, "datasets/org/missing", "datasets/org/new", backendhf.DuplicateRepoRequest{Repository: "org/new"}); !errors.Is(err, repository.ErrRepositoryNotExists) || !strings.Contains(err.Error(), `"datasets/org/missing"`) {
+		t.Errorf("DuplicateRepo missing = %v, want a named ErrRepositoryNotExists", err)
+	}
+	logged(t, `msg="Duplicate repository" user=alice from=datasets/org/missing to=datasets/org/new private=false`)
+	if repository.IsRepository(fs, repository.ResolvePath("datasets/org/new")) {
+		t.Error("DuplicateRepo from a missing source created datasets/org/new")
+	}
+
+	if err := hooks.DuplicateRepo(context.Background(), "datasets/org/src", "datasets/org/anon", backendhf.DuplicateRepoRequest{Repository: "org/anon", Private: true}); err != nil {
+		t.Errorf("anonymous DuplicateRepo: %v", err)
+	}
+	logged(t, `msg="Duplicate repository" user=<anonymous> from=datasets/org/src to=datasets/org/anon private=true`)
 }
 
 func addCommit(t *testing.T, repo *repository.Repository, file string) string {

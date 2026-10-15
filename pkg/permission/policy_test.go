@@ -80,6 +80,38 @@ func TestSplitReadWrite(t *testing.T) {
 	}
 }
 
+func TestSplitReadWriteRoutesDuplicateToWrite(t *testing.T) {
+	var readCalls, writeCalls int
+	read := func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+		readCalls++
+		return true, nil
+	}
+	write := func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+		writeCalls++
+		return false, nil
+	}
+	ok, err := permission.SplitReadWrite(read, write)(context.Background(), permission.OperationDuplicateRepo, "test-repo", permission.Context{})
+	if ok || err != nil || readCalls != 0 || writeCalls != 1 {
+		t.Errorf("got (%v, %v), read calls=%d, write calls=%d; want (false, <nil>), 0, 1", ok, err, readCalls, writeCalls)
+	}
+}
+
+func TestSplitReadWriteRoutesMoveToWrite(t *testing.T) {
+	var readCalls, writeCalls int
+	read := func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+		readCalls++
+		return true, nil
+	}
+	write := func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
+		writeCalls++
+		return false, nil
+	}
+	ok, err := permission.SplitReadWrite(read, write)(context.Background(), permission.OperationMoveRepo, "test-repo", permission.Context{DestRepo: "other/repo"})
+	if ok || err != nil || readCalls != 0 || writeCalls != 1 {
+		t.Errorf("got (%v, %v), read calls=%d, write calls=%d; want (false, <nil>), 0, 1", ok, err, readCalls, writeCalls)
+	}
+}
+
 func TestSplitReadWriteNilLegs(t *testing.T) {
 	deny := func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
 		return false, nil
@@ -184,6 +216,10 @@ func TestPullMirrorReadOnly(t *testing.T) {
 		{"MoveIntoPullMirror", permission.OperationUpdateRepo, &fakeMirrorRoles{srcOnly: "mirrored"}, permission.Context{DestRepo: "mirrored"}, false, nil, 2, 1},
 		{"MoveOutOfPullMirror", permission.OperationUpdateRepo, &fakeMirrorRoles{srcOnly: "test-repo"}, permission.Context{DestRepo: "local"}, false, nil, 1, 1},
 		{"MoveBetweenLocal", permission.OperationUpdateRepo, &fakeMirrorRoles{}, permission.Context{DestRepo: "local"}, true, nil, 2, 0},
+		{"MoveRepoOutOfPullMirror", permission.OperationMoveRepo, &fakeMirrorRoles{srcOnly: "test-repo"}, permission.Context{DestRepo: "local"}, false, nil, 1, 1},
+		{"MoveRepoIntoPullMirror", permission.OperationMoveRepo, &fakeMirrorRoles{srcOnly: "mirrored"}, permission.Context{DestRepo: "mirrored"}, false, nil, 2, 1},
+		{"MoveRepoBetweenLocal", permission.OperationMoveRepo, &fakeMirrorRoles{}, permission.Context{DestRepo: "local"}, true, nil, 2, 0},
+		{"MoveRepoOutOfPullPushMirror", permission.OperationMoveRepo, &fakeMirrorRoles{srcOnly: "test-repo", dest: true}, permission.Context{DestRepo: "local"}, true, nil, 2, 1},
 		{"Read", permission.OperationReadRepo, &fakeMirrorRoles{src: true}, permission.Context{}, true, nil, 0, 0},
 		{"List", permission.OperationListRepos, &fakeMirrorRoles{src: true}, permission.Context{}, true, nil, 0, 0},
 		{"Create", permission.OperationCreateRepo, &fakeMirrorRoles{src: true}, permission.Context{}, true, nil, 0, 0},

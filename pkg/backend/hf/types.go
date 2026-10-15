@@ -125,6 +125,30 @@ type moveRepoRequest struct {
 	Type     string `json:"type"`
 }
 
+// moveRepoResponse represents the move repo response body.
+type moveRepoResponse struct {
+	URL string `json:"url"`
+}
+
+// DuplicateRepoRequest represents the duplicate repo request body.
+type DuplicateRepoRequest struct {
+	Repository string `json:"repository"`
+	Private    bool   `json:"private"`
+	Visibility string `json:"visibility"`
+}
+
+// duplicateRepoResponse represents the duplicate repo response body.
+type duplicateRepoResponse struct {
+	Error            string `json:"error,omitempty"`
+	URL              string `json:"url"`
+	FilesCopyPending bool   `json:"filesCopyPending"`
+}
+
+// duplicateStatusResponse represents the duplicate status response body.
+type duplicateStatusResponse struct {
+	Pending bool `json:"pending"`
+}
+
 // RepoSettings represents the repo settings update request body.
 type RepoSettings struct {
 	Private *bool `json:"private,omitempty"`

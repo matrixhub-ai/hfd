@@ -89,6 +89,7 @@ func run(ctx context.Context, cfg *config) error {
 			backendhf.WithCreateRepoFunc(hooks.CreateRepo),
 			backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
 			backendhf.WithMoveRepoFunc(hooks.MoveRepo),
+			backendhf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
 			backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 			backendhf.WithListReposFunc(hooks.ListRepos),
 			backendhf.WithWhoamiFunc(hooks.Whoami),

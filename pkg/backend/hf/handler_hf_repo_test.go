@@ -189,9 +189,16 @@ func TestHuggingFaceMoveRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to move repo: %v", err)
 	}
+	var moved struct {
+		URL string `json:"url"`
+	}
+	decodeErr := json.NewDecoder(resp.Body).Decode(&moved)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
+	}
+	if want := endpoint + "/new-ns/my-model"; decodeErr != nil || moved.URL != want {
+		t.Errorf("move url = %q (decode error %v), want %q", moved.URL, decodeErr, want)
 	}
 
 	// Verify old location no longer exists
