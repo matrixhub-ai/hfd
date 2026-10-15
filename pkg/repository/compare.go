@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
@@ -14,26 +13,26 @@ func (r *Repository) Compare(ctx context.Context, base, head string) (object.Cha
 		return nil, fmt.Errorf("both base and head revisions must be specified")
 	}
 
-	baseHash, err := r.repo.ResolveRevision(plumbing.Revision(base))
+	baseHash, err := r.resolveRevision(base)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve base revision %q: %w", base, err)
 	}
 
-	headHash, err := r.repo.ResolveRevision(plumbing.Revision(head))
+	headHash, err := r.resolveRevision(head)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve head revision %q: %w", head, err)
 	}
 
-	if *baseHash == *headHash {
+	if baseHash == headHash {
 		return nil, nil
 	}
 
-	baseCommit, err := r.repo.CommitObject(*baseHash)
+	baseCommit, err := r.repo.CommitObject(baseHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get base commit: %w", err)
 	}
 
-	headCommit, err := r.repo.CommitObject(*headHash)
+	headCommit, err := r.repo.CommitObject(headHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get head commit: %w", err)
 	}

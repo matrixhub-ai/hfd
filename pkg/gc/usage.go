@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/go-git/go-git/v6/plumbing"
+
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -41,6 +43,26 @@ func (g *GC) Usage(ctx context.Context) (repository.Usage, error) {
 	}
 	if err != nil {
 		return repository.Usage{}, err
+	}
+	return total, nil
+}
+
+// SharedObjectsUsage sums the loose objects of the store the repositories share, which no repository's Usage counts.
+func (g *GC) SharedObjectsUsage(ctx context.Context) (repository.ObjectUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return repository.ObjectUsage{}, err
+	}
+	var total repository.ObjectUsage
+	err := repository.WalkSharedObjects(g.repos, func(_ plumbing.Hash, info fs.FileInfo) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		total.Count++
+		total.Bytes += info.Size()
+		return nil
+	})
+	if err != nil {
+		return repository.ObjectUsage{}, err
 	}
 	return total, nil
 }

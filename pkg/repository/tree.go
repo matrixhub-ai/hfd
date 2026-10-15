@@ -6,7 +6,6 @@ import (
 	"path"
 
 	"github.com/go-git/go-git/v6"
-	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
@@ -76,12 +75,12 @@ func (r *Repository) Tree(rev string, path string, opts *TreeOptions) ([]*TreeEn
 		opts = &TreeOptions{}
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := r.resolveRevision(rev)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
 
-	commit, err := r.repo.CommitObject(*hash)
+	commit, err := r.repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit object: %w", err)
 	}

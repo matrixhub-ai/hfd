@@ -805,13 +805,9 @@ func testReceivePackHooks(t *testing.T, native bool, proto string) {
 			} else if want := map[bool]string{true: "0000"}[tc.mux]; out.String() != want {
 				t.Errorf("output = %q, want %q without report-status", out.Bytes(), want)
 			}
-			// Native git sees the commands before the pack, so only there PreReceive already ran.
-			wantPre := 0
-			if native {
-				wantPre = 1
-			}
-			if len(pre) != wantPre || len(post) != 0 {
-				t.Errorf("pre-receive calls = %v, post-receive calls = %v; want %d and none", pre, post, wantPre)
+			// Either engine runs PreReceive on the commands before it reads the pack.
+			if len(pre) != 1 || len(post) != 0 {
+				t.Errorf("pre-receive calls = %v, post-receive calls = %v; want one and none", pre, post)
 			}
 			requireSameRefs(t, "refs after bad pack", gitLocalRefs(t, bare), refs)
 		})
@@ -1180,6 +1176,7 @@ func TestLocalDir(t *testing.T) {
 		{"BoundEscape", osfs.New(root), "/../escape.git"},
 		{"BoundRelativeEscape", osfs.New(root), "../escape.git"},
 		{"ChrootEscape", chroot.New(osfs.New(root), "/repositories"), "/../escape.git"},
+		{"SharedObjectsEscape", sharedTestBind(osfs.New(root)), "/../escape.git"},
 	}
 	for _, tc := range negative {
 		t.Run(tc.name, func(t *testing.T) {

@@ -50,25 +50,21 @@ func (s *unreadableStorage) IterEncodedObjects(t plumbing.ObjectType) (storer.En
 	return storer.NewEncodedObjectSliceIter(objs), nil
 }
 
+func (s *unreadableStorage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	obj, err := s.Storage.EncodedObject(t, h)
+	if err != nil || obj.Type() != plumbing.BlobObject {
+		return obj, err
+	}
+	return unreadableBlob{obj}, nil
+}
+
 func TestScanLFSPointersSurfacesReadErrors(t *testing.T) {
 	st := &unreadableStorage{Storage: memory.NewStorage()}
 	r, err := git.Init(st, git.WithDefaultBranch(plumbing.NewBranchReferenceName("main")))
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	blob := st.NewEncodedObject()
-	blob.SetType(plumbing.BlobObject)
-	w, err := blob.Writer()
-	if err != nil {
-		t.Fatalf("blob writer: %v", err)
-	}
-	if _, err := w.Write([]byte("not a pointer")); err != nil {
-		t.Fatalf("write blob: %v", err)
-	}
-	_ = w.Close()
-	if _, err := st.SetEncodedObject(blob); err != nil {
-		t.Fatalf("store blob: %v", err)
-	}
+	mustCommitBlobs(t, r, "not a pointer")
 
 	repo := &Repository{repo: r}
 	if _, err := repo.ScanLFSPointers(context.Background()); !errors.Is(err, errUnreadable) {
@@ -95,6 +91,19 @@ func storeBlob(t *testing.T, st storer.EncodedObjectStorer, content string) plum
 	return h
 }
 
+// mustCommitBlobs commits each content as a file of its own on main, so a scan reaches every blob, and returns the blob hashes.
+func mustCommitBlobs(t *testing.T, r *git.Repository, contents ...string) []plumbing.Hash {
+	t.Helper()
+	hashes := make([]plumbing.Hash, len(contents))
+	ops := make([]CommitOperation, len(contents))
+	for i, content := range contents {
+		hashes[i] = storeBlob(t, r.Storer, content)
+		ops[i] = CommitOperation{Type: CommitOperationAdd, Path: fmt.Sprint(i), Content: []byte(content)}
+	}
+	mustCommit(t, &Repository{repo: r}, "main", "", ops...)
+	return hashes
+}
+
 func pointerText(oid string, size int) string {
 	return fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, size)
 }
@@ -118,7 +127,8 @@ func TestScanLFSPointersExcept(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	oid, other := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	first, second, third := storeBlob(t, st, pointerText(oid, 1)), storeBlob(t, st, pointerText(oid, 2)), storeBlob(t, st, pointerText(other, 3))
+	blobs := mustCommitBlobs(t, r, pointerText(oid, 1), pointerText(oid, 2), pointerText(other, 3))
+	first, second, third := blobs[0], blobs[1], blobs[2]
 	oids := func(repo *Repository, ignored ...plumbing.Hash) []string {
 		t.Helper()
 		ptrs, err := repo.ScanLFSPointersExcept(t.Context(), ignored)
@@ -172,9 +182,9 @@ func TestScanLFSPointersSizeBounds(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	kept, dropped := pointerText(strings.Repeat("c", 64), 5), pointerText(strings.Repeat("d", 64), 4)
-	storeBlob(t, st, "")
-	storeBlob(t, st, dropped+strings.Repeat(" ", lfs.MaxLFSPointerSize-len(dropped)))
-	storeBlob(t, st, kept+strings.Repeat(" ", lfs.MaxLFSPointerSize-1-len(kept)))
+	mustCommitBlobs(t, r, "",
+		dropped+strings.Repeat(" ", lfs.MaxLFSPointerSize-len(dropped)),
+		kept+strings.Repeat(" ", lfs.MaxLFSPointerSize-1-len(kept)))
 
 	ptrs, err := (&Repository{repo: r}).ScanLFSPointersExcept(t.Context(), nil)
 	if err != nil {

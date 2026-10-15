@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -361,9 +362,12 @@ func (s *usageStore) Usage(ctx context.Context) (xetstorage.Usage, error) {
 
 func TestHandlerUsage(t *testing.T) {
 	ctx := context.Background()
-	const empty = `{"Repository":{"Objects":{"Count":0,"Bytes":0},"Other":{"Count":0,"Bytes":0}},"Xet":{"Xorbs":{"Count":0,"Bytes":0},"Shards":{"Count":0,"Bytes":0},"FileIndex":{"Count":0,"Bytes":0},"ChunkIndex":{"Count":0,"Bytes":0},"SHA256Index":{"Count":0,"Bytes":0}},"Spool":{"Count":0,"Bytes":0},"Mirror":{"Count":0,"Bytes":0}}`
+	const empty = `{"Repository":{"Objects":{"Count":0,"Bytes":0},"Other":{"Count":0,"Bytes":0}},"SharedObjects":{"Count":0,"Bytes":0},"Xet":{"Xorbs":{"Count":0,"Bytes":0},"Shards":{"Count":0,"Bytes":0},"FileIndex":{"Count":0,"Bytes":0},"ChunkIndex":{"Count":0,"Bytes":0},"SHA256Index":{"Count":0,"Bytes":0}},"Spool":{"Count":0,"Bytes":0},"Mirror":{"Count":0,"Bytes":0}}`
 	rec := do(newHandler(t, newRepos(t), newStorage(t)), http.MethodGet, "/internal/usage")
-	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || strings.TrimSpace(rec.Body.String()) != empty {
+	// The keys and values are the report; their order is not.
+	var gotEmpty, wantEmpty any
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(rec.Body.Bytes(), &gotEmpty) != nil || json.Unmarshal([]byte(empty), &wantEmpty) != nil || !reflect.DeepEqual(gotEmpty, wantEmpty) {
 		t.Fatalf("empty usage: status %d, content-type %q, body %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 
@@ -459,7 +463,7 @@ func decodeResult(t *testing.T, rec *httptest.ResponseRecorder, status int) gcRe
 	return res
 }
 
-// A GC preview reports the Git objects and bytes the run then deletes, with no disk saving measured, and deletes nothing itself.
+// A GC preview reports the Git garbage the run then deletes, none while the shared pool holds the orphan, and deletes nothing itself.
 func TestHandlerPruneGitGC(t *testing.T) {
 	repos := newRepos(t)
 	orphanPointer(t, repos, "/org/repo.git")
@@ -469,16 +473,16 @@ func TestHandlerPruneGitGC(t *testing.T) {
 	for i := range 2 {
 		rec := do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
 		preview = decodeResult(t, rec, http.StatusOK).Prune
-		if !preview.DryRun || preview.Repositories != 1 || preview.DeletedGitObjects != 4 || preview.DeletedGitBytes <= 64<<10 || preview.ReclaimedBytes != 0 {
-			t.Fatalf("preview %d: %+v; want 4 objects, more than the 64 KiB filler and no reclaimed bytes", i, preview)
+		if !preview.DryRun || preview.Repositories != 1 || preview.DeletedGitObjects != 0 || preview.DeletedGitBytes != 0 || preview.ReclaimedBytes != 0 {
+			t.Fatalf("preview %d: %+v; want no Git garbage while the shared pool holds the orphan", i, preview)
 		}
-		if body := rec.Body.String(); !strings.Contains(body, `"deleted_git_objects":4`) || !strings.Contains(body, `"deleted_git_bytes":`) || !strings.Contains(body, `"reclaimed_bytes":`) || strings.Contains(body, `"failed"`) {
+		if body := rec.Body.String(); !strings.Contains(body, `"deleted_git_objects":0`) || !strings.Contains(body, `"deleted_git_bytes":`) || !strings.Contains(body, `"reclaimed_bytes":`) || strings.Contains(body, `"failed"`) {
 			t.Fatalf("preview body %s: want the Git fields and no failed map", body)
 		}
 	}
 	res := decodeResult(t, do(h, http.MethodPost, "/internal/gc?grace=0"), http.StatusOK).Prune
-	if res.DryRun || res.DeletedGitObjects != preview.DeletedGitObjects || res.DeletedGitBytes != preview.DeletedGitBytes || res.ReclaimedBytes <= 0 {
-		t.Fatalf("prune %+v, want the preview's %d objects and %d bytes", res, preview.DeletedGitObjects, preview.DeletedGitBytes)
+	if res.DryRun || len(res.Failed) != 0 || res.DeletedGitObjects != preview.DeletedGitObjects || res.DeletedGitBytes != preview.DeletedGitBytes || res.ReclaimedBytes != 0 {
+		t.Fatalf("prune %+v, want the preview's %d objects and %d bytes and nothing reclaimed", res, preview.DeletedGitObjects, preview.DeletedGitBytes)
 	}
 	if after := decodeResult(t, do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0"), http.StatusOK).Prune; after.DeletedGitObjects != 0 || after.DeletedGitBytes != 0 {
 		t.Fatalf("preview after prune %+v, want nothing left to delete", after)
@@ -490,16 +494,18 @@ func TestHandlerReportsGitGCFailure(t *testing.T) {
 	repos := newRepos(t)
 	orphanPointer(t, repos, "/org/repo.git")
 	orphanPointer(t, repos, "/org/broken.git")
-	if err := util.WriteFile(repos, "/org/broken.git/refs/heads/dangling", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+	// An undecodable loose object fails the object inventory a run starts from, while every reachable object stays readable from the shared pool.
+	if err := util.WriteFile(repos, "/org/broken.git/objects/11/"+strings.Repeat("1", 38), []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h := newHandler(t, repos, newStorage(t))
-	rec := do(h, http.MethodPost, "/internal/gc?dry_run=true&grace=0")
+	// A pool member's preview reports nothing, so the failure shows in a run.
+	rec := do(h, http.MethodPost, "/internal/gc?grace=0")
 	res := decodeResult(t, rec, http.StatusOK)
 	if res.Done || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "prune: git gc failed in 1 repositories") || res.Storage == nil {
 		t.Fatalf("body %s: want an unfinished step listing the prune error and the storage pass", rec.Body)
 	}
-	if p := res.Prune; p.Failed["/org/broken.git"] == "" || len(p.Failed) != 1 || p.Repositories != 2 || p.DeletedGitObjects != 4 || p.DeletedGitBytes <= 0 {
-		t.Fatalf("failure body must carry the failed repository and the healthy repository's stats: %s", rec.Body)
+	if p := res.Prune; p.Failed["/org/broken.git"] == "" || len(p.Failed) != 1 || p.Repositories != 2 || p.DeletedGitObjects != 0 || p.DeletedGitBytes != 0 {
+		t.Fatalf("failure body must carry the failed repository and the healthy repository's stats, no Git garbage while the shared pool holds it: %s", rec.Body)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +49,26 @@ func (r *Repository) gitDir() string {
 	return r.localDir
 }
 
+// sharedObjectsRedirect makes a native fetch store the objects it receives in r's shared store; never for gc, which would prune the store to r's refs.
+func (r *Repository) sharedObjectsRedirect() (env, config []string) {
+	pool := r.sharedObjectsDir()
+	if pool == "" {
+		return nil, nil
+	}
+	env = []string{"GIT_OBJECT_DIRECTORY=" + pool, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + quoteGitPath(filepath.Join(r.gitDir(), "objects"))}
+	// Unpacked loose, an object any store already holds is skipped instead of copied into a kept pack.
+	// A repository's own receive.unpackLimit or fetch.unpackLimit outranks transfer.unpackLimit, so both are pinned too.
+	return env, []string{"transfer.unpackLimit=2147483647", "receive.unpackLimit=2147483647", "fetch.unpackLimit=2147483647"}
+}
+
+// quoteGitPath C-quotes p when needed, as git splits GIT_ALTERNATE_OBJECT_DIRECTORIES at ':' unless an entry starts with '"'.
+func quoteGitPath(p string) string {
+	if !strings.ContainsAny(p, `:"\`) {
+		return p
+	}
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(p) + `"`
+}
+
 // localDir maps name on fs to a host directory; "" means fs is not a known OS-backed filesystem.
 func localDir(fs billy.Basic, name string) string {
 	switch fs := fs.(type) {
@@ -59,6 +81,15 @@ func localDir(fs billy.Basic, name string) string {
 			return ""
 		}
 		return localDir(fs.Underlying(), fs.Join(fs.Root(), name))
+	// sharedObjectsFS: a chroot whose Underlying is a billy.Filesystem.
+	case interface {
+		Underlying() billy.Filesystem
+		Root() string
+	}:
+		if crossesBoundary(name) {
+			return ""
+		}
+		return localDir(fs.Underlying(), fs.Underlying().Join(fs.Root(), name))
 	}
 	return ""
 }
@@ -185,8 +216,23 @@ func (r *Repository) serveGit(ctx context.Context, dir, service, gitProtocol str
 		return err
 	}
 	if service == GitUploadPack {
-		go feedStdin(stdin, input)
+		// Native upload-pack serves any object that exists under protocol v2, and the pool is visible through alternates.
+		var refusal bytes.Buffer
+		ended := make(chan error, 1)
+		go feedStdin(stdin, ioutil.NewReaderOnError(newWantFilter(input, &refusal, r.wantAllowed(ctx)), func(err error) { ended <- err }))
 		err = runGitCmd(cmd)
+		// The filter reports before stdin closes, so a failure that ended git is already here.
+		select {
+		case ferr := <-ended:
+			if errors.Is(ferr, errNotOurRef) {
+				// The filter runs ahead of git, so its ERR waits until git's output has ended.
+				_, _ = refusal.WriteTo(output)
+				err = ferr
+			} else if err != nil {
+				err = errors.Join(ferr, err)
+			}
+		default:
+		}
 	} else {
 		err = r.receivePackGit(ctx, cmd, stdin, output, input, hooks)
 	}
@@ -202,7 +248,7 @@ func feedStdin(stdin io.WriteCloser, input io.Reader) {
 	_ = stdin.Close()
 }
 
-// receivePackGit reads the client's commands itself so PreReceive can refuse them before git sees the pack; PostReceive gets only the requested refs that moved.
+// receivePackGit runs PreReceive before git reads the pack; in a repository sharing the pool it stores the push itself and has git apply the commands to an empty pack unless one names objects the push neither delivered nor the repository reaches. PostReceive gets only the requested refs that moved.
 func (r *Repository) receivePackGit(ctx context.Context, cmd *exec.Cmd, stdin io.WriteCloser, output io.Writer, input io.Reader, hooks ReceivePackHooks) error {
 	if err := cmd.Start(); err != nil {
 		return err
@@ -228,20 +274,65 @@ func (r *Repository) receivePackGit(ctx context.Context, cmd *exec.Cmd, stdin io
 		}
 		return err
 	}
-	var denied error
-	if err == nil && len(req.Commands) > 0 && hooks.PreReceive != nil {
-		denied = hooks.PreReceive(ctx, r.refUpdates(req.Commands))
-	}
-	if err != nil || denied != nil {
+	kill := func() {
 		_ = cmd.Process.Kill()
 		<-exited
-		if denied != nil {
-			return rejectReceivePack(output, rd, req, denied)
-		}
+	}
+	if err != nil {
+		kill()
 		return err
 	}
+	var opts, pack []byte
+	if len(req.Commands) > 0 && req.Capabilities.Supports(capability.PushOptions) {
+		if opts, err = readPushOptions(rd); err != nil {
+			kill()
+			return err
+		}
+	}
+	if len(req.Commands) > 0 && hooks.PreReceive != nil {
+		if denied := hooks.PreReceive(ctx, r.refUpdates(req.Commands)); denied != nil {
+			kill()
+			return rejectReceivePack(output, rd, req, denied)
+		}
+	}
+	_, bound := r.repo.Storer.(*sharedStorer)
+	if bound && slices.ContainsFunc(req.Commands, func(c *packp.Command) bool { return c.Action() != packp.Delete }) {
+		delivered, bases, err := r.unpackPack(ctx, rd)
+		if err != nil {
+			kill()
+			// A cancelled request is the caller's failure, not an unpack status to report.
+			if ctx.Err() != nil {
+				return err
+			}
+			rs := &packp.ReportStatus{UnpackStatus: err.Error()}
+			for _, c := range req.Commands {
+				rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: c.Name, Status: "unpacker error"})
+			}
+			return writeReport(output, &req.Capabilities, rs)
+		}
+		refused, err := r.checkPushed(ctx, req.Commands, delivered, bases)
+		if err != nil {
+			kill()
+			return err
+		}
+		if slices.Contains(refused, true) {
+			kill()
+			// git cannot fail single commands on hfd's verdict, so hfd applies them all as the go-git engine does.
+			cfg, err := r.readReceiveConfig()
+			if err != nil {
+				return fmt.Errorf("reading config: %w", err)
+			}
+			return r.applyCommands(ctx, output, req, cfg, refused, hooks)
+		}
+		pack = emptyPack
+	}
+	rest := io.MultiReader(bytes.NewReader(hdr), bytes.NewReader(opts), bytes.NewReader(pack))
+	// Without the pool, git unpacks and checks the push itself: go-git cannot index a thin pack it stores whole.
+	if !bound {
+		rest = io.MultiReader(rest, rd)
+	}
 	before := r.refSnapshot(req.Commands)
-	go feedStdin(stdin, io.MultiReader(bytes.NewReader(hdr), rd))
+	go feedStdin(stdin, rest)
 	err = <-exited
 	if len(req.Commands) == 0 {
 		return err
@@ -257,7 +348,7 @@ func (r *Repository) receivePackGit(ctx context.Context, cmd *exec.Cmd, stdin io
 	return err
 }
 
-// maxReceiveCommandsSize bounds the ref update commands held in memory while PreReceive runs.
+// maxReceiveCommandsSize bounds the ref update commands, and apart from them the push options, held in memory while PreReceive runs.
 const maxReceiveCommandsSize = 10 << 20
 
 // readReceiveCommands reads the update commands plus the exact bytes consumed, for replay to git; a lone flush yields no commands.
@@ -282,6 +373,28 @@ func readReceiveCommands(rd *bufio.Reader) (*packp.UpdateRequests, []byte, error
 	}
 	return req, hdr.Bytes(), nil
 }
+
+// readPushOptions reads the push-options section up to and including its flush, as raw bytes for replay to git.
+func readPushOptions(rd io.Reader) ([]byte, error) {
+	var opts bytes.Buffer
+	tee := io.TeeReader(io.LimitReader(rd, maxReceiveCommandsSize), &opts)
+	for {
+		l, _, err := pktline.ReadLine(tee)
+		if err != nil {
+			return nil, fmt.Errorf("reading push-options: %w", err)
+		}
+		if l == pktline.Flush {
+			return opts.Bytes(), nil
+		}
+	}
+}
+
+// emptyPack holds no objects: "PACK", version 2, a zero count, then the SHA-1 of those twelve bytes.
+var emptyPack = func() []byte {
+	hdr := []byte("PACK\x00\x00\x00\x02\x00\x00\x00\x00")
+	sum := sha1.Sum(hdr)
+	return append(hdr, sum[:]...)
+}()
 
 // rejectReceivePack answers every command with reason in-protocol, draining the unread pack so the client gets to read the report.
 func rejectReceivePack(output io.Writer, input io.Reader, req *packp.UpdateRequests, reason error) error {
@@ -384,7 +497,9 @@ func (r *Repository) fetchGit(ctx context.Context, dir, url string, refs []strin
 		fmt.Fprintf(&specs, "+%s:%s\n", ref, ref)
 	}
 	remote, config := mirrorRemoteConfig(url)
-	cmd := gitDirCmd(ctx, dir, config, "fetch", "--no-tags", "--progress", "--no-write-fetch-head", "--stdin", remote)
+	env, redirect := r.sharedObjectsRedirect()
+	cmd := gitDirCmd(ctx, dir, append(config, redirect...), "fetch", "--no-tags", "--progress", "--no-write-fetch-head", "--stdin", remote)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdin = strings.NewReader(specs.String())
 	cmd.Stderr = &tailBuffer{sink: progress}
 	err := runGitCmd(cmd)

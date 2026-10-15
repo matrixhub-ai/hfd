@@ -677,15 +677,9 @@ func TestGCDryRunUnsupported(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		cutoff time.Time
-		goGit  bool // refused by the go-git engine too
 		setup  func(t *testing.T, f *gcFixture)
 	}{
-		{"Alternates", time.Time{}, true, func(t *testing.T, f *gcFixture) {
-			if err := os.WriteFile(filepath.Join(f.bare, "objects", "info", "alternates"), []byte(t.TempDir()+"\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"Reflogs", time.Time{}, false, func(t *testing.T, f *gcFixture) {
+		{"Reflogs", time.Time{}, func(t *testing.T, f *gcFixture) {
 			runGit(t, f.bare, "config", "core.logAllRefUpdates", "true")
 			main := revParse(t, f.bare, "refs/heads/main")
 			runGit(t, f.bare, "update-ref", "refs/heads/main", f.live["keep commit"])
@@ -694,12 +688,12 @@ func TestGCDryRunUnsupported(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"RecentObjectsHook", time.Time{}, false, func(t *testing.T, f *gcFixture) {
+		{"RecentObjectsHook", time.Time{}, func(t *testing.T, f *gcFixture) {
 			runGit(t, f.bare, "config", "gc.recentObjectsHook", "/bin/true")
 		}},
-		{"KeepWithGrace", time.Now().Add(-time.Hour), false, func(t *testing.T, f *gcFixture) { markPack(t, f, "keep") }},
-		{"CruftWithGrace", time.Now().Add(-time.Hour), false, func(t *testing.T, f *gcFixture) { markPack(t, f, "mtimes") }},
-		{"PromisorPack", time.Time{}, false, func(t *testing.T, f *gcFixture) { markPack(t, f, "promisor") }},
+		{"KeepWithGrace", time.Now().Add(-time.Hour), func(t *testing.T, f *gcFixture) { markPack(t, f, "keep") }},
+		{"CruftWithGrace", time.Now().Add(-time.Hour), func(t *testing.T, f *gcFixture) { markPack(t, f, "mtimes") }},
+		{"PromisorPack", time.Time{}, func(t *testing.T, f *gcFixture) { markPack(t, f, "promisor") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			forEachGitMode(t, func(t *testing.T, native bool) {
@@ -708,7 +702,7 @@ func TestGCDryRunUnsupported(t *testing.T) {
 				tc.setup(t, f)
 				before := snapshotFiles(t, osfs.Default, f.bare)
 				_, err := f.repo.GC(t.Context(), tc.cutoff, true)
-				if native || tc.goGit {
+				if native {
 					if !errors.Is(err, errGCPreviewUnsupported) {
 						t.Fatalf("dry-run GC = %v, want %v", err, errGCPreviewUnsupported)
 					}

@@ -29,12 +29,12 @@ func (r *Repository) Commits(rev string, opts *CommitsOptions) ([]Commit, error)
 		opts = &CommitsOptions{}
 	}
 
-	hash, err := r.repo.ResolveRevision(plumbing.Revision(rev))
+	hash, err := r.resolveRevision(rev)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve revision: %w", err)
 	}
 
-	commitIter, err := r.repo.Log(&git.LogOptions{From: *hash})
+	commitIter, err := r.repo.Log(&git.LogOptions{From: hash})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit log: %w", err)
 	}
