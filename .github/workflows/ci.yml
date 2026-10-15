@@ -52,6 +52,46 @@ jobs:
           echo "${dir}/bin" >> "${GITHUB_PATH}"
           "${dir}/bin/git-xet" --version | grep -Fx "git-xet ${GIT_XET_VERSION#v}"
 
+      # hf-mount is pinned by release and checksum and installed under the
+      # runner temp dir for the e2e mount matrix, which fails on CI rather
+      # than skipping when its NFS or FUSE binary is missing.
+      - name: Install hf-mount
+        env:
+          HF_MOUNT_VERSION: v0.13.1
+          HF_MOUNT_NFS_SHA256: 049e5e5e98963485cd8196a5eeeaf21b25d0e7446303d09b048939c8fa689ccd
+          HF_MOUNT_FUSE_SHA256: 5ca8a41698eb9d08d7165f881f57e53f1d7dcdbacd346f1549affedd73b59397
+        run: |
+          set -euo pipefail
+          if ! command -v fusermount3 >/dev/null || ! command -v mount.nfs >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y fuse3 nfs-common
+          fi
+          grep -qxE '\s*user_allow_other\s*' /etc/fuse.conf || echo user_allow_other | sudo tee -a /etc/fuse.conf >/dev/null
+          # hf-mount-nfs runs mount.nfs and umount through sudo -n and needs the kernel NFSv3 client.
+          sudo -n true
+          sudo -n modprobe -a nfs nfsv3
+          dir="$(mktemp -d "${RUNNER_TEMP}/hf-mount.XXXXXX")"
+          base="https://github.com/huggingface/hf-mount/releases/download/${HF_MOUNT_VERSION}"
+          curl -fsSL --retry 5 --retry-all-errors -o "${dir}/hf-mount-nfs-x86_64-linux" "${base}/hf-mount-nfs-x86_64-linux"
+          curl -fsSL --retry 5 --retry-all-errors -o "${dir}/hf-mount-fuse-x86_64-linux" "${base}/hf-mount-fuse-x86_64-linux"
+          echo "${HF_MOUNT_NFS_SHA256}  ${dir}/hf-mount-nfs-x86_64-linux" | sha256sum -c -
+          echo "${HF_MOUNT_FUSE_SHA256}  ${dir}/hf-mount-fuse-x86_64-linux" | sha256sum -c -
+          mkdir -p "${dir}/bin"
+          mv "${dir}/hf-mount-nfs-x86_64-linux" "${dir}/bin/hf-mount-nfs"
+          mv "${dir}/hf-mount-fuse-x86_64-linux" "${dir}/bin/hf-mount-fuse"
+          chmod +x "${dir}/bin/hf-mount-nfs" "${dir}/bin/hf-mount-fuse"
+          echo "${dir}/bin" >> "${GITHUB_PATH}"
+          for tool in hf-mount-nfs hf-mount-fuse; do
+            out="$("${dir}/bin/${tool}" --version)"
+            echo "${out}"
+            [[ "${out}" == *" ${HF_MOUNT_VERSION#v}" ]]
+          done
+          command -v mount.nfs
+          command -v fusermount3
+          fusermount3 --version
+          ls -l /dev/fuse
+          grep -n user_allow_other /etc/fuse.conf
+
       # Unit tests and e2e tests are run together.
       # E2e tests use httptest.NewServer with a local temp dir and require
       # no external credentials; they skip when client tools are absent,
