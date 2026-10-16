@@ -107,7 +107,12 @@ func gitEnv(gitProtocol string, config []string) []string {
 	if IsValidGitProtocol(gitProtocol) {
 		env = append(env, "GIT_PROTOCOL="+gitProtocol)
 	}
-	config = append([]string{"safe.directory=*", "safe.bareRepository=all", "gc.auto=0", "credential.helper=", "core.askPass="}, config...)
+	config = append([]string{
+		"safe.directory=*", "safe.bareRepository=all", "gc.auto=0", "credential.helper=", "core.askPass=",
+		// Pinned over repository config; allowAnySHA1InWant=false goes first because it clears the next two.
+		"uploadpack.allowAnySHA1InWant=false", "uploadpack.allowReachableSHA1InWant=true", "uploadpack.allowTipSHA1InWant=true",
+		"uploadpack.allowFilter=false", "uploadpack.allowRefInWant=false", "receive.shallowUpdate=false",
+	}, config...)
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(config)))
 	for i, kv := range config {
 		k, v, _ := strings.Cut(kv, "=")
