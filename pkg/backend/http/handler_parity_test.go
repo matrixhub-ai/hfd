@@ -27,7 +27,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-git/go-billy/v6"
 	"github.com/go-git/go-billy/v6/osfs"
 
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
@@ -94,23 +93,12 @@ func newHTTPBackendServer(t *testing.T, root string) string {
 	return srv.URL
 }
 
-// goGitFS hides the OS filesystem type so repositories on it are served by go-git.
-type goGitFS struct{ billy.Filesystem }
-
-func (f goGitFS) Chroot(path string) (billy.Filesystem, error) {
-	sub, err := f.Filesystem.Chroot(path)
-	if err != nil {
-		return nil, err
-	}
-	return goGitFS{sub}, nil
-}
-
 // newStorage returns storage rooted at root whose repositories are served natively or by go-git.
 func newStorage(t *testing.T, root string, native bool) *storage.Storage {
 	t.Helper()
 	opts := []storage.Option{storage.WithRootDir(root)}
 	if !native {
-		opts = append(opts, storage.WithFilesystem(goGitFS{osfs.New(root)}))
+		opts = append(opts, storage.WithFilesystem(repository.GoGitOnly(osfs.New(root))))
 	}
 	st, err := storage.NewStorage(opts...)
 	if err != nil {

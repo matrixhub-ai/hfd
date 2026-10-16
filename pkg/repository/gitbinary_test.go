@@ -32,6 +32,7 @@ import (
 	"github.com/go-git/go-billy/v6/helper/chroot"
 	"github.com/go-git/go-billy/v6/memfs"
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/go-git/go-billy/v6/util"
 	"github.com/go-git/go-git/v6/plumbing/format/pktline"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp/sideband"
@@ -1188,6 +1189,91 @@ func TestLocalDir(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGoGitOnly(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git binary required: %v", err)
+	}
+	setGitBinary(t, gitPath)
+	root := t.TempDir()
+
+	t.Run("UnwrappedIsLocal", func(t *testing.T) {
+		if localDir(osfs.New(root), "repo.git") == "" {
+			t.Fatal("localDir on bare osfs = \"\", want a host directory")
+		}
+	})
+
+	osRoot, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() { _ = osRoot.Close() })
+	rootFS, err := osfs.FromRoot(osRoot)
+	if err != nil {
+		t.Fatalf("FromRoot: %v", err)
+	}
+	// storage.RepositoriesFS is the wrapper's own Chroot.
+	sub, err := GoGitOnly(osfs.New(root)).Chroot("/repositories")
+	if err != nil {
+		t.Fatalf("chroot: %v", err)
+	}
+	hidden := []struct {
+		name string
+		fs   billy.Basic
+	}{
+		{"HidesBoundOS", GoGitOnly(osfs.New(root))},
+		{"HidesRootOS", GoGitOnly(rootFS)},
+		{"ChrootStaysHidden", sub},
+		{"ChrootHelperStaysHidden", chroot.New(GoGitOnly(osfs.New(root)), "/r")},
+	}
+	for _, tc := range hidden {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := localDir(tc.fs, "repo.git"); got != "" {
+				t.Fatalf("localDir = %q, want \"\" so go-git serves it", got)
+			}
+		})
+	}
+
+	t.Run("InitServedByGoGit", func(t *testing.T) {
+		ctx := t.Context()
+		wrapped, err := Init(ctx, GoGitOnly(osfs.New(root)), "/x.git", "main")
+		if err != nil {
+			t.Fatalf("init on GoGitOnly: %v", err)
+		}
+		requireGitMode(t, wrapped, false)
+		direct, err := Init(ctx, osfs.New(root), "/y.git", "main")
+		if err != nil {
+			t.Fatalf("init on bare osfs: %v", err)
+		}
+		requireGitMode(t, direct, true)
+	})
+
+	t.Run("FileOperationsPassThrough", func(t *testing.T) {
+		const name, payload = "passthrough.txt", "through the wrapper"
+		wrapped := GoGitOnly(osfs.New(root))
+		f, err := wrapped.Create(name)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if _, err := f.Write([]byte(payload)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		fi, err := wrapped.Stat(name)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if fi.Size() != int64(len(payload)) {
+			t.Fatalf("stat size = %d, want %d", fi.Size(), len(payload))
+		}
+		if got, err := util.ReadFile(osfs.New(root), name); err != nil || string(got) != payload {
+			t.Fatalf("bare osfs read %q, %v; want %q", got, err, payload)
+		}
+	})
 }
 
 // advertisedRefs parses v0 "<hash> <name>[\0caps]" lines up to the closing flush.

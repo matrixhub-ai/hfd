@@ -74,23 +74,12 @@ func hubSource(hubURL string) mirror.SourceFunc {
 	}
 }
 
-// goGitFS hides the OS filesystem type so repositories on it are handled by go-git.
-type goGitFS struct{ billy.Filesystem }
-
-func (f goGitFS) Chroot(path string) (billy.Filesystem, error) {
-	sub, err := f.Filesystem.Chroot(path)
-	if err != nil {
-		return nil, err
-	}
-	return goGitFS{sub}, nil
-}
-
 // forEachRepositoriesFS runs fn with the host filesystem, where an installed git transfers objects, and with a wrapper that forces go-git.
 func forEachRepositoriesFS(t *testing.T, fn func(t *testing.T, fs billy.Filesystem)) {
 	for _, m := range []struct {
 		name string
 		fs   billy.Filesystem
-	}{{"native", osfs.Default}, {"go-git", goGitFS{osfs.Default}}} {
+	}{{"native", osfs.Default}, {"go-git", repository.GoGitOnly(osfs.Default)}} {
 		t.Run(m.name, func(t *testing.T) { fn(t, m.fs) })
 	}
 }
