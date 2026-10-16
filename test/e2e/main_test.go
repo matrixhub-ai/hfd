@@ -6,13 +6,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
@@ -25,6 +28,7 @@ import (
 	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -35,6 +39,38 @@ const testS3Bucket = "hfd-e2e"
 // the production S3 storage mode. It is nil during the local pass.
 var testS3Client *s3.Client
 
+// skipUnlessLocalPass skips tb during the S3 pass.
+func skipUnlessLocalPass(tb testing.TB) {
+	tb.Helper()
+	if testS3Client != nil {
+		tb.Skip("runs on the local storage pass only")
+	}
+}
+
+var (
+	processCleanupMu sync.Mutex
+	processCleanups  []func()
+)
+
+// registerProcessCleanup runs fn once the current pass's tests are done,
+// last registered first, for fixtures shared across the pass's tests.
+func registerProcessCleanup(fn func()) {
+	processCleanupMu.Lock()
+	defer processCleanupMu.Unlock()
+	processCleanups = append(processCleanups, fn)
+}
+
+// runProcessCleanups runs and forgets the registered cleanups in LIFO order.
+func runProcessCleanups() {
+	processCleanupMu.Lock()
+	fns := processCleanups
+	processCleanups = nil
+	processCleanupMu.Unlock()
+	for _, fn := range slices.Backward(fns) {
+		fn()
+	}
+}
+
 // TestMain runs the whole suite twice: once with storage on the local
 // filesystem and once with storage in S3.
 func TestMain(m *testing.M) {
@@ -43,7 +79,10 @@ func TestMain(m *testing.M) {
 
 func run(m *testing.M) int {
 	fmt.Println("=== e2e pass 1/2: local storage ===")
-	if code := m.Run(); code != 0 {
+	code := m.Run()
+	// Shared fixtures outlive every test's Cleanup, so each pass releases its own only after m.Run.
+	runProcessCleanups()
+	if code != 0 {
 		return code
 	}
 
@@ -65,7 +104,9 @@ func run(m *testing.M) int {
 	})
 
 	fmt.Println("=== e2e pass 2/2: S3 storage ===")
-	return m.Run()
+	code = m.Run()
+	runProcessCleanups()
+	return code
 }
 
 // testEnv strips host proxy/ssh overrides that must not leak into client subprocesses.
@@ -92,19 +133,25 @@ func testEnv() []string {
 }
 
 // newDataDir returns a fresh server data directory on the host.
-func newDataDir(t *testing.T, pattern string) string {
-	t.Helper()
+func newDataDir(tb testing.TB, pattern string) string {
+	tb.Helper()
 	dir, err := os.MkdirTemp("", pattern)
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		tb.Fatalf("Failed to create temp dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	tb.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
 }
 
 // newTestStorage isolates each server's repositories and content in the current backend.
-func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
-	t.Helper()
+func newTestStorage(tb testing.TB, dataDir string) *storage.Storage {
+	tb.Helper()
+	return newTestStorageEngine(tb, dataDir, false)
+}
+
+// newTestStorageEngine is newTestStorage with goGit having go-git serve the local pass's repositories.
+func newTestStorageEngine(tb testing.TB, dataDir string, goGit bool) *storage.Storage {
+	tb.Helper()
 	opts := []storage.Option{storage.WithRootDir(dataDir)}
 	if testS3Client != nil {
 		opts = append(opts, storage.WithFilesystem(
@@ -112,19 +159,21 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 				s3fs.WithClient(testS3Client),
 				s3fs.WithPresignClient(s3.NewPresignClient(testS3Client)),
 				s3fs.WithPrefix(filepath.Base(dataDir)))))
-		xs, err := xets3.NewStorage(t.Context(),
+		xs, err := xets3.NewStorage(tb.Context(),
 			xets3.WithS3Client(testS3Client),
 			xets3.WithBucket(testS3Bucket),
 			xets3.WithPrefix(filepath.Base(dataDir)+"/xet"),
 		)
 		if err != nil {
-			t.Fatalf("create xet S3 storage: %v", err)
+			tb.Fatalf("create xet S3 storage: %v", err)
 		}
 		opts = append(opts, storage.WithXETStorage(xs))
+	} else if goGit {
+		opts = append(opts, storage.WithFilesystem(repository.GoGitOnly(osfs.New(dataDir))))
 	}
 	st, err := storage.NewStorage(opts...)
 	if err != nil {
-		t.Fatalf("create storage: %v", err)
+		tb.Fatalf("create storage: %v", err)
 	}
 	return st
 }
@@ -151,16 +200,16 @@ func (x *xetStack) casServer(next http.Handler) http.Handler {
 
 // newTestMirror shares st's xet storage and caches, waiting for background
 // work on cleanup; engine mounts the ingest engine, which needs a mirror source.
-func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
-	t.Helper()
+func newTestMirror(tb testing.TB, st *storage.Storage, engine bool, gitOpts ...mirror.Option) (*mirror.Mirror, *xetStack) {
+	tb.Helper()
 	xs, xetDir := st.XETStorage(), st.XETDir()
 	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
 	if err != nil {
-		t.Fatalf("create issuer: %v", err)
+		tb.Fatalf("create issuer: %v", err)
 	}
 	sp, err := spool.NewSpool(st.XETSpoolDir(), xs)
 	if err != nil {
-		t.Fatalf("create xet spool: %v", err)
+		tb.Fatalf("create xet spool: %v", err)
 	}
 	var xm *xetmirror.Mirror
 	if engine {
@@ -170,7 +219,7 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 			xetmirror.WithSpool(sp),
 		)
 		if err != nil {
-			t.Fatalf("create xet mirror engine: %v", err)
+			tb.Fatalf("create xet mirror engine: %v", err)
 		}
 	}
 	opts := []mirror.Option{
@@ -182,8 +231,8 @@ func newTestMirror(t *testing.T, st *storage.Storage, engine bool, gitOpts ...mi
 	}
 	m, err := mirror.NewMirror(append(opts, gitOpts...)...)
 	if err != nil {
-		t.Fatalf("create mirror: %v", err)
+		tb.Fatalf("create mirror: %v", err)
 	}
-	t.Cleanup(m.Wait)
+	tb.Cleanup(m.Wait)
 	return m, &xetStack{xs: xs, issuer: issuer, spool: sp, engine: xm}
 }
