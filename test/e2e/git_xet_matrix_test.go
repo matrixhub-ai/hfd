@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 // gitXetVersion pins the agent whose behavior the matrix asserts: uploads go
@@ -127,7 +127,7 @@ type gitXetIdentity struct {
 	name, user, pass string
 }
 
-// hookUser is the name the permission hook must observe for this identity.
+// hookUser is the name the PreOpen hook must observe for this identity.
 func (id gitXetIdentity) hookUser() string {
 	if id.user == "" {
 		return authenticate.AnonymousName
@@ -152,28 +152,37 @@ func (id gitXetIdentity) client(t *testing.T, s *e2eServer, agent, repoID string
 	return env, remote
 }
 
-// permRecorder keeps "<op> <user>" per permission check, proving which
-// principal the server saw for each phase.
-type permRecorder struct {
+// preOpenRecorder keeps "write <user>" or "read <user>" per PreOpen call,
+// proving which principal the server saw for each phase.
+type preOpenRecorder struct {
 	mu    sync.Mutex
 	calls []string
 }
 
-func (pr *permRecorder) hook(ctx context.Context, op permission.Operation, _ string, _ permission.Context) (bool, error) {
+// hook records the call, then lets everyone read and only the writer write.
+func (pr *preOpenRecorder) hook(ctx context.Context, _ string, write bool) error {
+	user := authenticate.IdentityFrom(ctx).Name()
+	call := "read " + user
+	if write {
+		call = "write " + user
+	}
 	pr.mu.Lock()
-	defer pr.mu.Unlock()
-	pr.calls = append(pr.calls, op.String()+" "+authenticate.IdentityFrom(ctx).Name())
-	return true, nil
+	pr.calls = append(pr.calls, call)
+	pr.mu.Unlock()
+	if write && user != gitXetWriter {
+		return fs.ErrPermission
+	}
+	return nil
 }
 
-func (pr *permRecorder) reset() {
+func (pr *preOpenRecorder) reset() {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	pr.calls = nil
 }
 
 // users returns the distinct principals seen since reset.
-func (pr *permRecorder) users() []string {
+func (pr *preOpenRecorder) users() []string {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	var users []string
@@ -186,13 +195,13 @@ func (pr *permRecorder) users() []string {
 	return users
 }
 
-func (pr *permRecorder) saw(call string) bool {
+func (pr *preOpenRecorder) saw(call string) bool {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	return slices.Contains(pr.calls, call)
 }
 
-func (pr *permRecorder) dump() string {
+func (pr *preOpenRecorder) dump() string {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	return strings.Join(pr.calls, "\n")
@@ -209,24 +218,19 @@ func (pr *permRecorder) dump() string {
 // policy. TestMain repeats the matrix for local and S3 storage.
 func TestGitXetMatrix(t *testing.T) {
 	agent := requireGitXet(t)
-	rec, perms := &requestRecorder{}, &permRecorder{}
-	writerOnly := func(ctx context.Context, _ permission.Operation, _ string, _ permission.Context) (bool, error) {
-		return authenticate.IdentityFrom(ctx).Name() == gitXetWriter, nil
-	}
+	rec, perms := &requestRecorder{}, &preOpenRecorder{}
 	s := newE2EServer(t,
 		withAuth(gitXetWriter, gitXetWriterPass),
 		withBasicUsers(map[string]string{gitXetReader: gitXetReaderPass}),
-		withPermissionHook(permission.All(perms.hook, permission.SplitReadWrite(nil, writerOnly))),
-		withAPIHooks(),
+		withPreOpenHook(perms.hook),
 		withWrap(rec.wrap))
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("requests:\n%s\npermission checks:\n%s", rec.dump(), perms.dump())
+			t.Logf("requests:\n%s\nPreOpen calls:\n%s", rec.dump(), perms.dump())
 		}
 	})
 
 	const repoID = "xet-org/git-xet"
-	// Only the writer may create the repository under this policy.
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.httpURL+"/api/repos/create", strings.NewReader(`{"type":"model","name":"git-xet","organization":"xet-org"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -299,11 +303,11 @@ func TestGitXetMatrix(t *testing.T) {
 			t.Fatalf("git-xet push used the basic PUT\n%s", rec.dump())
 		}
 		if users := perms.users(); !slices.Equal(users, []string{gitXetWriter}) {
-			t.Fatalf("permission checks saw %v, want only %s\n%s", users, gitXetWriter, perms.dump())
+			t.Fatalf("PreOpen saw %v, want only %s\n%s", users, gitXetWriter, perms.dump())
 		}
 	}
 	// readBasic asserts want reached dir through git-lfs's basic download as
-	// user, the identity every permission check must have seen.
+	// user, the identity every PreOpen call must have seen.
 	readBasic := func(t *testing.T, dir string, want []byte, user string) {
 		t.Helper()
 		got, err := os.ReadFile(filepath.Join(dir, transferMatrixFile))
@@ -314,7 +318,7 @@ func TestGitXetMatrix(t *testing.T) {
 			t.Fatalf("download did not use the basic transfer\n%s", rec.dump())
 		}
 		if users := perms.users(); !slices.Equal(users, []string{user}) {
-			t.Fatalf("permission checks saw %v, want only %s\n%s", users, user, perms.dump())
+			t.Fatalf("PreOpen saw %v, want only %s\n%s", users, user, perms.dump())
 		}
 	}
 	// reconstruct proves the pushed bytes through the xet protocol with the
@@ -350,7 +354,7 @@ func TestGitXetMatrix(t *testing.T) {
 				t.Fatalf("git %s: err = %v, want failure containing %q\n%s", attempt.args, err, attempt.want, out)
 			}
 		}
-		if !rec.saw(http.MethodPost, "/info/lfs/objects/batch") || !perms.saw("update_repo "+id.hookUser()) {
+		if !rec.saw(http.MethodPost, "/info/lfs/objects/batch") || !perms.saw("write "+id.hookUser()) {
 			t.Fatalf("batch gate never denied %s\n%s\n%s", id.hookUser(), rec.dump(), perms.dump())
 		}
 		if rec.saw("", "/xorbs/") || rec.saw("", "/shards") || rec.saw(http.MethodPut, "/objects/") || rec.saw(http.MethodPost, "/git-receive-pack") {
@@ -416,7 +420,7 @@ func TestGitXetMatrix(t *testing.T) {
 			t.Fatalf("basic push did not stay on the basic PUT\n%s", rec.dump())
 		}
 		if users := perms.users(); !slices.Equal(users, []string{gitXetWriter}) {
-			t.Fatalf("permission checks saw %v, want only %s\n%s", users, gitXetWriter, perms.dump())
+			t.Fatalf("PreOpen saw %v, want only %s\n%s", users, gitXetWriter, perms.dump())
 		}
 		if got := mustGet(t, s.httpURL+"/"+repoID+"/resolve/main/"+transferMatrixFile); !bytes.Equal(got, v3) {
 			t.Fatalf("resolved %d bytes, want v3 (%d bytes)", len(got), len(v3))

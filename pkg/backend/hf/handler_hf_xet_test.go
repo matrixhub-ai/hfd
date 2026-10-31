@@ -17,7 +17,6 @@ import (
 	xetclient "github.com/wzshiming/xet/client"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 type sentinelNext struct{}
@@ -27,9 +26,8 @@ func (sentinelNext) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 }
 
 type hookCall struct {
-	op   permission.Operation
-	repo string
-	ctx  permission.Context
+	repo  string
+	write bool
 }
 
 func newXETMirror(t *testing.T, opts ...mirror.Option) *mirror.Mirror {
@@ -56,10 +54,10 @@ func newMintingMirror(t *testing.T, opts ...mirror.Option) (*mirror.Mirror, *aut
 	return newXETMirror(t, append([]mirror.Option{mirror.WithMintToken(issuer.Sign)}, opts...)...), issuer
 }
 
-func newTokenHandler(t *testing.T, hook permission.PermissionHookFunc) *Handler {
+func newTokenHandler(t *testing.T, hook PreOpenHookFunc) *Handler {
 	t.Helper()
 	m, _ := newMintingMirror(t)
-	return NewHandler(WithMirror(m), WithPermissionHookFunc(hook), WithNext(sentinelNext{}))
+	return NewHandler(WithMirror(m), WithPreOpenHookFunc(hook), WithNext(sentinelNext{}))
 }
 
 func serveGet(h *Handler, path string) *httptest.ResponseRecorder {
@@ -109,35 +107,36 @@ func assertMintedToken(t *testing.T, path string, rec *httptest.ResponseRecorder
 	}
 }
 
+// TestXETTokenGate pins that the token routes admit through the pre-open hook and answer its refusals without a token.
 func TestXETTokenGate(t *testing.T) {
-	allow, hookErr := true, error(nil)
+	var hookErr error
 	var calls []hookCall
-	hook := func(_ context.Context, op permission.Operation, repoName string, permCtx permission.Context) (bool, error) {
-		calls = append(calls, hookCall{op, repoName, permCtx})
-		return allow, hookErr
+	hook := func(_ context.Context, repoName string, write bool) error {
+		calls = append(calls, hookCall{repoName, write})
+		return hookErr
 	}
 	h := newTokenHandler(t, hook)
 
 	for _, tt := range []struct {
-		path     string
-		wantOp   permission.Operation
-		wantRepo string
+		path      string
+		wantWrite bool
+		wantRepo  string
 	}{
-		{"/api/models/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "org/repo"},
-		{"/api/datasets/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "datasets/org/repo"},
-		{"/api/spaces/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "spaces/org/repo"},
-		{"/api/kernels/org/repo/xet-write-token/main", permission.OperationUpdateRepo, "kernels/org/repo"},
-		{"/api/models/org/repo/xet-read-token/main", permission.OperationReadRepo, "org/repo"},
-		{"/api/datasets/org/repo/xet-read-token/main", permission.OperationReadRepo, "datasets/org/repo"},
-		{"/api/spaces/org/repo/xet-read-token/main", permission.OperationReadRepo, "spaces/org/repo"},
-		{"/api/kernels/org/repo/xet-read-token/main", permission.OperationReadRepo, "kernels/org/repo"},
-		// Encoded spellings decode to one permission identity.
-		{"/api/models/org/priv%61te/xet-read-token/main", permission.OperationReadRepo, "org/private"},
-		{"/api/models/or%67/repo/xet-write-token/main", permission.OperationUpdateRepo, "org/repo"},
+		{"/api/models/org/repo/xet-write-token/main", true, "org/repo"},
+		{"/api/datasets/org/repo/xet-write-token/main", true, "datasets/org/repo"},
+		{"/api/spaces/org/repo/xet-write-token/main", true, "spaces/org/repo"},
+		{"/api/kernels/org/repo/xet-write-token/main", true, "kernels/org/repo"},
+		{"/api/models/org/repo/xet-read-token/main", false, "org/repo"},
+		{"/api/datasets/org/repo/xet-read-token/main", false, "datasets/org/repo"},
+		{"/api/spaces/org/repo/xet-read-token/main", false, "spaces/org/repo"},
+		{"/api/kernels/org/repo/xet-read-token/main", false, "kernels/org/repo"},
+		// Encoded spellings decode to one repository name.
+		{"/api/models/org/priv%61te/xet-read-token/main", false, "org/private"},
+		{"/api/models/or%67/repo/xet-write-token/main", true, "org/repo"},
 	} {
 		calls = nil
 		rec := serveGet(h, tt.path)
-		want := []hookCall{{tt.wantOp, tt.wantRepo, permission.Context{Ref: "main"}}}
+		want := []hookCall{{tt.wantRepo, tt.wantWrite}}
 		if rec.Code != http.StatusOK || !slices.Equal(calls, want) {
 			t.Errorf("GET %s status = %d, hook calls = %+v; want 200 and %+v", tt.path, rec.Code, calls, want)
 		}
@@ -145,23 +144,31 @@ func TestXETTokenGate(t *testing.T) {
 
 	for _, tt := range []struct {
 		name  string
-		allow bool
 		err   error
 		code  int
+		fixed string
 	}{
-		{"denied", false, nil, http.StatusForbidden},
-		{"hook error", false, fmt.Errorf("hook exploded"), http.StatusInternalServerError},
+		{"denied", testDenied, http.StatusForbidden, "permission denied"},
+		{"unauthenticated", testUnauthenticated, http.StatusUnauthorized, "Unauthorized"},
+		{"hook error", fmt.Errorf("hook exploded"), http.StatusInternalServerError, ""},
 	} {
-		allow, hookErr = tt.allow, tt.err
+		hookErr = tt.err
 		for _, path := range []string{
 			"/api/models/org/repo/xet-write-token/main",
 			"/api/models/org/repo/xet-read-token/main",
 			"/api/kernels/org/repo/xet-write-token/main",
 			"/api/kernels/org/repo/xet-read-token/main",
 		} {
+			calls = nil
 			rec := serveGet(h, path)
 			if rec.Code != tt.code || !json.Valid(rec.Body.Bytes()) || hasToken(rec) {
 				t.Errorf("%s GET %s status = %d, body = %s; want %d JSON without a token", tt.name, path, rec.Code, rec.Body.String(), tt.code)
+			}
+			if tt.fixed != "" {
+				assertFixedError(t, rec, tt.code, tt.fixed)
+			}
+			if len(calls) != 1 {
+				t.Errorf("%s GET %s hook calls = %+v, want exactly one", tt.name, path, calls)
 			}
 		}
 	}
@@ -204,21 +211,21 @@ func TestXETTokenMintError(t *testing.T) {
 
 func TestXETTokenEscapedRevision(t *testing.T) {
 	var calls []hookCall
-	hook := func(_ context.Context, op permission.Operation, repoName string, permCtx permission.Context) (bool, error) {
-		calls = append(calls, hookCall{op, repoName, permCtx})
-		return true, nil
+	hook := func(_ context.Context, repoName string, write bool) error {
+		calls = append(calls, hookCall{repoName, write})
+		return nil
 	}
 	m, issuer := newMintingMirror(t)
-	h := NewHandler(WithMirror(m), WithPermissionHookFunc(hook), WithNext(sentinelNext{}))
+	h := NewHandler(WithMirror(m), WithPreOpenHookFunc(hook), WithNext(sentinelNext{}))
 
-	// The decoded router hands the hook the unescaped revision.
+	// An escaped slash in the revision still names the token route and admits the repository once.
 	for _, tt := range []struct {
 		path  string
 		want  hookCall
 		grant auth.Grant
 	}{
-		{"/api/models/org/repo/xet-read-token/refs%2Fpr%2F1", hookCall{permission.OperationReadRepo, "org/repo", permission.Context{Ref: "refs/pr/1"}}, auth.Grant{Permission: auth.Read}},
-		{"/api/datasets/org/repo/xet-write-token/refs%2Fpr%2F1", hookCall{permission.OperationUpdateRepo, "datasets/org/repo", permission.Context{Ref: "refs/pr/1"}}, auth.Grant{Permission: auth.Write}},
+		{"/api/models/org/repo/xet-read-token/refs%2Fpr%2F1", hookCall{"org/repo", false}, auth.Grant{Permission: auth.Read}},
+		{"/api/datasets/org/repo/xet-write-token/refs%2Fpr%2F1", hookCall{"datasets/org/repo", true}, auth.Grant{Permission: auth.Write}},
 	} {
 		calls = nil
 		rec := serveGet(h, tt.path)
@@ -233,32 +240,36 @@ func TestXETTokenEscapedRevision(t *testing.T) {
 }
 
 func TestXETTokenUnavailable(t *testing.T) {
-	allow, hookErr, calls := true, error(nil), 0
-	hook := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
+	hookErr, calls := error(nil), 0
+	hook := func(context.Context, string, bool) error {
 		calls++
-		return allow, hookErr
+		return hookErr
 	}
 	for _, tt := range []struct {
 		name string
 		h    *Handler
 	}{
 		// Default next: a nil mirror must answer, not dereference.
-		{"nil mirror", NewHandler(WithPermissionHookFunc(hook))},
-		{"no mint", NewHandler(WithMirror(newXETMirror(t)), WithPermissionHookFunc(hook), WithNext(sentinelNext{}))},
+		{"nil mirror", NewHandler(WithPreOpenHookFunc(hook))},
+		{"no mint", NewHandler(WithMirror(newXETMirror(t)), WithPreOpenHookFunc(hook), WithNext(sentinelNext{}))},
 	} {
 		for _, path := range []string{
 			"/api/models/org/repo/xet-write-token/main",
 			"/api/models/org/repo/xet-read-token/main",
 		} {
-			allow, hookErr, calls = true, nil, 0
+			hookErr, calls = nil, 0
 			rec := serveGet(tt.h, path)
 			if rec.Code != http.StatusNotFound || !json.Valid(rec.Body.Bytes()) || calls != 1 {
-				t.Errorf("%s GET %s status = %d, body = %s, hook calls = %d; want 404 JSON after one gate call", tt.name, path, rec.Code, rec.Body.String(), calls)
+				t.Errorf("%s GET %s status = %d, body = %s, hook calls = %d; want 404 JSON after one admission call", tt.name, path, rec.Code, rec.Body.String(), calls)
 			}
-			// The gate still decides before availability is reported.
-			allow = false
+			// Admission still decides before availability is reported.
+			hookErr = testDenied
 			if rec := serveGet(tt.h, path); rec.Code != http.StatusForbidden {
 				t.Errorf("%s denied GET %s status = %d, want 403", tt.name, path, rec.Code)
+			}
+			hookErr = testUnauthenticated
+			if rec := serveGet(tt.h, path); rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s unauthenticated GET %s status = %d, want 401", tt.name, path, rec.Code)
 			}
 			hookErr = fmt.Errorf("hook exploded")
 			if rec := serveGet(tt.h, path); rec.Code != http.StatusInternalServerError {
@@ -270,16 +281,16 @@ func TestXETTokenUnavailable(t *testing.T) {
 
 func TestXETTokenMethodNotAllowed(t *testing.T) {
 	var events []string
-	hook := func(_ context.Context, op permission.Operation, _ string, _ permission.Context) (bool, error) {
-		events = append(events, fmt.Sprintf("gate %v", op))
-		return true, nil
+	hook := func(_ context.Context, repoName string, write bool) error {
+		events = append(events, fmt.Sprintf("preopen %s %v", repoName, write))
+		return nil
 	}
 	m, _ := newMintingMirror(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		events = append(events, "next")
 		w.WriteHeader(http.StatusTeapot)
 	})
-	h := NewHandler(WithMirror(m), WithPermissionHookFunc(hook), WithNext(next))
+	h := NewHandler(WithMirror(m), WithPreOpenHookFunc(hook), WithNext(next))
 
 	for _, method := range []string{http.MethodPost, http.MethodHead} {
 		for _, path := range []string{
@@ -290,7 +301,7 @@ func TestXETTokenMethodNotAllowed(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 			if rec.Code != http.StatusMethodNotAllowed || len(events) != 0 || hasToken(rec) {
-				t.Errorf("%s %s status = %d, events = %v, body = %s; want 405 with no gate, next or token", method, path, rec.Code, events, rec.Body.String())
+				t.Errorf("%s %s status = %d, events = %v, body = %s; want 405 with no admission, next or token", method, path, rec.Code, events, rec.Body.String())
 			}
 		}
 	}
@@ -298,9 +309,9 @@ func TestXETTokenMethodNotAllowed(t *testing.T) {
 
 func TestXETTokenRoutesFallThrough(t *testing.T) {
 	var hookCalls []string
-	hook := func(_ context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-		hookCalls = append(hookCalls, fmt.Sprintf("%v %s", op, repoName))
-		return true, nil
+	hook := func(_ context.Context, repoName string, write bool) error {
+		hookCalls = append(hookCalls, fmt.Sprintf("preopen %s %v", repoName, write))
+		return nil
 	}
 	h := newTokenHandler(t, hook)
 

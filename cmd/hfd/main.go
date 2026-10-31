@@ -14,7 +14,6 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	xetauth "github.com/wzshiming/xet/auth"
 )
 
@@ -70,8 +69,6 @@ func run(ctx context.Context, cfg *config) error {
 		return fmt.Errorf("prepare mirror: %w", err)
 	}
 	hooks.Mirror = sharedMirror
-	// Integrators may assemble e.g. permission.SplitReadWrite(permission.AllowAll(), permission.RequireAuthenticated()).
-	policy := permission.Logged(permission.PullMirrorReadOnly(sharedMirror))
 
 	// Phase 4: frontends.
 	opts := server.Options{
@@ -79,7 +76,6 @@ func run(ctx context.Context, cfg *config) error {
 		Mirror:         sharedMirror,
 		Authenticators: auth,
 		CASAuthorizer:  issuer,
-		Permission:     policy,
 		PreOpen:        hooks.PreOpen,
 		PreReceive:     hooks.PreReceive,
 		PostReceive:    hooks.PostReceive,

@@ -2,6 +2,10 @@ package backend_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,29 +15,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
-	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-var _ permission.MirrorRoles = (*mirror.Mirror)(nil)
-
-type pullOnlyMirrorRoles struct{}
-
-func (pullOnlyMirrorRoles) IsMirrorSource(context.Context, string) (bool, error) {
-	return true, nil
+func TestHTTPHandlerPreOpenRefusesWrites(t *testing.T) {
+	forEachMode(t, testHTTPHandlerPreOpenRefusesWrites)
 }
 
-func (pullOnlyMirrorRoles) IsMirrorDestination(context.Context, string) (bool, error) {
-	return false, nil
-}
-
-func TestHTTPHandlerPullMirrorReadOnly(t *testing.T) {
-	forEachMode(t, testHTTPHandlerPullMirrorReadOnly)
-}
-
-func testHTTPHandlerPullMirrorReadOnly(t *testing.T, native bool) {
+func testHTTPHandlerPreOpenRefusesWrites(t *testing.T, native bool) {
 	dataDir := t.TempDir()
 	repoPath := filepath.Join(dataDir, "repositories", "test-repo.git")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
@@ -42,18 +33,30 @@ func testHTTPHandlerPullMirrorReadOnly(t *testing.T, native bool) {
 	runGitCmd(t, "", "init", "--bare", repoPath)
 	handler := backendhttp.NewHandler(
 		backendhttp.WithStorage(newStorage(t, dataDir, native)),
-		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(pullOnlyMirrorRoles{})),
+		backendhttp.WithPreOpenHookFunc(func(_ context.Context, _ string, write bool) error {
+			if write {
+				return fs.ErrPermission
+			}
+			return nil
+		}),
 	)
 	for _, test := range []struct {
-		service string
-		want    int
+		name        string
+		method      string
+		target      string
+		contentType string
+		want        int
 	}{
-		{"git-receive-pack", http.StatusForbidden},
-		{"git-upload-pack", http.StatusOK},
+		{"InfoRefsReceivePack", http.MethodGet, "/test-repo.git/info/refs?service=git-receive-pack", "", http.StatusForbidden},
+		{"ReceivePack", http.MethodPost, "/test-repo.git/git-receive-pack", "application/x-git-receive-pack-request", http.StatusForbidden},
+		{"InfoRefsUploadPack", http.MethodGet, "/test-repo.git/info/refs?service=git-upload-pack", "", http.StatusOK},
 	} {
-		t.Run(test.service, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodGet, "/test-repo.git/info/refs?service="+test.service, nil)
+			request := httptest.NewRequest(test.method, test.target, strings.NewReader("0000"))
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
 			handler.ServeHTTP(response, request)
 			if response.Code != test.want {
 				t.Errorf("status = %d, want %d; body = %q", response.Code, test.want, response.Body.String())
@@ -202,8 +205,8 @@ func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 		// Auth hook that allows all operations
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
-				return true, nil
+			backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
+				return nil
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -224,8 +227,8 @@ func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 		// Auth hook that denies all operations
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
-				return false, nil
+			backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
+				return fs.ErrPermission
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -240,17 +243,27 @@ func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("Expected 403, got %d", resp.StatusCode)
 		}
+
+		// The upload-pack POST should return 403 too
+		resp2, err := http.Post(server.URL+"/"+repoName+".git/git-upload-pack", "application/x-git-upload-pack-request", strings.NewReader("0000"))
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusForbidden {
+			t.Errorf("Expected upload-pack POST 403, got %d", resp2.StatusCode)
+		}
 	})
 
 	t.Run("AuthHookDeniesWriteAllowsRead", func(t *testing.T) {
 		// Auth hook that allows fetches but denies pushes
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
-				if op == permission.OperationUpdateRepo {
-					return false, nil
+			backendhttp.WithPreOpenHookFunc(func(_ context.Context, _ string, write bool) error {
+				if write {
+					return fs.ErrPermission
 				}
-				return true, nil
+				return nil
 			}),
 		)
 		server := httptest.NewServer(handler)
@@ -278,30 +291,25 @@ func testHTTPHandlerAuthHook(t *testing.T, native bool) {
 	})
 
 	t.Run("AuthHookReceivesCorrectRepoName", func(t *testing.T) {
-		var capturedRepo string
-		var capturedOp permission.Operation
+		type call struct {
+			repo  string
+			write bool
+		}
+		var calls []call
 		handler := backendhttp.NewHandler(
 			backendhttp.WithStorage(upstreamStorage),
-			backendhttp.WithPermissionHookFunc(func(ctx context.Context, op permission.Operation, repo string, opCtx permission.Context) (bool, error) {
-				capturedRepo = repo
-				capturedOp = op
-				return true, nil
+			backendhttp.WithPreOpenHookFunc(func(_ context.Context, repo string, write bool) error {
+				calls = append(calls, call{repo, write})
+				return nil
 			}),
 		)
-		server := httptest.NewServer(handler)
-		defer server.Close()
 
-		resp, err := http.Get(server.URL + "/" + repoName + ".git/info/refs?service=git-upload-pack")
-		if err != nil {
-			t.Fatalf("Failed to make request: %v", err)
+		for _, service := range []string{"git-upload-pack", "git-receive-pack"} {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/"+repoName+".git/info/refs?service="+service, nil))
 		}
-		defer resp.Body.Close()
 
-		if capturedRepo != repoName {
-			t.Errorf("Expected repo name %q, got %q", repoName, capturedRepo)
-		}
-		if capturedOp != permission.OperationReadRepo {
-			t.Errorf("Expected operation %v, got %v", permission.OperationReadRepo, capturedOp)
+		if want := []call{{repoName, false}, {repoName, true}}; !slices.Equal(calls, want) {
+			t.Errorf("hook calls = %v, want %v", calls, want)
 		}
 	})
 }
@@ -367,43 +375,44 @@ func testHTTPHandlerPreOpenHook(t *testing.T, native bool) {
 }
 
 func TestGitRoutes(t *testing.T) {
+	// A served repository makes any output of a refused service visible.
+	dataDir := t.TempDir()
+	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "org", "name.git"))
+	st := newStorage(t, dataDir, true)
 	for _, row := range []struct {
 		name        string
 		method      string
 		path        string
 		contentType string
-		op          permission.Operation
 		repo        string
+		write       bool
 		status      int
 	}{
-		{"DiscoveryRead", http.MethodGet, "/info/refs?service=git-upload-pack", "", permission.OperationReadRepo, "org/name", http.StatusForbidden},
-		{"DiscoveryWrite", http.MethodGet, "/info/refs?service=git-receive-pack", "", permission.OperationUpdateRepo, "org/name", http.StatusForbidden},
-		{"DiscoveryEmptyService", http.MethodGet, "/info/refs?service=", "", 0, "", http.StatusBadRequest},
-		{"DiscoveryUnknownService", http.MethodGet, "/info/refs?service=git-foo", "", 0, "", http.StatusForbidden},
-		{"DiscoveryNoService", http.MethodGet, "/info/refs", "", 0, "", http.StatusTeapot},
-		{"DiscoveryWrongMethod", http.MethodPost, "/info/refs?service=git-upload-pack", "", 0, "", http.StatusMethodNotAllowed},
-		{"ResolveHead", http.MethodHead, "/resolve/main/info/refs", "", 0, "", http.StatusTeapot},
-		{"UploadPack", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request", permission.OperationReadRepo, "org/name", http.StatusForbidden},
-		{"ReceivePackParams", http.MethodPost, "/git-receive-pack", "application/x-git-receive-pack-request; charset=utf-8", permission.OperationUpdateRepo, "org/name", http.StatusForbidden},
-		{"UploadPackNoType", http.MethodPost, "/git-upload-pack", "", 0, "", http.StatusTeapot},
-		{"UploadPackOtherType", http.MethodPost, "/git-upload-pack", "application/json", 0, "", http.StatusTeapot},
-		{"UploadPackCrossService", http.MethodPost, "/git-upload-pack", "application/x-git-receive-pack-request", 0, "", http.StatusTeapot},
-		{"UploadPackMalformedType", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request; charset", 0, "", http.StatusTeapot},
-		{"UploadPackWrongMethod", http.MethodGet, "/git-upload-pack", "application/x-git-upload-pack-request", 0, "", http.StatusMethodNotAllowed},
+		{"DiscoveryRead", http.MethodGet, "/info/refs?service=git-upload-pack", "", "org/name", false, http.StatusForbidden},
+		{"DiscoveryWrite", http.MethodGet, "/info/refs?service=git-receive-pack", "", "org/name", true, http.StatusForbidden},
+		{"DiscoveryEmptyService", http.MethodGet, "/info/refs?service=", "", "", false, http.StatusBadRequest},
+		{"DiscoveryUnknownService", http.MethodGet, "/info/refs?service=git-foo", "", "", false, http.StatusForbidden},
+		{"DiscoveryNoService", http.MethodGet, "/info/refs", "", "", false, http.StatusTeapot},
+		{"DiscoveryWrongMethod", http.MethodPost, "/info/refs?service=git-upload-pack", "", "", false, http.StatusMethodNotAllowed},
+		{"ResolveHead", http.MethodHead, "/resolve/main/info/refs", "", "", false, http.StatusTeapot},
+		{"UploadPack", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request", "org/name", false, http.StatusForbidden},
+		{"ReceivePackParams", http.MethodPost, "/git-receive-pack", "application/x-git-receive-pack-request; charset=utf-8", "org/name", true, http.StatusForbidden},
+		{"UploadPackNoType", http.MethodPost, "/git-upload-pack", "", "", false, http.StatusTeapot},
+		{"UploadPackOtherType", http.MethodPost, "/git-upload-pack", "application/json", "", false, http.StatusTeapot},
+		{"UploadPackCrossService", http.MethodPost, "/git-upload-pack", "application/x-git-receive-pack-request", "", false, http.StatusTeapot},
+		{"UploadPackMalformedType", http.MethodPost, "/git-upload-pack", "application/x-git-upload-pack-request; charset", "", false, http.StatusTeapot},
+		{"UploadPackWrongMethod", http.MethodGet, "/git-upload-pack", "application/x-git-upload-pack-request", "", false, http.StatusMethodNotAllowed},
 	} {
 		for _, suffix := range []string{".git", ""} {
 			t.Run(row.name+suffix, func(t *testing.T) {
-				var gotOp permission.Operation
 				var gotRepo string
-				var calls, preOpens int
+				var gotWrite bool
+				var calls int
 				handler := backendhttp.NewHandler(
-					backendhttp.WithPermissionHookFunc(func(_ context.Context, op permission.Operation, repoName string, _ permission.Context) (bool, error) {
-						gotOp, gotRepo, calls = op, repoName, calls+1
-						return false, nil
-					}),
-					backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
-						preOpens++
-						return nil
+					backendhttp.WithStorage(st),
+					backendhttp.WithPreOpenHookFunc(func(_ context.Context, repoName string, write bool) error {
+						gotRepo, gotWrite, calls = repoName, write, calls+1
+						return fmt.Errorf("repository %q is read-only: %w", repoName, fs.ErrPermission)
 					}),
 					backendhttp.WithNext(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(http.StatusTeapot)
@@ -419,10 +428,79 @@ func TestGitRoutes(t *testing.T) {
 				if row.repo != "" {
 					wantCalls = 1
 				}
-				if rec.Code != row.status || calls != wantCalls || gotRepo != row.repo || gotOp != row.op || preOpens != 0 {
-					t.Fatalf("status=%d calls=%d repo=%q op=%v preOpens=%d; want status=%d calls=%d repo=%q op=%v preOpens=0; body=%s", rec.Code, calls, gotRepo, gotOp, preOpens, row.status, wantCalls, row.repo, row.op, rec.Body.String())
+				if rec.Code != row.status || calls != wantCalls || gotRepo != row.repo || gotWrite != row.write {
+					t.Fatalf("status=%d calls=%d repo=%q write=%v; want status=%d calls=%d repo=%q write=%v; body=%s", rec.Code, calls, gotRepo, gotWrite, row.status, wantCalls, row.repo, row.write, rec.Body.String())
+				}
+				if wantCalls == 1 && strings.TrimSpace(rec.Body.String()) != "permission denied" {
+					t.Fatalf("denied body = %q, want the fixed %q and no service output", rec.Body.String(), "permission denied")
 				}
 			})
 		}
+	}
+}
+
+func TestHTTPHandlerPreOpenErrors(t *testing.T) {
+	dataDir := t.TempDir()
+	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "test-repo.git"))
+	st := newStorage(t, dataDir, true)
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		body   string
+		auth   string
+	}{
+		{"Unauthenticated", fmt.Errorf("sign in first: %w", authenticate.ErrUnauthenticated), http.StatusUnauthorized, "Unauthorized", `Basic realm="hfd"`},
+		{"NotExists", fmt.Errorf("no upstream: %w", repository.ErrRepositoryNotExists), http.StatusNotFound, `repository "test-repo" not found`, ""},
+		{"Other", errors.New("boom"), http.StatusInternalServerError, `Failed to open repository "test-repo": boom`, ""},
+	} {
+		handler := backendhttp.NewHandler(
+			backendhttp.WithStorage(st),
+			backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
+				return test.err
+			}),
+		)
+		for _, route := range []struct{ name, method, target, contentType string }{
+			{"InfoRefs", http.MethodGet, "/test-repo.git/info/refs?service=git-upload-pack", ""},
+			{"ReceivePack", http.MethodPost, "/test-repo.git/git-receive-pack", "application/x-git-receive-pack-request"},
+		} {
+			t.Run(test.name+route.name, func(t *testing.T) {
+				req := httptest.NewRequest(route.method, route.target, strings.NewReader("0000"))
+				if route.contentType != "" {
+					req.Header.Set("Content-Type", route.contentType)
+				}
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if auth := rec.Header().Get("WWW-Authenticate"); rec.Code != test.status || strings.TrimSpace(rec.Body.String()) != test.body || auth != test.auth {
+					t.Errorf("status = %d, body = %q, WWW-Authenticate = %q; want %d, %q, %q", rec.Code, rec.Body.String(), auth, test.status, test.body, test.auth)
+				}
+			})
+		}
+	}
+}
+
+type bodyReadSpy struct{ read bool }
+
+func (s *bodyReadSpy) Read([]byte) (int, error) {
+	s.read = true
+	return 0, io.EOF
+}
+
+func TestHTTPHandlerDeniedReceivePackLeavesBodyUnread(t *testing.T) {
+	dataDir := t.TempDir()
+	runGitCmd(t, "", "init", "--bare", filepath.Join(dataDir, "repositories", "test-repo.git"))
+	handler := backendhttp.NewHandler(
+		backendhttp.WithStorage(newStorage(t, dataDir, true)),
+		backendhttp.WithPreOpenHookFunc(func(context.Context, string, bool) error {
+			return fs.ErrPermission
+		}),
+	)
+	body := &bodyReadSpy{}
+	req := httptest.NewRequest(http.MethodPost, "/test-repo.git/git-receive-pack", body)
+	req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || body.read {
+		t.Errorf("status = %d, body read = %v; want 403 with the request body unread", rec.Code, body.read)
 	}
 }

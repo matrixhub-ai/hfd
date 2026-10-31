@@ -14,7 +14,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -84,10 +83,6 @@ func (h *Handler) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
-	if !h.checkPermission(w, r, permission.OperationCreateRepo, storageName, permission.Context{}) {
-		return
-	}
-
 	if repository.ResolvePath(storageName) == "" {
 		responseJSON(w, fmt.Errorf("invalid repository name: %q", repoName), http.StatusBadRequest)
 		return
@@ -115,18 +110,14 @@ func (h *Handler) handlePreupload(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
+	if !ok {
 		return
 	}
 
 	var req preuploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responseJSON(w, fmt.Errorf("invalid request body: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	repo, ok := h.openRepoDirect(w, ri.RepoName)
-	if !ok {
 		return
 	}
 
@@ -161,7 +152,8 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
+	if !ok {
 		return
 	}
 
@@ -256,12 +248,6 @@ func (h *Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 	}
 	if header.Description != "" {
 		message += "\n\n" + header.Description
-	}
-
-	// Open the repository
-	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
-	if !ok {
-		return
 	}
 
 	// The branch head before the commit; ZeroHash when the branch is new.

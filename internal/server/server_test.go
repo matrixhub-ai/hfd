@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	iofs "io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,6 @@ import (
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	"golang.org/x/crypto/ssh"
@@ -96,18 +96,24 @@ func TestNewHTTPHandler(t *testing.T) {
 		Authenticators: &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")},
 	}
 	bobToken := &authenticate.Authenticators{Token: authenticate.NewSimpleTokenValidator("bob", "t0k")}
-	deny := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
-		return false, nil
-	}
+	deny := func(context.Context, string, bool) error { return iofs.ErrPermission }
+	unauthenticated := func(context.Context, string, bool) error { return authenticate.ErrUnauthenticated }
+	const lfsMediaType = "application/vnd.git-lfs+json"
+	lfsDownload := `{"operation":"download","objects":[{"oid":"` + strings.Repeat("a", 64) + `","size":1}]}`
+	basicChallenge := http.Header{"WWW-Authenticate": {`Basic realm="hfd"`}}
+	noChallenge := http.Header{"WWW-Authenticate": nil}
 	hooks := &Hooks{Storage: newStorage(t)}
 	cases := []struct {
 		name        string
 		options     Options
 		path        string
 		method      string
+		accept      string
+		payload     string
 		token       string
 		status      int
 		body        string
+		header      http.Header // response headers the row pins; a nil value pins absence
 		identity    authenticate.Identity
 		defaultNext bool
 	}{
@@ -139,13 +145,21 @@ func TestNewHTTPHandler(t *testing.T) {
 			backendinternalapi.WithStorage(xs),
 		}}, path: "/internal/usage", status: http.StatusOK},
 		{name: "access log", options: Options{AccessLog: &accessLog}, path: "/nothing", status: http.StatusTeapot, identity: authenticate.Anonymous},
-		{name: "permission denied", options: Options{Permission: deny, HFOptions: []backendhf.Option{backendhf.WithListReposFunc(hooks.ListRepos)}}, path: "/api/models", status: http.StatusForbidden},
-		{name: "permission denied skips callback", options: Options{Permission: deny, HFOptions: []backendhf.Option{
+		{name: "pre-open denied on hf", options: Options{PreOpen: deny}, path: "/api/models/org/repo", status: http.StatusForbidden, body: `{"error":"permission denied"}`},
+		{name: "pre-open denied on git", options: Options{PreOpen: deny}, path: "/org/repo.git/info/refs?service=git-upload-pack", status: http.StatusForbidden, body: "permission denied"},
+		{name: "pre-open denied on lfs", options: Options{PreOpen: deny}, method: http.MethodPost, path: "/org/repo.git/info/lfs/objects/batch", accept: lfsMediaType, payload: lfsDownload,
+			status: http.StatusForbidden, body: `{"error":"permission denied"}`},
+		{name: "callback denial", options: Options{HFOptions: []backendhf.Option{
 			backendhf.WithListReposFunc(func(context.Context, string, backendhf.ListQuery) ([]backendhf.RepoListItem, bool, error) {
-				t.Error("list callback ran despite permission denial")
-				return nil, false, nil
+				return nil, false, iofs.ErrPermission
 			}),
-		}}, path: "/api/models", status: http.StatusForbidden},
+		}}, path: "/api/models", status: http.StatusForbidden, body: `{"error":"permission denied"}`},
+		{name: "pre-open unauthenticated on hf", options: Options{PreOpen: unauthenticated}, path: "/api/models/org/repo",
+			status: http.StatusUnauthorized, body: `{"error":"Unauthorized"}`, header: noChallenge},
+		{name: "pre-open unauthenticated on git", options: Options{PreOpen: unauthenticated}, path: "/org/repo.git/info/refs?service=git-upload-pack",
+			status: http.StatusUnauthorized, body: "Unauthorized", header: basicChallenge},
+		{name: "pre-open unauthenticated on lfs", options: Options{PreOpen: unauthenticated}, method: http.MethodPost, path: "/org/repo.git/info/lfs/objects/batch", accept: lfsMediaType, payload: lfsDownload,
+			status: http.StatusUnauthorized, body: `{"error":"Unauthorized"}`, header: basicChallenge},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -164,7 +178,10 @@ func TestNewHTTPHandler(t *testing.T) {
 			if method == "" {
 				method = http.MethodGet
 			}
-			request := httptest.NewRequest(method, test.path, nil)
+			request := httptest.NewRequest(method, test.path, strings.NewReader(test.payload))
+			if test.accept != "" {
+				request.Header.Set("Accept", test.accept)
+			}
 			if test.token != "" {
 				request.Header.Set("Authorization", "Bearer "+test.token)
 			}
@@ -175,6 +192,11 @@ func TestNewHTTPHandler(t *testing.T) {
 			}
 			if !strings.Contains(recorder.Body.String(), test.body) {
 				t.Errorf("body = %s, want containing %s", recorder.Body.String(), test.body)
+			}
+			for key, want := range test.header {
+				if got := recorder.Result().Header.Values(key); !reflect.DeepEqual(got, want) {
+					t.Errorf("%s = %q, want %q", key, got, want)
+				}
 			}
 			if !reflect.DeepEqual(gotIdentity, test.identity) {
 				t.Errorf("tail identity = %#v, want %#v", gotIdentity, test.identity)

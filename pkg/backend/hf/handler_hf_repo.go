@@ -8,7 +8,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -19,9 +18,6 @@ func (h *Handler) handleInfoRevision(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return

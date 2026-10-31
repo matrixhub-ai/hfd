@@ -11,7 +11,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/gorilla/mux"
 
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -23,9 +22,6 @@ func (h *Handler) handleListCommits(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return
@@ -94,9 +90,6 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	compare := vars["compare"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return
@@ -138,10 +131,7 @@ func (h *Handler) handleSuperSquash(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, ri.RepoName)
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
 	}

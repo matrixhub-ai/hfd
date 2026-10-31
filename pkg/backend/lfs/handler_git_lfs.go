@@ -16,7 +16,6 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 const (
@@ -28,12 +27,7 @@ const (
 func (h *Handler) handleBatch(w http.ResponseWriter, r *http.Request) {
 	bv := unpackBatch(r)
 
-	op := permission.OperationReadRepo
-	if bv.Operation == "upload" {
-		op = permission.OperationUpdateRepo
-	}
-	repoName := bv.repoName()
-	if !h.checkPermission(w, r, op, repoName) {
+	if !h.admit(w, r, mux.Vars(r)["repo"], bv.Operation == "upload", "error") {
 		return
 	}
 
@@ -234,7 +228,6 @@ func (h *Handler) verifyAction(ctx context.Context, rv *lfsRequestVars, username
 func unpack(r *http.Request) *lfsRequestVars {
 	vars := mux.Vars(r)
 	rv := &lfsRequestVars{
-		Repo:          vars["repo"],
 		Oid:           vars["oid"],
 		Authorization: r.Header.Get("Authorization"),
 	}
@@ -255,8 +248,6 @@ func unpack(r *http.Request) *lfsRequestVars {
 }
 
 func unpackBatch(r *http.Request) *lfsBatchVars {
-	vars := mux.Vars(r)
-
 	var bv lfsBatchVars
 
 	dec := json.NewDecoder(r.Body)
@@ -275,7 +266,6 @@ func unpackBatch(r *http.Request) *lfsBatchVars {
 	origin := fmt.Sprintf("%s://%s", scheme, r.Host)
 
 	for i := range len(bv.Objects) {
-		bv.Objects[i].Repo = vars["repo"]
 		bv.Objects[i].Authorization = r.Header.Get("Authorization")
 		bv.Objects[i].Origin = origin
 	}
@@ -290,7 +280,6 @@ type lfsRequestVars struct {
 	Oid    string
 	Size   int64
 
-	Repo          string
 	Authorization string
 }
 
@@ -306,13 +295,6 @@ type lfsBatchVars struct {
 	Transfers []string          `json:"transfers,omitempty"`
 	Operation string            `json:"operation"`
 	Objects   []*lfsRequestVars `json:"objects"`
-}
-
-func (bv *lfsBatchVars) repoName() string {
-	if len(bv.Objects) == 0 {
-		return ""
-	}
-	return bv.Objects[0].Repo
 }
 
 type lfsBatchResponse struct {

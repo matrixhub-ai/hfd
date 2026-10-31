@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -55,28 +56,9 @@ func parseCommand(cmdLine string) (*parsedCommand, error) {
 
 // executeCommand serves a git service in-process, reading and writing the SSH channel.
 func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, service string, repoName string, gitProtocol string) {
-	op := permission.OperationReadRepo
-	if service == repository.GitReceivePack {
-		op = permission.OperationUpdateRepo
-	}
-	if err := s.permissionHookFunc.Check(ctx, op, repoName, permission.Context{}); err != nil {
-		if errors.Is(err, permission.ErrDenied) {
-			sendExitStatus(channel, 1, "permission denied")
-		} else {
-			slog.WarnContext(ctx, "ssh protocol: permission hook error", "service", service, "repo", repoName, "error", err)
-			sendExitStatus(channel, 1, "")
-		}
-		return
-	}
-
 	repo, err := s.openRepo(ctx, repoName, service)
 	if err != nil {
-		if err == repository.ErrRepositoryNotExists {
-			sendExitStatus(channel, 1, "repository not found\n")
-			return
-		}
-		slog.WarnContext(ctx, "ssh protocol: failed to open repository", "repo", repoName, "error", err)
-		sendExitStatus(channel, 1, "")
+		sendRepoError(ctx, channel, service, repoName, err)
 		return
 	}
 
@@ -95,6 +77,21 @@ func (s *Server) executeCommand(ctx context.Context, channel ssh.Channel, servic
 	}
 
 	sendExitStatus(channel, 0, "")
+}
+
+// sendRepoError reports a refused admission or failed open of repoName to the client.
+func sendRepoError(ctx context.Context, channel ssh.Channel, service, repoName string, err error) {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		sendExitStatus(channel, 1, "permission denied\n")
+	case errors.Is(err, authenticate.ErrUnauthenticated):
+		sendExitStatus(channel, 1, "authentication required\n")
+	case errors.Is(err, repository.ErrRepositoryNotExists):
+		sendExitStatus(channel, 1, "repository not found\n")
+	default:
+		slog.WarnContext(ctx, "ssh protocol: repository request failed", "service", service, "repo", repoName, "error", err)
+		sendExitStatus(channel, 1, "")
+	}
 }
 
 // errPreReceiveDenied marks a push rejected by the pre-receive hook; the

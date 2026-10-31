@@ -27,6 +27,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/cache"
 	"github.com/go-git/go-git/v6/storage/filesystem"
 
+	"github.com/matrixhub-ai/hfd/internal/server"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	backendhttp "github.com/matrixhub-ai/hfd/pkg/backend/http"
 	backendinternalapi "github.com/matrixhub-ai/hfd/pkg/backend/internalapi"
@@ -34,7 +35,6 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -160,9 +160,10 @@ func TestGCLifecycle(t *testing.T) {
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),
 		mirror.WithMirrorSourceFunc(newMirrorSourceFunc(upstream.httpURL)),
 	)
-	preOpen := newMirrorPreOpenHook(proxyMirror)
+	hooks := &server.Hooks{Storage: st, Mirror: proxyMirror}
+	preOpen := hooks.PreOpen
 	var handler http.Handler
-	handler = backendhf.NewHandler(append(catalogOptions(st),
+	handler = backendhf.NewHandler(append(catalogOptions(hooks, nil),
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(proxyMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
@@ -172,11 +173,11 @@ func TestGCLifecycle(t *testing.T) {
 		backendlfs.WithStorage(st),
 		backendlfs.WithNext(handler),
 		backendlfs.WithMirror(proxyMirror),
+		backendlfs.WithPreOpenHookFunc(preOpen),
 	)
 	handler = backendhttp.NewHandler(
 		backendhttp.WithStorage(st),
 		backendhttp.WithNext(handler),
-		backendhttp.WithPermissionHookFunc(permission.PullMirrorReadOnly(proxyMirror)),
 		backendhttp.WithPreOpenHookFunc(preOpen),
 	)
 	handler = xet.casServer(handler)
@@ -319,6 +320,26 @@ func TestGCLifecycle(t *testing.T) {
 		waitIngested(t)
 		if findObject(listObjects(t)) == nil {
 			t.Fatalf("GET /internal/objects misses oid %s after re-ingest", oid)
+		}
+	})
+
+	step("DuplicateIntoMirrorRefused", func(t *testing.T) {
+		// Every name on the proxy is a pull-only mirror, so none may receive a duplicate.
+		const copyID = "gc-org/gc-copy"
+		resp, err := http.Post(proxy.URL+"/api/models/"+repoID+"/duplicate", "application/json", strings.NewReader(`{"repository":"`+copyID+`"}`))
+		if err != nil {
+			t.Fatalf("POST duplicate: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read duplicate body: %v", err)
+		}
+		if resp.StatusCode != http.StatusForbidden || strings.TrimSpace(string(body)) != `{"error":"permission denied"}` {
+			t.Fatalf("duplicate into %s: status = %d, body %s; want 403 {\"error\":\"permission denied\"}", copyID, resp.StatusCode, body)
+		}
+		if repository.IsRepository(st.RepositoriesFS(), repository.ResolvePath(copyID)) {
+			t.Fatalf("refused duplicate created %s", copyID)
 		}
 	})
 }

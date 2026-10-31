@@ -6,24 +6,22 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gorilla/mux"
 	"github.com/wzshiming/xet/auth"
-
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 // Read tokens are CAS-wide by hash, matching huggingface.co.
 func (h *Handler) handleXETWriteToken(w http.ResponseWriter, r *http.Request) {
-	h.handleXETToken(w, r, permission.OperationUpdateRepo, auth.Write)
+	h.handleXETToken(w, r, true, auth.Write)
 }
 
 func (h *Handler) handleXETReadToken(w http.ResponseWriter, r *http.Request) {
-	h.handleXETToken(w, r, permission.OperationReadRepo, auth.Read)
+	h.handleXETToken(w, r, false, auth.Read)
 }
 
-func (h *Handler) handleXETToken(w http.ResponseWriter, r *http.Request, op permission.Operation, perm auth.Permission) {
+func (h *Handler) handleXETToken(w http.ResponseWriter, r *http.Request, write bool, perm auth.Permission) {
 	ri := getRepoInformation(r)
-	if !h.checkPermission(w, r, op, ri.RepoName, permission.Context{Ref: mux.Vars(r)["rev"]}) {
+	if err := h.preOpenHook(r.Context(), ri.RepoName, write); err != nil {
+		respondOpenRepoError(w, ri.RepoName, err)
 		return
 	}
 	if h.mirror == nil || !h.mirror.CanMintToken() {

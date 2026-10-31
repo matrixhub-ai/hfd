@@ -3,7 +3,6 @@ package ssh
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -48,21 +46,12 @@ func (s *Server) executeLFSAuthenticate(ctx context.Context, channel ssh.Channel
 
 	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
-		sendExitStatus(channel, 1, "repository not found")
+		sendExitStatus(channel, 1, "repository not found\n")
 		return
 	}
 
-	op := permission.OperationReadRepo
-	if operation == "upload" {
-		op = permission.OperationUpdateRepo
-	}
-	if err := s.permissionHookFunc.Check(ctx, op, repoName, permission.Context{}); err != nil {
-		if errors.Is(err, permission.ErrDenied) {
-			sendExitStatus(channel, 1, "permission denied")
-		} else {
-			slog.WarnContext(ctx, "ssh protocol: permission hook error", "operation", operation, "repo", repoName, "error", err)
-			sendExitStatus(channel, 1, "")
-		}
+	if err := s.preOpenHook(ctx, repoName, operation == "upload"); err != nil {
+		sendRepoError(ctx, channel, repository.GitLFSAuthenticate, repoName, err)
 		return
 	}
 

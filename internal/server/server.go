@@ -1,4 +1,4 @@
-// Package server assembles hfd's HTTP chain and SSH server from embedder-supplied storage, mirror, validators, policy and hooks.
+// Package server assembles hfd's HTTP chain and SSH server from embedder-supplied storage, mirror, validators and hooks.
 package server
 
 import (
@@ -18,7 +18,6 @@ import (
 	backendlfs "github.com/matrixhub-ai/hfd/pkg/backend/lfs"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -31,8 +30,8 @@ type Options struct {
 	Authenticators *authenticate.Authenticators    // validators for the default authentication layer and the SSH server; nil = anonymous HTTP, unauthenticated SSH
 	Authenticate   func(http.Handler) http.Handler // replaces the default authenticate.NewHandler layer when set; the xet CAS routes are answered before it
 	CASAuthorizer  auth.Authorizer                 // gates the xet CAS routes; nil rejects every gated route (xorb downloads and /xet-bridge stay anonymous)
-	Permission     permission.PermissionHookFunc   // nil allows every operation
 	// Nil hooks are skipped.
+	// PreOpen admits repository requests (caller: authenticate.IdentityFrom); see each backend's PreOpenHookFunc for errors.
 	PreOpen         func(ctx context.Context, repoName string, write bool) error
 	PreReceive      receive.PreReceiveHookFunc
 	PostReceive     receive.PostReceiveHookFunc
@@ -95,7 +94,6 @@ func gitHTTPBackend(o Options) middleware {
 			backendhttp.WithStorage(o.Storage),
 			backendhttp.WithNext(next),
 			backendhttp.WithPreOpenHookFunc(o.PreOpen),
-			backendhttp.WithPermissionHookFunc(o.Permission),
 			backendhttp.WithPreReceiveHookFunc(o.PreReceive),
 			backendhttp.WithPostReceiveHookFunc(o.PostReceive),
 		}
@@ -109,7 +107,7 @@ func lfsBackend(o Options) middleware {
 			backendlfs.WithStorage(o.Storage),
 			backendlfs.WithNext(next),
 			backendlfs.WithMirror(o.Mirror),
-			backendlfs.WithPermissionHookFunc(o.Permission),
+			backendlfs.WithPreOpenHookFunc(o.PreOpen),
 			backendlfs.WithTokenSignValidator(o.Authenticators.TokenSign),
 		}
 		return backendlfs.NewHandler(append(opts, o.LFSOptions...)...)
@@ -123,7 +121,6 @@ func hfBackend(o Options) middleware {
 			backendhf.WithNext(next),
 			backendhf.WithMirror(o.Mirror),
 			backendhf.WithPreOpenHookFunc(o.PreOpen),
-			backendhf.WithPermissionHookFunc(o.Permission),
 			backendhf.WithPreReceiveHookFunc(o.PreReceive),
 			backendhf.WithPostReceiveHookFunc(o.PostReceive),
 		}
@@ -168,7 +165,7 @@ func NewHTTPHandler(o Options) http.Handler {
 	)
 }
 
-// NewSSHServer assembles the SSH git server over the same storage, hooks, policy and validators.
+// NewSSHServer assembles the SSH git server over the same storage, hooks and validators.
 func NewSSHServer(o Options, hostKey pkgssh.Signer) *backendssh.Server {
 	if o.Storage == nil {
 		panic("server: Options.Storage is required")
@@ -182,7 +179,6 @@ func NewSSHServer(o Options, hostKey pkgssh.Signer) *backendssh.Server {
 	opts := []backendssh.Option{
 		backendssh.WithStorage(o.Storage),
 		backendssh.WithHostKey(hostKey),
-		backendssh.WithPermissionHookFunc(o.Permission),
 		backendssh.WithPreOpenHookFunc(o.PreOpen),
 		backendssh.WithPreReceiveHookFunc(o.PreReceive),
 		backendssh.WithPostReceiveHookFunc(o.PostReceive),

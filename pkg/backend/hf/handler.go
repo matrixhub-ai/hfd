@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -22,7 +23,6 @@ type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
 	next                http.Handler
-	permissionHookFunc  permission.PermissionHookFunc
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
@@ -37,7 +37,7 @@ type Handler struct {
 	whoamiFunc             WhoamiFunc
 }
 
-// PreOpenHookFunc is called before opening a repository for a git service request.
+// PreOpenHookFunc admits a request to repoName before it opens or serves the repository; write reports whether the request may change it. Errors wrapping fs.ErrPermission answer 403, authenticate.ErrUnauthenticated 401, repository.ErrRepositoryNotExists 404, anything else 500. It also runs for the xet token routes, which open no repository.
 type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
@@ -57,14 +57,7 @@ func WithNext(next http.Handler) Option {
 	}
 }
 
-// WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
-	return func(h *Handler) {
-		h.permissionHookFunc = fn
-	}
-}
-
-// WithPreOpenHookFunc sets a hook called before repository open.
+// WithPreOpenHookFunc sets the hook that admits repository opens, move/duplicate sources and xet token requests.
 func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
 	return func(h *Handler) {
 		h.preOpenHookFunc = fn
@@ -242,15 +235,6 @@ func (h *Handler) openRepo(ctx context.Context, repoName string, write bool) (*r
 	return repository.Open(h.storage.RepositoriesFS(), repoPath)
 }
 
-// checkPermission runs the permission hook and writes the failure response.
-// It returns true when the operation may proceed.
-func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string, permCtx permission.Context) bool {
-	return permission.Guard{
-		Hook:    h.permissionHookFunc,
-		Respond: func(w http.ResponseWriter, msg string, sc int) { responseJSON(w, msg, sc) },
-	}.Allow(w, r, op, repoName, permCtx)
-}
-
 // openRepoChecked opens the repository via the pre-open hook, mapping open
 // errors to HTTP responses.
 func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoName string, write bool) (*repository.Repository, bool) {
@@ -262,28 +246,17 @@ func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoNa
 	return repo, true
 }
 
-// openRepoDirect opens the repository without the pre-open hook, for
-// operations that must not trigger a mirror sync (delete/squash).
-func (h *Handler) openRepoDirect(w http.ResponseWriter, repoName string) (*repository.Repository, bool) {
-	repoPath := repository.ResolvePath(repoName)
-	if repoPath == "" {
-		respondOpenRepoError(w, repoName, repository.ErrRepositoryNotExists)
-		return nil, false
-	}
-	repo, err := repository.Open(h.storage.RepositoriesFS(), repoPath)
-	if err != nil {
-		respondOpenRepoError(w, repoName, err)
-		return nil, false
-	}
-	return repo, true
-}
-
 func respondOpenRepoError(w http.ResponseWriter, repoName string, err error) {
-	if errors.Is(err, repository.ErrRepositoryNotExists) {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		responseJSON(w, "permission denied", http.StatusForbidden)
+	case errors.Is(err, authenticate.ErrUnauthenticated):
+		responseJSON(w, "Unauthorized", http.StatusUnauthorized)
+	case errors.Is(err, repository.ErrRepositoryNotExists):
 		responseJSON(w, fmt.Errorf("repository %q not found", repoName), http.StatusNotFound)
-		return
+	default:
+		responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 	}
-	responseJSON(w, fmt.Errorf("failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 }
 
 // checkPreReceive runs the pre-receive hook and writes the failure response.
