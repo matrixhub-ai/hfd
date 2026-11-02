@@ -29,8 +29,9 @@ jobs:
         with:
           python-version: "3.x"
 
+      # hf_xet 1.8.0 adds /v1/xorb-grants, which hfd does not serve yet.
       - name: Install huggingface_hub
-        run: pip install 'huggingface_hub'
+        run: pip install 'huggingface_hub==2.4.0' 'hf_xet==1.7.1'
 
       # git-xet is pinned by release and checksum and installed under the
       # runner temp dir; the tests configure it per command, so the runner's
