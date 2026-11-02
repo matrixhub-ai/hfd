@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/go-git/go-billy/v6/osfs"
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
@@ -25,6 +26,7 @@ import (
 	xets3 "github.com/wzshiming/xet/storage/s3"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -103,8 +105,14 @@ func newDataDir(t *testing.T, pattern string) string {
 }
 
 // newTestStorage isolates each server's repositories and content in the current backend.
-func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
-	t.Helper()
+func newTestStorage(tb testing.TB, dataDir string) *storage.Storage {
+	tb.Helper()
+	return newTestStorageEngine(tb, dataDir, false)
+}
+
+// newTestStorageEngine is newTestStorage with goGit having go-git serve the local pass's repositories.
+func newTestStorageEngine(tb testing.TB, dataDir string, goGit bool) *storage.Storage {
+	tb.Helper()
 	opts := []storage.Option{storage.WithRootDir(dataDir)}
 	if testS3Client != nil {
 		opts = append(opts, storage.WithFilesystem(
@@ -112,19 +120,21 @@ func newTestStorage(t *testing.T, dataDir string) *storage.Storage {
 				s3fs.WithClient(testS3Client),
 				s3fs.WithPresignClient(s3.NewPresignClient(testS3Client)),
 				s3fs.WithPrefix(filepath.Base(dataDir)))))
-		xs, err := xets3.NewStorage(t.Context(),
+		xs, err := xets3.NewStorage(tb.Context(),
 			xets3.WithS3Client(testS3Client),
 			xets3.WithBucket(testS3Bucket),
 			xets3.WithPrefix(filepath.Base(dataDir)+"/xet"),
 		)
 		if err != nil {
-			t.Fatalf("create xet S3 storage: %v", err)
+			tb.Fatalf("create xet S3 storage: %v", err)
 		}
 		opts = append(opts, storage.WithXETStorage(xs))
+	} else if goGit {
+		opts = append(opts, storage.WithFilesystem(repository.GoGitOnly(osfs.New(dataDir))))
 	}
 	st, err := storage.NewStorage(opts...)
 	if err != nil {
-		t.Fatalf("create storage: %v", err)
+		tb.Fatalf("create storage: %v", err)
 	}
 	return st
 }

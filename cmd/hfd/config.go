@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"time"
 
 	xetdownload "github.com/wzshiming/xet/download"
@@ -51,6 +52,11 @@ type config struct {
 
 	// Internal management
 	Internal bool
+
+	// Background repository maintenance
+	Maintenance            bool
+	MaintenanceDebounce    time.Duration
+	MaintenanceConcurrency int
 }
 
 func defaultConfig() *config {
@@ -64,6 +70,9 @@ func defaultConfig() *config {
 		ProxyConcurrencyPerFile: 2,
 		ProxyDownloadCacheSize:  xetdownload.DefaultCacheSize,
 		ProxyUploadCacheSize:    xetupload.DefaultCacheSize,
+		Maintenance:             true,
+		MaintenanceDebounce:     30 * time.Second,
+		MaintenanceConcurrency:  min(4, runtime.GOMAXPROCS(0)),
 	}
 }
 
@@ -101,7 +110,18 @@ func parseConfig() (*config, error) {
 	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 
 	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, usage report under /internal/usage, GC via POST /internal/gc (Git garbage collection in every repository, unlinking of unreferenced LFS objects, then the budgeted sweep of storage, spool and engine index; repeat until done); run GC only while pushes are quiescent); expose only on trusted networks")
+
+	flag.BoolVar(&cfg.Maintenance, "maintenance", cfg.Maintenance, "Repack repositories served by go-git into the reusable-pack layout in the background after writes and on their first open")
+	flag.DurationVar(&cfg.MaintenanceDebounce, "maintenance-debounce", cfg.MaintenanceDebounce, "Quiet period after a repository's latest write before it is maintained; 0 maintains at once")
+	flag.IntVar(&cfg.MaintenanceConcurrency, "maintenance-concurrency", cfg.MaintenanceConcurrency, "Maximum number of repositories maintained at the same time")
 	flag.Parse()
+
+	if cfg.MaintenanceDebounce < 0 {
+		return nil, fmt.Errorf("invalid -maintenance-debounce %s: must not be negative", cfg.MaintenanceDebounce)
+	}
+	if cfg.Maintenance && cfg.MaintenanceConcurrency < 1 {
+		return nil, fmt.Errorf("invalid -maintenance-concurrency %d: must be at least 1", cfg.MaintenanceConcurrency)
+	}
 
 	if cfg.HostURL == "" {
 		host, port, err := net.SplitHostPort(cfg.Addr)

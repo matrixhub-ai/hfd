@@ -36,24 +36,28 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
 // e2eServer bundles an HTTP server (hf + LFS + git + xet data plane) and an
 // optional SSH git server sharing the same storage and mirror.
 type e2eServer struct {
-	httpURL string
-	sshURL  string
-	sshEnv  []string
-	storage *storage.Storage
-	issuer  *auth.Issuer
-	mirror  *mirror.Mirror
+	httpURL    string
+	sshURL     string
+	sshEnv     []string
+	storage    *storage.Storage
+	issuer     *auth.Issuer
+	mirror     *mirror.Mirror
+	maintainer *repository.Maintainer
 }
 
 type e2eConfig struct {
 	ssh           bool
 	sshLFSURL     bool
 	internalAPI   bool
+	goGit         bool
+	maintenance   bool
 	wraps         []func(http.Handler) http.Handler
 	authUser      string
 	authPass      string
@@ -163,6 +167,16 @@ func withRefFilter(fn mirror.RefFilterFunc) e2eOption {
 	return func(c *e2eConfig) { c.refFilter = fn }
 }
 
+// withGoGit has go-git serve the repositories; the S3 pass ignores it, go-git serving S3 already.
+func withGoGit() e2eOption {
+	return func(c *e2eConfig) { c.goGit = true }
+}
+
+// withMaintenance chains the default PreOpen and PostReceive ahead of the configured hooks, feeding a Maintainer only flushMaintenance fires.
+func withMaintenance() e2eOption {
+	return func(c *e2eConfig) { c.maintenance = true }
+}
+
 // newMirrorSourceFunc maps every repository name onto the same upstream base
 // URL, marking all of them as mirror sources.
 func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
@@ -239,9 +253,17 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 
 	dataDir := newDataDir(t, "e2e-server-data")
-	st := newTestStorage(t, dataDir)
+	st := newTestStorageEngine(t, dataDir, cfg.goGit)
 
+	hooks := &server.Hooks{Storage: st}
 	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
+	var maintainer *repository.Maintainer
+	if cfg.maintenance {
+		maintainer = repository.NewMaintainer(repository.MaintainerOptions{Debounce: time.Hour, Concurrency: 2})
+		t.Cleanup(maintainer.Close)
+		hooks.Maintainer = maintainer
+		mirrorOpts = append(mirrorOpts, mirror.WithPostReceiveHookFunc(hooks.PostReceive))
+	}
 	if cfg.mirrorSources != nil {
 		mirrorOpts = append(mirrorOpts,
 			mirror.WithMirrorSourceFunc(cfg.mirrorSources.sourceFunc),
@@ -256,10 +278,11 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	sharedMirror, xet := newTestMirror(t, st, cfg.mirrorSources != nil, mirrorOpts...)
 
-	hooks := &server.Hooks{Storage: st}
 	preOpen := cfg.preOpen
 	if cfg.mirrorSources != nil {
 		hooks.Mirror = sharedMirror
+	}
+	if cfg.mirrorSources != nil || cfg.maintenance {
 		preOpen = hooks.PreOpen
 		if cfg.preOpen != nil {
 			preOpen = func(ctx context.Context, repoName string, write bool) error {
@@ -268,6 +291,18 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 				}
 				return cfg.preOpen(ctx, repoName, write)
 			}
+		}
+	}
+	postReceive := cfg.postReceive
+	if cfg.maintenance {
+		postReceive = func(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
+			if err := hooks.PostReceive(ctx, repoName, updates); err != nil {
+				return err
+			}
+			if cfg.postReceive != nil {
+				return cfg.postReceive(ctx, repoName, updates)
+			}
+			return nil
 		}
 	}
 
@@ -282,7 +317,9 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.apiHooks {
 		hfOpts = append(hfOpts,
 			backendhf.WithPreReceiveHookFunc(cfg.preReceive),
-			backendhf.WithPostReceiveHookFunc(cfg.postReceive))
+			backendhf.WithPostReceiveHookFunc(postReceive))
+	} else if cfg.maintenance {
+		hfOpts = append(hfOpts, backendhf.WithPostReceiveHookFunc(hooks.PostReceive))
 	}
 	var handler http.Handler
 	handler = backendhf.NewHandler(hfOpts...)
@@ -306,8 +343,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.preReceive != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(cfg.preReceive))
 	}
-	if cfg.postReceive != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(cfg.postReceive))
+	if postReceive != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(postReceive))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
 	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
@@ -348,10 +385,11 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	t.Cleanup(httpServer.Close)
 
 	s := &e2eServer{
-		httpURL: httpServer.URL,
-		storage: st,
-		issuer:  xet.issuer,
-		mirror:  sharedMirror,
+		httpURL:    httpServer.URL,
+		storage:    st,
+		issuer:     xet.issuer,
+		mirror:     sharedMirror,
+		maintainer: maintainer,
 	}
 	if !cfg.ssh {
 		return s
@@ -383,8 +421,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.preReceive != nil {
 		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(cfg.preReceive))
 	}
-	if cfg.postReceive != nil {
-		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(cfg.postReceive))
+	if postReceive != nil {
+		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(postReceive))
 	}
 	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -444,6 +482,19 @@ func (s *e2eServer) httpRemote(repoID string) (string, []string) {
 
 func (s *e2eServer) sshRemote(repoID string) (string, []string) {
 	return s.sshURL + repoID + ".git", s.sshEnv
+}
+
+// flushMaintenance runs the maintenance withMaintenance scheduled and waits for it.
+func (s *e2eServer) flushMaintenance(tb testing.TB) {
+	tb.Helper()
+	if s.maintainer == nil {
+		tb.Fatal("flushMaintenance needs a server built withMaintenance")
+	}
+	ctx, cancel := context.WithTimeout(tb.Context(), 2*time.Minute)
+	defer cancel()
+	if err := s.maintainer.Flush(ctx); err != nil {
+		tb.Fatalf("flush maintenance: %v", err)
+	}
 }
 
 // gitCmd runs a git command, keeping stdout separate from stderr and

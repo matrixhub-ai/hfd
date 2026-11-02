@@ -4,7 +4,9 @@ import (
 	"flag"
 	"net/url"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func TestParseConfigHostURL(t *testing.T) {
@@ -41,6 +43,45 @@ func TestParseConfigHostURL(t *testing.T) {
 func TestParseConfigInvalidAddress(t *testing.T) {
 	if _, err := parseConfigArgs(t, []string{"-addr", "localhost"}); err == nil {
 		t.Fatal("expected invalid address error")
+	}
+}
+
+// TestMaintenanceParseConfig pins the maintenance flags: on by default with a 30s debounce and min(4, GOMAXPROCS) concurrent runs, validated when on.
+func TestMaintenanceParseConfig(t *testing.T) {
+	concurrency := min(4, runtime.GOMAXPROCS(0))
+	cases := []struct {
+		name        string
+		args        []string
+		enabled     bool
+		debounce    time.Duration
+		concurrency int
+		wantErr     bool
+	}{
+		{name: "defaults", enabled: true, debounce: 30 * time.Second, concurrency: concurrency},
+		{name: "disabled", args: []string{"-maintenance=false"}, debounce: 30 * time.Second, concurrency: concurrency},
+		{name: "tuned", args: []string{"-maintenance-debounce", "2m", "-maintenance-concurrency", "7"}, enabled: true, debounce: 2 * time.Minute, concurrency: 7},
+		{name: "zero debounce", args: []string{"-maintenance-debounce", "0s"}, enabled: true, concurrency: concurrency},
+		{name: "disabled skips the concurrency check", args: []string{"-maintenance=false", "-maintenance-concurrency", "0"}, debounce: 30 * time.Second},
+		{name: "zero concurrency", args: []string{"-maintenance-concurrency", "0"}, wantErr: true},
+		{name: "negative debounce", args: []string{"-maintenance-debounce=-1s"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseConfigArgs(t, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseConfig(%q) = nil error, want the maintenance setting rejected", tc.args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Maintenance != tc.enabled || cfg.MaintenanceDebounce != tc.debounce || cfg.MaintenanceConcurrency != tc.concurrency {
+				t.Errorf("parseConfig(%q) maintenance = %t, debounce %v, concurrency %d; want %t, %v, %d", tc.args,
+					cfg.Maintenance, cfg.MaintenanceDebounce, cfg.MaintenanceConcurrency, tc.enabled, tc.debounce, tc.concurrency)
+			}
+		})
 	}
 }
 

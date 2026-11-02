@@ -45,21 +45,27 @@ func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCR
 		return GCResult{}, err
 	}
 	if dryRun {
+		r.rlock()
+		defer r.runlock()
 		return r.previewGC(ctx, cutoff, before)
 	}
 	size, err := objectsSize(r.fs, r.repoPath)
 	if err != nil {
 		return GCResult{}, err
 	}
-	if dir := r.gitDir(); dir != "" {
-		err = gcGit(ctx, dir, cutoff)
-	} else {
-		err = r.gcGoGit(ctx, cutoff)
-	}
-	// Packs may have moved even when git failed, so the handle is refreshed either way.
-	err = errors.Join(err, r.reindex())
-	// Cached pack objects still point at the packs GC deleted.
-	r.objectCache.Clear()
+	func() {
+		r.lock()
+		defer r.unlock()
+		if dir := r.gitDir(); dir != "" {
+			err = gcGit(ctx, dir, cutoff)
+		} else {
+			err = r.gcGoGit(ctx, cutoff)
+		}
+		// Packs may have moved even when git failed, so the handle is refreshed either way.
+		err = errors.Join(err, r.reindex())
+		// Cached pack objects still point at the packs GC deleted.
+		r.objectCache.Clear()
+	}()
 	if err = joinCtx(ctx, err); err != nil {
 		return GCResult{}, err
 	}
