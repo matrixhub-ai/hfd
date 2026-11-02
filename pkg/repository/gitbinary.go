@@ -47,6 +47,21 @@ func (r *Repository) gitDir() string {
 	return r.localDir
 }
 
+// GoGitOnly hides fs's filesystem type so repositories on it are served by go-git even when git is installed.
+func GoGitOnly(fs billy.Filesystem) billy.Filesystem {
+	return goGitOnlyFS{fs}
+}
+
+type goGitOnlyFS struct{ billy.Filesystem }
+
+func (f goGitOnlyFS) Chroot(dir string) (billy.Filesystem, error) {
+	sub, err := f.Filesystem.Chroot(dir)
+	if err != nil {
+		return nil, err
+	}
+	return goGitOnlyFS{sub}, nil
+}
+
 // localDir maps name on fs to a host directory; "" means fs is not a known OS-backed filesystem.
 func localDir(fs billy.Basic, name string) string {
 	switch fs := fs.(type) {
