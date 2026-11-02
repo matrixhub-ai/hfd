@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,10 +137,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string) {
 	return server, dataDir
 }
 
-// TestHuggingFacePreOpenHook pins what the pre-open hook observes: the
-// request's repository name and write flag, that it runs before the open so
-// it can create the repository, that its errors map like open errors, and
-// that delete and super-squash never reach it.
+// TestHuggingFacePreOpenHook pins how each repository route admits through the pre-open hook and how its refusals map.
 func TestHuggingFacePreOpenHook(t *testing.T) {
 	ctx := context.Background()
 	st := newStorage(t, t.TempDir())
@@ -168,11 +167,14 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		}
 		return nil
 	}))...)
-	do := func(t *testing.T, method, target, body string, want int) {
-		t.Helper()
+	serve := func(method, target, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(method, target, strings.NewReader(body)))
-		if rec.Code != want {
+		return rec
+	}
+	do := func(t *testing.T, method, target, body string, want int) {
+		t.Helper()
+		if rec := serve(method, target, body); rec.Code != want {
 			t.Fatalf("%s %s: status = %d, want %d: %s", method, target, rec.Code, want, rec.Body)
 		}
 	}
@@ -182,8 +184,38 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusOK)
 		do(t, http.MethodPost, "/api/datasets/org/repo/tag/main", `{"tag":"v1"}`, http.StatusOK)
 		want := []call{{"datasets/org/repo", false}, {"datasets/org/repo", true}}
-		if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		if !slices.Equal(calls, want) {
 			t.Fatalf("hook calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("RouteWriteFlag", func(t *testing.T) {
+		if err := repo.CreateBranch("scratch", "main"); err != nil {
+			t.Fatalf("create branch: %v", err)
+		}
+		if err := repo.CreateTag("v0", "main"); err != nil {
+			t.Fatalf("create tag: %v", err)
+		}
+		for _, tc := range []struct {
+			name, method, target string
+			write                bool
+		}{
+			{"Tree", http.MethodGet, "/api/datasets/org/repo/tree/main", false},
+			{"TreeSize", http.MethodGet, "/api/datasets/org/repo/treesize/main", false},
+			{"Resolve", http.MethodGet, "/datasets/org/repo/resolve/main/README.md", false},
+			{"Commits", http.MethodGet, "/api/datasets/org/repo/commits/main", false},
+			{"Compare", http.MethodGet, "/api/datasets/org/repo/compare/main..main", false},
+			{"ListRefs", http.MethodGet, "/api/datasets/org/repo/refs", false},
+			{"DeleteBranch", http.MethodDelete, "/api/datasets/org/repo/branch/scratch", true},
+			{"DeleteTag", http.MethodDelete, "/api/datasets/org/repo/tag/v0", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				calls = nil
+				do(t, tc.method, tc.target, "", http.StatusOK)
+				if want := []call{{"datasets/org/repo", tc.write}}; !slices.Equal(calls, want) {
+					t.Fatalf("hook calls = %v, want %v", calls, want)
+				}
+			})
 		}
 	})
 
@@ -191,25 +223,88 @@ func TestHuggingFacePreOpenHook(t *testing.T) {
 		do(t, http.MethodGet, "/api/models/org/late", "", http.StatusOK)
 	})
 
+	// The hook's error decides the response on reads and writes alike; refusals never echo the hook's message.
 	t.Run("ErrorMapsLikeOpen", func(t *testing.T) {
-		hookErr = repository.ErrRepositoryNotExists
 		defer func() { hookErr = nil }()
-		do(t, http.MethodGet, "/api/datasets/org/repo", "", http.StatusNotFound)
+		for _, tc := range []struct {
+			name  string
+			err   error
+			want  int
+			fixed string
+		}{
+			{"Denied", fmt.Errorf("policy says no: %w", fs.ErrPermission), http.StatusForbidden, "permission denied"},
+			{"Unauthenticated", fmt.Errorf("token expired: %w", authenticate.ErrUnauthenticated), http.StatusUnauthorized, "Unauthorized"},
+			{"NotExists", repository.ErrRepositoryNotExists, http.StatusNotFound, ""},
+			{"Error", errors.New("sync failed"), http.StatusInternalServerError, ""},
+		} {
+			hookErr = tc.err
+			for _, req := range []struct{ method, target, body string }{
+				{http.MethodGet, "/api/datasets/org/repo", ""},
+				{http.MethodPost, "/api/datasets/org/repo/tag/main", `{"tag":"v2"}`},
+			} {
+				rec := serve(req.method, req.target, req.body)
+				if rec.Code != tc.want {
+					t.Errorf("%s: %s %s status = %d, want %d: %s", tc.name, req.method, req.target, rec.Code, tc.want, rec.Body)
+				}
+				var body struct{ Error string }
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error == "" {
+					t.Errorf("%s: %s %s body = %s, want a JSON error", tc.name, req.method, req.target, rec.Body)
+				}
+				if tc.fixed != "" && (body.Error != tc.fixed || strings.Contains(rec.Body.String(), tc.err.Error())) {
+					t.Errorf("%s: %s %s body = %s, want exactly the fixed error %q", tc.name, req.method, req.target, rec.Body, tc.fixed)
+				}
+				if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+					t.Errorf("%s: %s %s WWW-Authenticate = %q, want none", tc.name, req.method, req.target, got)
+				}
+			}
+		}
 	})
 
-	t.Run("DirectOperationsBypass", func(t *testing.T) {
+	t.Run("CommitAdmitsBeforeBody", func(t *testing.T) {
+		calls = nil
+		ndjson := "{\"key\":\"header\",\"value\":{\"summary\":\"add\"}}\n" +
+			"{\"key\":\"file\",\"value\":{\"content\":\"data\\n\",\"path\":\"data.txt\",\"encoding\":\"utf-8\"}}\n"
+		do(t, http.MethodPost, "/api/datasets/org/repo/commit/main", ndjson, http.StatusOK)
+		if want := []call{{"datasets/org/repo", true}}; !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want %v", calls, want)
+		}
+
+		// A refused commit is 403 even when its body would not parse: admission comes before the NDJSON scan.
+		calls = nil
+		hookErr = fmt.Errorf("policy says no: %w", fs.ErrPermission)
+		defer func() { hookErr = nil }()
+		rec := serve(http.MethodPost, "/api/datasets/org/repo/commit/main", "{not ndjson")
+		if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != `{"error":"permission denied"}` {
+			t.Fatalf("denied commit with a malformed body: status = %d, body = %s; want 403 {\"error\":\"permission denied\"}", rec.Code, rec.Body)
+		}
+		if want := []call{{"datasets/org/repo", true}}; !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("CommitOpensBeforeBody", func(t *testing.T) {
+		calls = nil
+		do(t, http.MethodPost, "/api/datasets/org/missing/commit/main", "{not ndjson", http.StatusNotFound)
+		if want := []call{{"datasets/org/missing", true}}; !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want %v", calls, want)
+		}
+	})
+
+	t.Run("WriteRoutesAdmitAsWrite", func(t *testing.T) {
 		calls = nil
 		do(t, http.MethodPost, "/api/datasets/org/repo/preupload/main", `{"files":[{"path":"a.txt","size":1}]}`, http.StatusOK)
 		do(t, http.MethodPost, "/api/datasets/org/repo/branch/feature", `{"startingPoint":"main"}`, http.StatusOK)
 		do(t, http.MethodPut, "/api/datasets/org/repo/settings", `{"private":true}`, http.StatusOK)
 		do(t, http.MethodPost, "/api/datasets/org/repo/super-squash/main", `{"message":"squash"}`, http.StatusOK)
-		if len(calls) != 0 {
-			t.Fatalf("hook calls = %v, want none", calls)
+		want := []call{{"datasets/org/repo", true}, {"datasets/org/repo", true}, {"datasets/org/repo", true}}
+		if !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want preupload, branch and super-squash each as %v and none for settings", calls, want[0])
 		}
+		calls = nil
 		do(t, http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`, http.StatusOK)
 		do(t, http.MethodDelete, "/api/repos/delete", `{"type":"dataset","name":"moved","organization":"org"}`, http.StatusOK)
-		if want := []call{{"datasets/org/repo", false}}; !slices.Equal(calls, want) {
-			t.Fatalf("hook calls = %v, want only the move's %v", calls, want)
+		if want := []call{{"datasets/org/repo", true}}; !slices.Equal(calls, want) {
+			t.Fatalf("hook calls = %v, want only the move's source as %v and none for delete", calls, want[0])
 		}
 	})
 }

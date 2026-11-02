@@ -8,7 +8,6 @@ import (
 	"path"
 	"strings"
 
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -31,9 +30,6 @@ func (h *Handler) handleDeleteRepo(w http.ResponseWriter, r *http.Request) {
 		storageName = prefix + "/" + repoName
 	}
 
-	if !h.checkPermission(w, r, permission.OperationDeleteRepo, storageName, permission.Context{}) {
-		return
-	}
 	if repository.ResolvePath(storageName) == "" {
 		respondOpenRepoError(w, storageName, repository.ErrRepositoryNotExists)
 		return
@@ -72,9 +68,6 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		toName = prefix + "/" + toName
 	}
 
-	if !h.checkPermission(w, r, permission.OperationMoveRepo, fromName, permission.Context{DestRepo: toName}) {
-		return
-	}
 	if !isRepoID(req.FromRepo) || repository.ResolvePath(fromName) == "" {
 		respondOpenRepoError(w, fromName, repository.ErrRepositoryNotExists)
 		return
@@ -83,7 +76,7 @@ func (h *Handler) handleMoveRepo(w http.ResponseWriter, r *http.Request) {
 		responseJSON(w, fmt.Errorf("invalid destination repository: %q", req.ToRepo), http.StatusBadRequest)
 		return
 	}
-	if err := h.preOpenHook(r.Context(), fromName, false); err != nil {
+	if err := h.preOpenHook(r.Context(), fromName, true); err != nil {
 		respondOpenRepoError(w, fromName, err)
 		return
 	}
@@ -111,9 +104,6 @@ func (h *Handler) handleDuplicateRepo(w http.ResponseWriter, r *http.Request) {
 		toName = ri.RepoType + "/" + req.Repository
 	}
 
-	if !h.checkPermission(w, r, permission.OperationDuplicateRepo, ri.RepoName, permission.Context{DestRepo: toName}) {
-		return
-	}
 	if repository.ResolvePath(ri.RepoName) == "" {
 		respondOpenRepoError(w, ri.RepoName, repository.ErrRepositoryNotExists)
 		return
@@ -147,9 +137,6 @@ func (h *Handler) handleDuplicateRepo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleDuplicateStatus(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	if _, ok := h.openRepoChecked(w, r, ri.RepoName, false); !ok {
 		return
 	}
@@ -161,9 +148,6 @@ func (h *Handler) handleDuplicateStatus(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) handleRepoSettings(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	if repository.ResolvePath(ri.RepoName) == "" {
 		respondOpenRepoError(w, ri.RepoName, repository.ErrRepositoryNotExists)
 		return

@@ -3,7 +3,9 @@ package hf_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -14,12 +16,39 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
-func TestHandleListPermission(t *testing.T) {
+// listRefusals are the list callback errors that answer a fixed body instead of the callback's message.
+var listRefusals = []struct {
+	name  string
+	err   error
+	code  int
+	fixed string
+}{
+	{"Denied", fmt.Errorf("private catalog: %w", fs.ErrPermission), http.StatusForbidden, "permission denied"},
+	{"Unauthenticated", fmt.Errorf("no token: %w", authenticate.ErrUnauthenticated), http.StatusUnauthorized, "Unauthorized"},
+}
+
+// checkListRefused fails unless rec is code with exactly {"error":fixed}: nothing the callback returned alongside its error is enumerated.
+func checkListRefused(t *testing.T, rec *httptest.ResponseRecorder, code int, fixed string) {
+	t.Helper()
+	want, _ := json.Marshal(map[string]string{"error": fixed})
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != code || body != string(want) {
+		t.Errorf("status = %d, body = %s; want %d %s", rec.Code, body, code, want)
+	}
+	if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", rec.Header().Get("Content-Type"))
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("WWW-Authenticate = %q, want none", got)
+	}
+}
+
+// TestHandleListCallbackRefusal pins that the list callback's refusals answer their fixed bodies after exactly one call.
+func TestHandleListCallbackRefusal(t *testing.T) {
 	authors := []struct {
 		name, query, want string
 	}{
@@ -27,47 +56,36 @@ func TestHandleListPermission(t *testing.T) {
 		{"Author", "?author=alice", "alice"},
 		{"EncodedAuthor", "?author=my%20org%2Fteam&limit=1", "my org/team"},
 	}
-	seedRepo := map[string]string{"models": "alice/hidden-repo.git", "datasets": "datasets/alice/hidden-repo.git", "kernels": "kernels/alice/hidden-repo.git"}
 	for _, repoType := range []string{"models", "datasets", "kernels"} {
 		for _, tc := range authors {
-			t.Run(repoType+"/"+tc.name, func(t *testing.T) {
-				dataDir := t.TempDir()
-				if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(seedRepo[repoType])), "main"); err != nil {
-					t.Fatalf("Init: %v", err)
-				}
-				var gotOp permission.Operation
-				var gotRepo string
-				var gotCtx permission.Context
-				calls := 0
-				hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-					calls++
-					gotOp, gotRepo, gotCtx = op, repoName, opCtx
-					return false, nil
-				}
-				st := newStorage(t, dataDir)
-				handler := hf.NewHandler(append(catalogOptions(st),
-					hf.WithStorage(st),
-					hf.WithPermissionHookFunc(hook),
-				)...)
-				response := httptest.NewRecorder()
-				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/"+repoType+tc.query, nil))
-				if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "hidden-repo") {
-					t.Errorf("status=%d, want 403 with no repositories enumerated; body=%s", response.Code, response.Body.String())
-				}
-				if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
-					t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
-				}
-				want := permission.Context{Author: tc.want}
-				if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != repoType || gotCtx != want {
-					t.Errorf("hook calls=%d, op=%s, repo=%q, ctx=%+v; want 1, list_repos, %q, %+v", calls, gotOp, gotRepo, gotCtx, repoType, want)
-				}
-			})
+			for _, rf := range listRefusals {
+				t.Run(repoType+"/"+tc.name+"/"+rf.name, func(t *testing.T) {
+					var gotType, gotAuthor string
+					calls := 0
+					list := func(_ context.Context, repoType string, q hf.ListQuery) ([]hf.RepoListItem, bool, error) {
+						calls++
+						gotType, gotAuthor = repoType, q.Author
+						return []hf.RepoListItem{{RepoID: "alice/hidden-repo"}}, false, rf.err
+					}
+					st := newStorage(t, t.TempDir())
+					handler := hf.NewHandler(append(catalogOptions(st),
+						hf.WithStorage(st),
+						hf.WithListReposFunc(list),
+					)...)
+					response := httptest.NewRecorder()
+					handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/"+repoType+tc.query, nil))
+					checkListRefused(t, response, rf.code, rf.fixed)
+					if calls != 1 || gotType != repoType || gotAuthor != tc.want {
+						t.Errorf("callback calls=%d, repoType=%q, author=%q; want 1, %q, %q", calls, gotType, gotAuthor, repoType, tc.want)
+					}
+				})
+			}
 		}
 	}
 }
 
-// TestHandleListUserReposPermission pins that the settings/repositories forms stop at the first denied type.
-func TestHandleListUserReposPermission(t *testing.T) {
+// TestHandleListUserReposCallbackRefusal pins that the settings/repositories forms stop at the first refused type.
+func TestHandleListUserReposCallbackRefusal(t *testing.T) {
 	tests := []struct {
 		name, target, author string
 	}{
@@ -75,40 +93,28 @@ func TestHandleListUserReposPermission(t *testing.T) {
 		{"Organization", "/api/organizations/alice/settings/repositories", "alice"},
 	}
 	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dataDir := t.TempDir()
-			for _, p := range []string{"alice/hidden-repo.git", "datasets/alice/hidden-repo.git"} {
-				if _, err := repository.Init(context.Background(), osfs.Default, filepath.Join(dataDir, "repositories", filepath.FromSlash(p)), "main"); err != nil {
-					t.Fatalf("Init(%s): %v", p, err)
+		for _, rf := range listRefusals {
+			t.Run(tc.name+"/"+rf.name, func(t *testing.T) {
+				var gotType, gotAuthor string
+				calls := 0
+				list := func(_ context.Context, repoType string, q hf.ListQuery) ([]hf.RepoListItem, bool, error) {
+					calls++
+					gotType, gotAuthor = repoType, q.Author
+					return []hf.RepoListItem{{RepoID: "alice/hidden-repo", UsedStorage: 1}}, false, rf.err
 				}
-			}
-			var gotOp permission.Operation
-			var gotRepo string
-			var gotCtx permission.Context
-			calls := 0
-			hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-				calls++
-				gotOp, gotRepo, gotCtx = op, repoName, opCtx
-				return false, nil
-			}
-			st := newStorage(t, dataDir)
-			handler := hf.NewHandler(append(catalogOptions(st),
-				hf.WithStorage(st),
-				hf.WithPermissionHookFunc(hook),
-			)...)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tc.target, nil))
-			if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "hidden-repo") {
-				t.Errorf("status=%d, want 403 with no repositories enumerated; body=%s", response.Code, response.Body.String())
-			}
-			if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") || !json.Valid(response.Body.Bytes()) {
-				t.Errorf("expected JSON response, got headers=%v body=%s", response.Header(), response.Body.String())
-			}
-			want := permission.Context{Author: tc.author}
-			if calls != 1 || gotOp != permission.OperationListRepos || gotRepo != "models" || gotCtx != want {
-				t.Errorf("hook calls=%d, op=%s, repo=%q, ctx=%+v; want 1, list_repos, \"models\", %+v", calls, gotOp, gotRepo, gotCtx, want)
-			}
-		})
+				st := newStorage(t, t.TempDir())
+				handler := hf.NewHandler(append(catalogOptions(st),
+					hf.WithStorage(st),
+					hf.WithListReposFunc(list),
+				)...)
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tc.target, nil))
+				checkListRefused(t, response, rf.code, rf.fixed)
+				if calls != 1 || gotType != "models" || gotAuthor != tc.author {
+					t.Errorf("callback calls=%d, repoType=%q, author=%q; want 1, \"models\", %q", calls, gotType, gotAuthor, tc.author)
+				}
+			})
+		}
 	}
 }
 

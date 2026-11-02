@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
 
 	"github.com/gorilla/mux"
 
-	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -64,10 +65,6 @@ func (h *Handler) handleInfoRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.checkPermission(w, r, repoName, service) {
-		return
-	}
-
 	repo, ok := h.openRepoChecked(w, r, repoName, service)
 	if !ok {
 		return
@@ -96,10 +93,6 @@ func (h *Handler) handleReceivePack(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleService(w http.ResponseWriter, r *http.Request, service string) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
-
-	if !h.checkPermission(w, r, repoName, service) {
-		return
-	}
 
 	repo, ok := h.openRepoChecked(w, r, repoName, service)
 	if !ok {
@@ -182,28 +175,21 @@ func (h *Handler) openRepo(ctx context.Context, repoName, service string) (*repo
 	return repository.Open(h.storage.RepositoriesFS(), repoPath)
 }
 
-// checkPermission runs the permission hook for the service, writing the
-// failure response. It returns true when the request may proceed.
-func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, repoName, service string) bool {
-	op := permission.OperationReadRepo
-	if service == repository.GitReceivePack {
-		op = permission.OperationUpdateRepo
-	}
-	return permission.Guard{
-		Hook:    h.permissionHookFunc,
-		Respond: func(w http.ResponseWriter, msg string, sc int) { responseText(w, msg, sc) },
-	}.Allow(w, r, op, repoName, permission.Context{})
-}
-
 // openRepoChecked opens the repository, mapping open errors to HTTP responses.
 func (h *Handler) openRepoChecked(w http.ResponseWriter, r *http.Request, repoName, service string) (*repository.Repository, bool) {
 	repo, err := h.openRepo(r.Context(), repoName, service)
 	if err != nil {
-		if errors.Is(err, repository.ErrRepositoryNotExists) {
+		switch {
+		case errors.Is(err, fs.ErrPermission):
+			responseText(w, "permission denied", http.StatusForbidden)
+		case errors.Is(err, authenticate.ErrUnauthenticated):
+			w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
+			responseText(w, "Unauthorized", http.StatusUnauthorized)
+		case errors.Is(err, repository.ErrRepositoryNotExists):
 			responseText(w, fmt.Sprintf("repository %q not found", repoName), http.StatusNotFound)
-			return nil, false
+		default:
+			responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		}
-		responseText(w, fmt.Sprintf("Failed to open repository %q: %v", repoName, err), http.StatusInternalServerError)
 		return nil, false
 	}
 	return repo, true

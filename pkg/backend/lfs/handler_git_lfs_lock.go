@@ -12,15 +12,13 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 )
 
 func (h *Handler) handleGetLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	op := permission.OperationReadRepo
-	if !h.checkLockPermission(w, r, op, repoName) {
+	if !h.admit(w, r, repoName, false, "message") {
 		return
 	}
 
@@ -58,8 +56,7 @@ func (h *Handler) handleLocksVerify(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	op := permission.OperationReadRepo
-	if !h.checkLockPermission(w, r, op, repoName) {
+	if !h.admit(w, r, repoName, false, "message") {
 		return
 	}
 
@@ -108,8 +105,7 @@ func (h *Handler) handleCreateLock(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	repoName := vars["repo"]
 
-	op := permission.OperationUpdateRepo
-	if !h.checkLockPermission(w, r, op, repoName) {
+	if !h.admit(w, r, repoName, true, "message") {
 		return
 	}
 
@@ -155,8 +151,7 @@ func (h *Handler) handleDeleteLock(w http.ResponseWriter, r *http.Request) {
 	repoName := vars["repo"]
 	lockId := vars["id"]
 
-	op := permission.OperationUpdateRepo
-	if !h.checkLockPermission(w, r, op, repoName) {
+	if !h.admit(w, r, repoName, true, "message") {
 		return
 	}
 

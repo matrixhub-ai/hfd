@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,6 +62,9 @@ func IdentityFrom(ctx context.Context) Identity {
 	}
 	return id
 }
+
+// ErrUnauthenticated is returned by a pre-open hook or catalog callback to demand credentials; the backends answer 401.
+var ErrUnauthenticated = errors.New("unauthenticated")
 
 // BasicAuthValidator validates username/password credentials: err is a 500, ok authenticates user, next falls through to the next scheme, otherwise 401.
 type BasicAuthValidator interface {

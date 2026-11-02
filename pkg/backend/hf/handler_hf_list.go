@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -20,9 +19,6 @@ import (
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	repoType := mux.Vars(r)["repoType"]
 	q := parseListQuery(r)
-	if !h.checkPermission(w, r, permission.OperationListRepos, repoType, permission.Context{Author: q.Author}) {
-		return
-	}
 
 	items, more, err := h.listReposFunc(r.Context(), repoType, q)
 	if err != nil {
@@ -53,11 +49,6 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleListUserRepos(w http.ResponseWriter, r *http.Request) {
 	namespace := mux.Vars(r)["namespace"]
 	repoTypes := []string{"models", "datasets", "spaces", "kernels"}
-	for _, repoType := range repoTypes {
-		if !h.checkPermission(w, r, permission.OperationListRepos, repoType, permission.Context{Author: namespace}) {
-			return
-		}
-	}
 
 	var result []RepoStorageInfo
 	var total int64

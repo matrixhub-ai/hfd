@@ -3,8 +3,10 @@ package hf
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"net/http"
 
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -93,6 +95,10 @@ func WithWhoamiFunc(fn WhoamiFunc) Option {
 // respondCatalogError maps callback errors to HTTP status codes.
 func respondCatalogError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, fs.ErrPermission):
+		responseJSON(w, "permission denied", http.StatusForbidden)
+	case errors.Is(err, authenticate.ErrUnauthenticated):
+		responseJSON(w, "Unauthorized", http.StatusUnauthorized)
 	case errors.Is(err, repository.ErrRepositoryNotExists):
 		responseJSON(w, err, http.StatusNotFound)
 	case errors.Is(err, repository.ErrRepositoryAlreadyExists):

@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendssh "github.com/matrixhub-ai/hfd/pkg/backend/ssh"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -691,8 +691,12 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 	if _, err := generateClientKeyFile(badKeyFile); err != nil {
 		t.Fatal(err)
 	}
+	type call struct {
+		name, repo string
+		write      bool
+	}
 	var mu sync.Mutex
-	var names []string
+	var calls []call
 	server := backendssh.NewServer(
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(newStorage(t, repoDir, native)),
@@ -700,11 +704,11 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 			string(boundKey.Marshal()): "deploy",
 			string(freeKey.Marshal()):  "",
 		})),
-		backendssh.WithPermissionHookFunc(func(ctx context.Context, _ permission.Operation, _ string, _ permission.Context) (bool, error) {
+		backendssh.WithPreOpenHookFunc(func(ctx context.Context, repo string, write bool) error {
 			mu.Lock()
 			defer mu.Unlock()
-			names = append(names, authenticate.IdentityFrom(ctx).Name())
-			return true, nil
+			calls = append(calls, call{authenticate.IdentityFrom(ctx).Name(), repo, write})
+			return nil
 		}),
 	)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -726,7 +730,7 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mu.Lock()
-			names = nil
+			calls = nil
 			mu.Unlock()
 			sshURL := "ssh://" + test.user + "@" + addr.String() + "/" + repoName
 			sshCmd := fmt.Sprintf("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o BatchMode=yes -i %s -p %d", test.keyFile, addr.Port)
@@ -740,22 +744,20 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 				}
 			} else {
 				runGitCmd(t, "", env, "clone", sshURL, cloneDir)
+				runGitCmd(t, cloneDir, env, "-c", "user.name=Test User", "-c", "user.email=test@test.com", "commit", "--allow-empty", "-m", test.name)
+				runGitCmd(t, cloneDir, env, "push", "origin", "HEAD")
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if test.want == "" {
-				if len(names) != 0 {
-					t.Fatalf("unauthorized key reached permission hook: %v", names)
+				if len(calls) != 0 {
+					t.Fatalf("unauthorized key reached the pre-open hook: %v", calls)
 				}
 				return
 			}
-			if len(names) == 0 {
-				t.Fatal("permission hook was not called")
-			}
-			for _, name := range names {
-				if name != test.want {
-					t.Errorf("identity name = %q, want %q", name, test.want)
-				}
+			// The clone runs git-upload-pack and the push git-receive-pack, both as the key's identity.
+			if want := []call{{test.want, "/" + repoName, false}, {test.want, "/" + repoName, true}}; !slices.Equal(calls, want) {
+				t.Errorf("pre-open calls = %v, want %v", calls, want)
 			}
 		})
 	}
@@ -1259,16 +1261,19 @@ func testSSHPreOpenHook(t *testing.T, native bool) {
 	}
 	var mu sync.Mutex
 	var calls []call
+	var hookErr error
 	server := backendssh.NewServer(backendssh.WithHostKey(hostKey), backendssh.WithStorage(st),
+		backendssh.WithLFSURL("http://localhost:8080"),
+		backendssh.WithTokenSignValidator(authenticate.NewTokenSignValidator([]byte("secret"))),
 		backendssh.WithPreOpenHookFunc(func(ctx context.Context, repoName string, write bool) error {
 			mu.Lock()
 			calls = append(calls, call{repoName, write})
+			err := hookErr
 			mu.Unlock()
-			if repoName == "/late.git" {
-				_, err := repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(repoName), "main")
-				return err
+			if err == nil && repoName == "/late.git" {
+				_, err = repository.Init(ctx, st.RepositoriesFS(), repository.ResolvePath(repoName), "main")
 			}
-			return nil
+			return err
 		}))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1279,22 +1284,32 @@ func testSSHPreOpenHook(t *testing.T, native bool) {
 		_ = server.Serve(t.Context(), listener)
 	}()
 
+	denied := fmt.Errorf("pull-only mirror is read-only: %w", fs.ErrPermission)
 	for _, test := range []struct {
 		name   string
 		cmd    string
+		err    error
 		exit   int
 		stderr string
 		calls  []call
 	}{
-		{"UploadPack", "git-upload-pack 'test-repo'", 0, "", []call{{"test-repo", false}}},
-		{"ReceivePack", "git-receive-pack '/test-repo.git'", 0, "", []call{{"/test-repo.git", true}}},
-		{"HookCreatesRepository", "git-upload-pack '/late.git'", 0, "", []call{{"/late.git", false}}},
-		{"MissingRepository", "git-upload-pack '/missing.git'", 1, "repository not found\n", []call{{"/missing.git", false}}},
-		{"InvalidName", "git-upload-pack '/org/../repo.git'", 1, "repository not found\n", nil},
+		{"UploadPack", "git-upload-pack 'test-repo'", nil, 0, "", []call{{"test-repo", false}}},
+		{"ReceivePack", "git-receive-pack '/test-repo.git'", nil, 0, "", []call{{"/test-repo.git", true}}},
+		{"HookCreatesRepository", "git-upload-pack '/late.git'", nil, 0, "", []call{{"/late.git", false}}},
+		{"MissingRepository", "git-upload-pack '/missing.git'", nil, 1, "repository not found\n", []call{{"/missing.git", false}}},
+		{"InvalidName", "git-upload-pack '/org/../repo.git'", nil, 1, "repository not found\n", nil},
+		{"DeniedUploadPack", "git-upload-pack '/test-repo.git'", denied, 1, "permission denied\n", []call{{"/test-repo.git", false}}},
+		{"DeniedReceivePack", "git-receive-pack '/test-repo.git'", denied, 1, "permission denied\n", []call{{"/test-repo.git", true}}},
+		{"Unauthenticated", "git-receive-pack '/test-repo.git'", fmt.Errorf("sign in first: %w", authenticate.ErrUnauthenticated), 1, "authentication required\n", []call{{"/test-repo.git", true}}},
+		{"HookNotExists", "git-upload-pack '/test-repo.git'", fmt.Errorf("no upstream: %w", repository.ErrRepositoryNotExists), 1, "repository not found\n", []call{{"/test-repo.git", false}}},
+		{"HookError", "git-upload-pack '/test-repo.git'", errors.New("boom"), 1, "", []call{{"/test-repo.git", false}}},
+		{"LFSDownload", "git-lfs-authenticate '/test-repo.git' download", nil, 0, "", []call{{"/test-repo.git", false}}},
+		{"LFSUpload", "git-lfs-authenticate '/test-repo.git' upload", nil, 0, "", []call{{"/test-repo.git", true}}},
+		{"LFSDeniedUpload", "git-lfs-authenticate '/test-repo.git' upload", denied, 1, "permission denied\n", []call{{"/test-repo.git", true}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mu.Lock()
-			calls = nil
+			calls, hookErr = nil, test.err
 			mu.Unlock()
 			client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{User: "git", HostKeyCallback: ssh.InsecureIgnoreHostKey()})
 			if err != nil {
@@ -1306,9 +1321,13 @@ func testSSHPreOpenHook(t *testing.T, native bool) {
 				t.Fatalf("Failed to create session: %v", err)
 			}
 			defer session.Close()
-			var stderr strings.Builder
-			// A lone flush packet ends the service right after the advertisement.
-			session.Stdin = strings.NewReader("0000")
+			var stdout, stderr strings.Builder
+			// git-lfs-authenticate never reads stdin; a write landing after it closes the channel makes Run return io.EOF.
+			if !strings.HasPrefix(test.cmd, repository.GitLFSAuthenticate) {
+				// A lone flush packet ends the service right after the advertisement.
+				session.Stdin = strings.NewReader("0000")
+			}
+			session.Stdout = &stdout
 			session.Stderr = &stderr
 			exit := 0
 			if err := session.Run(test.cmd); err != nil {
@@ -1320,6 +1339,18 @@ func testSSHPreOpenHook(t *testing.T, native bool) {
 			}
 			if exit != test.exit || stderr.String() != test.stderr {
 				t.Errorf("exit = %d, stderr = %q; want %d, %q", exit, stderr.String(), test.exit, test.stderr)
+			}
+			if test.exit != 0 && stdout.Len() != 0 {
+				t.Errorf("refused command wrote %q to stdout, want nothing", stdout.String())
+			}
+			if test.exit == 0 && strings.HasPrefix(test.cmd, repository.GitLFSAuthenticate) {
+				var resp struct {
+					Href   string            `json:"href"`
+					Header map[string]string `json:"header"`
+				}
+				if err := json.Unmarshal([]byte(stdout.String()), &resp); err != nil || resp.Href != "http://localhost:8080/test-repo.git/info/lfs" || !strings.HasPrefix(resp.Header["Authorization"], "Bearer ") {
+					t.Errorf("git-lfs-authenticate output = %q (%v), want the LFS href and a bearer token", stdout.String(), err)
+				}
 			}
 			mu.Lock()
 			defer mu.Unlock()

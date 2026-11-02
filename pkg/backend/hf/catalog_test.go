@@ -19,7 +19,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
@@ -46,10 +45,6 @@ func TestCatalogRoutesFallThrough(t *testing.T) {
 	var calls []string
 	h := NewHandler(
 		WithStorage(st),
-		WithPermissionHookFunc(func(_ context.Context, op permission.Operation, repo string, _ permission.Context) (bool, error) {
-			calls = append(calls, fmt.Sprintf("permission %v %s", op, repo))
-			return true, nil
-		}),
 		WithPreOpenHookFunc(func(_ context.Context, repo string, _ bool) error {
 			calls = append(calls, "preopen "+repo)
 			return nil
@@ -194,16 +189,13 @@ func (f *catalogFakes) options() []Option {
 	}
 }
 
-// newCatalogHandler builds a handler with fake callbacks, recording hooks, and extra; storage stays nil unless extra sets it.
+// newCatalogHandler builds a handler with fake callbacks, hooks recorded as "preopen <name> <write>" (pre-open returning hookErr), and extra; storage stays nil unless extra sets it.
 func newCatalogHandler(t *testing.T, fakes *catalogFakes, hookErr error, hooks *[]string, extra ...Option) *Handler {
 	t.Helper()
 	opts := append(fakes.options(),
-		WithPermissionHookFunc(func(_ context.Context, op permission.Operation, repo string, pc permission.Context) (bool, error) {
-			*hooks = append(*hooks, fmt.Sprintf("permission %v %s %+v", op, repo, pc))
-			if hookErr != nil {
-				return false, hookErr
-			}
-			return true, nil
+		WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
+			*hooks = append(*hooks, fmt.Sprintf("preopen %s %v", name, write))
+			return hookErr
 		}),
 		WithPostReceiveHookFunc(func(_ context.Context, repo string, updates []receive.RefUpdate) error {
 			*hooks = append(*hooks, fmt.Sprintf("postreceive %s %d", repo, len(updates)))
@@ -223,26 +215,43 @@ func serveAs(h *Handler, method, target, body string, id authenticate.Identity) 
 
 var alice = authenticate.NewIdentity("alice", "alice@example.com")
 
+// Refusals whose messages must never reach the client.
+var (
+	testDenied          = fmt.Errorf("policy says no: %w", fs.ErrPermission)
+	testUnauthenticated = fmt.Errorf("token expired: %w", authenticate.ErrUnauthenticated)
+)
+
+// assertFixedError fails unless rec is code with exactly {"error":text} and no WWW-Authenticate challenge.
+func assertFixedError(t *testing.T, rec *httptest.ResponseRecorder, code int, text string) {
+	t.Helper()
+	want, _ := json.Marshal(map[string]string{"error": text})
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != code || body != string(want) {
+		t.Errorf("status = %d, body = %s; want %d %s", rec.Code, body, code, want)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("WWW-Authenticate = %q, want none", got)
+	}
+}
+
 func TestCatalogCallbackArguments(t *testing.T) {
 	cursor := encodeCursorOffset(3)
 	tests := []struct {
 		name, method, target, body   string
 		wantCall, wantHook, wantBody string
 	}{
+		// Only move admits through pre-open; the other callbacks judge the caller themselves.
 		{"Create", http.MethodPost, "/api/repos/create", `{"type":"dataset","name":"repo","organization":"org","private":true}`,
-			"create datasets/org/repo {Type:dataset Name:repo Organization:org Private:true}",
-			"permission create_repo datasets/org/repo {Ref: DestRepo: Author:}",
+			"create datasets/org/repo {Type:dataset Name:repo Organization:org Private:true}", "",
 			`{"url":"http://example.com/datasets/org/repo"}`},
 		{"Delete", http.MethodDelete, "/api/repos/delete", `{"type":"space","name":"repo","organization":"org"}`,
-			"delete spaces/org/repo", "permission delete_repo spaces/org/repo {Ref: DestRepo: Author:}", ""},
+			"delete spaces/org/repo", "", ""},
 		{"Move", http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`,
-			"move datasets/org/repo datasets/org/moved", "permission move_repo datasets/org/repo {Ref: DestRepo:datasets/org/moved Author:}",
+			"move datasets/org/repo datasets/org/moved", "preopen datasets/org/repo true",
 			`{"url":"http://example.com/datasets/org/moved"}`},
 		{"Settings", http.MethodPut, "/api/spaces/org/repo/settings", `{"private":true,"gated":"auto"}`,
-			"settings spaces/org/repo true auto", "permission update_repo spaces/org/repo {Ref: DestRepo: Author:}", ""},
+			"settings spaces/org/repo true auto", "", ""},
 		{"List", http.MethodGet, "/api/datasets?search=llm&author=org&filter=a&filter=b&sort=likes&limit=2&cursor=" + cursor, "",
-			"list datasets {Search:llm Author:org FilterTags:[a b] SortField:likes Expand:[] Limit:2 Offset:3}",
-			"permission list_repos datasets {Ref: DestRepo: Author:org}", `[]`},
+			"list datasets {Search:llm Author:org FilterTags:[a b] SortField:likes Expand:[] Limit:2 Offset:3}", "", `[]`},
 		{"Whoami", http.MethodGet, "/api/whoami-v2", "", "whoami alice", "", `"name":"custom-alice"`},
 	}
 	for _, tc := range tests {
@@ -271,8 +280,7 @@ func TestCatalogCallbackArguments(t *testing.T) {
 	}
 }
 
-// TestCatalogListUserReposArguments pins that the settings/repositories forms gate and then call the
-// list callback once per repository type, in order, with the namespace as author.
+// TestCatalogListUserReposArguments pins one list call per repository type with the namespace as author and no pre-open call.
 func TestCatalogListUserReposArguments(t *testing.T) {
 	tests := []struct {
 		name, target, author string
@@ -291,16 +299,15 @@ func TestCatalogListUserReposArguments(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 			}
-			var wantCalls, wantHooks []string
+			var wantCalls []string
 			for _, repoType := range []string{"models", "datasets", "spaces", "kernels"} {
 				wantCalls = append(wantCalls, fmt.Sprintf("list %s %+v", repoType, ListQuery{Author: tc.author, Expand: []string{"lastModified", "usedStorage"}}))
-				wantHooks = append(wantHooks, "permission list_repos "+repoType+" {Ref: DestRepo: Author:"+tc.author+"}")
 			}
 			if fmt.Sprint(fakes.calls) != fmt.Sprint(wantCalls) {
 				t.Errorf("callback calls = %q, want %q", fakes.calls, wantCalls)
 			}
-			if fmt.Sprint(hooks) != fmt.Sprint(wantHooks) {
-				t.Errorf("hook calls = %q, want %q", hooks, wantHooks)
+			if len(hooks) != 0 {
+				t.Errorf("hook calls = %q, want none", hooks)
 			}
 			if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
 				t.Errorf("body = %s, want []", body)
@@ -378,7 +385,7 @@ func TestParseListQueryExpand(t *testing.T) {
 	}
 }
 
-// TestCatalogCallbackSkipped pins that gates run before the callback and never reach it.
+// TestCatalogCallbackSkipped pins that admission refusals and invalid requests never reach the callback.
 func TestCatalogCallbackSkipped(t *testing.T) {
 	tests := []struct {
 		name, method, target, body string
@@ -386,15 +393,7 @@ func TestCatalogCallbackSkipped(t *testing.T) {
 		hookErr                    error
 		want                       int
 	}{
-		{"CreateDenied", http.MethodPost, "/api/repos/create", `{"name":"repo","organization":"org"}`, alice, permission.ErrDenied, http.StatusForbidden},
-		{"DeleteDenied", http.MethodDelete, "/api/repos/delete", `{"name":"repo","organization":"org"}`, alice, permission.ErrDenied, http.StatusForbidden},
-		{"MoveDenied", http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved"}`, alice, permission.ErrDenied, http.StatusForbidden},
-		{"SettingsDenied", http.MethodPut, "/api/models/org/repo/settings", `{}`, alice, permission.ErrDenied, http.StatusForbidden},
-		{"ListDenied", http.MethodGet, "/api/models", "", alice, permission.ErrDenied, http.StatusForbidden},
-		{"ListHookError", http.MethodGet, "/api/models", "", alice, errors.New("boom"), http.StatusInternalServerError},
-		{"ListUserReposDenied", http.MethodGet, "/api/settings/repositories", "", alice, permission.ErrDenied, http.StatusForbidden},
-		{"ListOrgReposDenied", http.MethodGet, "/api/organizations/org/settings/repositories", "", alice, permission.ErrDenied, http.StatusForbidden},
-		{"ListUserReposHookError", http.MethodGet, "/api/settings/repositories", "", alice, errors.New("boom"), http.StatusInternalServerError},
+		{"MoveDenied", http.MethodPost, "/api/repos/move", `{"fromRepo":"org/repo","toRepo":"org/moved"}`, alice, testDenied, http.StatusForbidden},
 		{"CreateMalformed", http.MethodPost, "/api/repos/create", `{not json`, alice, nil, http.StatusBadRequest},
 		{"DeleteMalformed", http.MethodDelete, "/api/repos/delete", `{not json`, alice, nil, http.StatusBadRequest},
 		{"MoveMalformed", http.MethodPost, "/api/repos/move", `{not json`, alice, nil, http.StatusBadRequest},
@@ -428,12 +427,15 @@ func TestCatalogCallbackSkipped(t *testing.T) {
 
 func TestCatalogCallbackErrors(t *testing.T) {
 	statuses := []struct {
-		err  error
-		want int
+		err   error
+		want  int
+		fixed string // the error text answered instead of err's
 	}{
-		{fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound},
-		{fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict},
-		{errors.New("backend down"), http.StatusInternalServerError},
+		{testDenied, http.StatusForbidden, "permission denied"},
+		{testUnauthenticated, http.StatusUnauthorized, "Unauthorized"},
+		{fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound, ""},
+		{fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict, ""},
+		{errors.New("backend down"), http.StatusInternalServerError, ""},
 	}
 	for _, tc := range catalogRequests {
 		if strings.HasSuffix(tc.target, "/duplicate/status") {
@@ -446,7 +448,9 @@ func TestCatalogCallbackErrors(t *testing.T) {
 				h := newCatalogHandler(t, fakes, nil, &hooks)
 				rec := serveAs(h, tc.method, tc.target, tc.body, alice)
 				var body struct{ Error string }
-				if rec.Code != sc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != sc.err.Error() {
+				if sc.fixed != "" {
+					assertFixedError(t, rec, sc.want, sc.fixed)
+				} else if rec.Code != sc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != sc.err.Error() {
 					t.Errorf("status = %d, body = %s; want %d with error %q", rec.Code, rec.Body, sc.want, sc.err)
 				}
 				if len(fakes.calls) != 1 {
@@ -515,10 +519,10 @@ func TestCatalogListPage(t *testing.T) {
 	}
 }
 
-// TestDuplicateRepo pins that the destination takes the source's type prefix, that every gate and the pre-open hook run before the callback, and that no post-receive follows it.
+// TestDuplicateRepo pins that the destination takes the source's type prefix, that pre-open admits the source as a read before the callback, and that no post-receive follows it.
 func TestDuplicateRepo(t *testing.T) {
 	const datasetTarget = "/api/datasets/org/repo/duplicate"
-	const dupCheck = "permission duplicate_repo datasets/org/repo {Ref: DestRepo:datasets/org/copy Author:}"
+	const preopen = "preopen datasets/org/repo false"
 
 	for _, tc := range []struct {
 		name, target, body, wantCall, wantURL string
@@ -526,19 +530,15 @@ func TestDuplicateRepo(t *testing.T) {
 	}{
 		{"SuccessDataset", datasetTarget, `{"repository":"org/copy","private":true}`,
 			"duplicate datasets/org/repo datasets/org/copy {Repository:org/copy Private:true Visibility:}", "http://example.com/datasets/org/copy",
-			[]string{dupCheck, "preopen datasets/org/repo false"}},
+			[]string{preopen}},
 		{"SuccessModel", "/api/models/org/repo/duplicate", `{"repository":"org/copy"}`,
 			"duplicate org/repo org/copy {Repository:org/copy Private:false Visibility:}", "http://example.com/org/copy",
-			[]string{"permission duplicate_repo org/repo {Ref: DestRepo:org/copy Author:}", "preopen org/repo false"}},
+			[]string{"preopen org/repo false"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
 			var hooks []string
-			h := newCatalogHandler(t, fakes, nil, &hooks, WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-				hooks = append(hooks, fmt.Sprintf("preopen %s %v", name, write))
-				return nil
-			}))
-			rec := serveAs(h, http.MethodPost, tc.target, tc.body, alice)
+			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, tc.target, tc.body, alice)
 			var body map[string]any
 			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil ||
 				!maps.Equal(body, map[string]any{"url": tc.wantURL, "filesCopyPending": false}) {
@@ -557,24 +557,27 @@ func TestDuplicateRepo(t *testing.T) {
 		name, body string
 		hookErr    error
 		want       int
-		wantHooks  []string
+		fixed      string
+		wantCalls  []string
 	}{
-		{"Denied", `{"repository":"org/copy"}`, permission.ErrDenied, http.StatusForbidden, []string{dupCheck}},
-		{"HookError", `{"repository":"org/copy"}`, errors.New("boom"), http.StatusInternalServerError, []string{dupCheck}},
-		{"Malformed", `{not json`, nil, http.StatusBadRequest, nil},
+		{"PreOpenBeforeCallback", `{"repository":"org/copy"}`, nil, http.StatusOK, "",
+			[]string{preopen, "duplicate datasets/org/repo datasets/org/copy {Repository:org/copy Private:false Visibility:}"}},
+		{"PreOpenDenied", `{"repository":"org/copy"}`, testDenied, http.StatusForbidden, "permission denied", []string{preopen}},
+		{"PreOpenUnauthenticated", `{"repository":"org/copy"}`, testUnauthenticated, http.StatusUnauthorized, "Unauthorized", []string{preopen}},
+		{"PreOpenNotExists", `{"repository":"org/copy"}`, repository.ErrRepositoryNotExists, http.StatusNotFound, "", []string{preopen}},
+		{"PreOpenError", `{"repository":"org/copy"}`, errors.New("sync failed"), http.StatusInternalServerError, "", []string{preopen}},
+		{"Malformed", `{not json`, nil, http.StatusBadRequest, "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
-			var hooks []string
-			rec := serveAs(newCatalogHandler(t, fakes, tc.hookErr, &hooks), http.MethodPost, datasetTarget, tc.body, alice)
-			if rec.Code != tc.want {
+			rec := serveAs(newCatalogHandler(t, fakes, tc.hookErr, &fakes.calls), http.MethodPost, datasetTarget, tc.body, alice)
+			if tc.fixed != "" {
+				assertFixedError(t, rec, tc.want, tc.fixed)
+			} else if rec.Code != tc.want {
 				t.Errorf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body)
 			}
-			if len(fakes.calls) != 0 {
-				t.Errorf("callback calls = %q, want none", fakes.calls)
-			}
-			if !slices.Equal(hooks, tc.wantHooks) {
-				t.Errorf("hook calls = %q, want %q", hooks, tc.wantHooks)
+			if !slices.Equal(fakes.calls, tc.wantCalls) {
+				t.Errorf("pre-open and callback calls = %q, want %q", fakes.calls, tc.wantCalls)
 			}
 		})
 	}
@@ -593,12 +596,8 @@ func TestDuplicateRepo(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
-			var hooks, opens []string
-			h := newCatalogHandler(t, fakes, nil, &hooks, WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-				opens = append(opens, fmt.Sprintf("preopen %s %v", name, write))
-				return nil
-			}))
-			rec := serveAs(h, http.MethodPost, datasetTarget, fmt.Sprintf(`{"repository":%q}`, tc.dest), alice)
+			var hooks []string
+			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, datasetTarget, fmt.Sprintf(`{"repository":%q}`, tc.dest), alice)
 			var body struct{ Error string }
 			if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != fmt.Sprintf("invalid destination repository: %q", tc.dest) {
 				t.Errorf("status = %d, body = %s; want 400 naming %q", rec.Code, rec.Body, tc.dest)
@@ -606,74 +605,48 @@ func TestDuplicateRepo(t *testing.T) {
 			if len(fakes.calls) != 0 {
 				t.Errorf("callback calls = %q, want none", fakes.calls)
 			}
-			// One permission check and no pre-open pin the destination 400 between the two.
-			if want := fmt.Sprintf("permission duplicate_repo datasets/org/repo {Ref: DestRepo:datasets/%s Author:}", tc.dest); !slices.Equal(hooks, []string{want}) {
-				t.Errorf("hook calls = %q, want exactly [%q]", hooks, want)
-			}
-			if len(opens) != 0 {
-				t.Errorf("pre-open calls = %q, want none", opens)
+			// The destination is refused before admission.
+			if len(hooks) != 0 {
+				t.Errorf("hook calls = %q, want none", hooks)
 			}
 		})
 	}
 
 	for _, tc := range []struct {
-		name string
-		err  error
-		want int
+		name  string
+		err   error
+		want  int
+		fixed string
 	}{
-		{"CallbackNotExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound},
-		{"CallbackAlreadyExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict},
-		{"CallbackError", errors.New("backend down"), http.StatusInternalServerError},
+		{"CallbackDenied", testDenied, http.StatusForbidden, "permission denied"},
+		{"CallbackUnauthenticated", testUnauthenticated, http.StatusUnauthorized, "Unauthorized"},
+		{"CallbackNotExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound, ""},
+		{"CallbackAlreadyExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict, ""},
+		{"CallbackError", errors.New("backend down"), http.StatusInternalServerError, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{err: tc.err}
 			var hooks []string
 			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, datasetTarget, `{"repository":"org/copy"}`, alice)
-			var body map[string]any
-			if rec.Code != tc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["error"] != tc.err.Error() {
-				t.Errorf("status = %d, body = %s; want %d with error %q", rec.Code, rec.Body, tc.want, tc.err)
+			if tc.fixed != "" {
+				assertFixedError(t, rec, tc.want, tc.fixed)
+			} else {
+				var body map[string]any
+				if rec.Code != tc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["error"] != tc.err.Error() {
+					t.Errorf("status = %d, body = %s; want %d with error %q", rec.Code, rec.Body, tc.want, tc.err)
+				}
+				if tc.want == http.StatusConflict && (body["url"] != "http://example.com/datasets/org/copy" || body["filesCopyPending"] != false) {
+					t.Errorf("conflict body = %s, want url http://example.com/datasets/org/copy and filesCopyPending false", rec.Body)
+				}
 			}
-			if tc.want == http.StatusConflict && (body["url"] != "http://example.com/datasets/org/copy" || body["filesCopyPending"] != false) {
-				t.Errorf("conflict body = %s, want url http://example.com/datasets/org/copy and filesCopyPending false", rec.Body)
-			}
-			if !slices.Equal(hooks, []string{dupCheck}) {
-				t.Errorf("hook calls = %q, want only %q", hooks, dupCheck)
-			}
-		})
-	}
-
-	const preopen = "preopen datasets/org/repo false"
-	for _, tc := range []struct {
-		name             string
-		hookErr, openErr error
-		want             int
-		wantCalls        []string
-	}{
-		{"PreOpenBeforeCallback", nil, nil, http.StatusOK,
-			[]string{preopen, "duplicate datasets/org/repo datasets/org/copy {Repository:org/copy Private:false Visibility:}"}},
-		{"PreOpenNotExists", nil, repository.ErrRepositoryNotExists, http.StatusNotFound, []string{preopen}},
-		{"PreOpenError", nil, errors.New("sync failed"), http.StatusInternalServerError, []string{preopen}},
-		{"PreOpenSkippedWhenDenied", permission.ErrDenied, nil, http.StatusForbidden, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fakes := &catalogFakes{}
-			var hooks []string
-			h := newCatalogHandler(t, fakes, tc.hookErr, &hooks, WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-				fakes.calls = append(fakes.calls, fmt.Sprintf("preopen %s %v", name, write))
-				return tc.openErr
-			}))
-			rec := serveAs(h, http.MethodPost, datasetTarget, `{"repository":"org/copy"}`, alice)
-			if rec.Code != tc.want {
-				t.Errorf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body)
-			}
-			if !slices.Equal(fakes.calls, tc.wantCalls) {
-				t.Errorf("pre-open and callback calls = %q, want %q", fakes.calls, tc.wantCalls)
+			if !slices.Equal(hooks, []string{preopen}) {
+				t.Errorf("hook calls = %q, want only %q", hooks, preopen)
 			}
 		})
 	}
 }
 
-// TestDuplicateStatus pins that the status endpoint is a read-gated open that reports nothing pending.
+// TestDuplicateStatus pins that the status endpoint is a read-admitted open that reports nothing pending.
 func TestDuplicateStatus(t *testing.T) {
 	st := newStorage(t, t.TempDir())
 	if _, err := repository.Init(context.Background(), st.RepositoriesFS(), repository.ResolvePath("datasets/org/repo"), "main"); err != nil {
@@ -681,68 +654,49 @@ func TestDuplicateStatus(t *testing.T) {
 	}
 
 	t.Run("Exists", func(t *testing.T) {
-		var hooks, opens []string
-		h := newCatalogHandler(t, &catalogFakes{}, nil, &hooks, WithStorage(st), WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-			opens = append(opens, fmt.Sprintf("preopen %s %v", name, write))
-			return nil
-		}))
+		var hooks []string
+		h := newCatalogHandler(t, &catalogFakes{}, nil, &hooks, WithStorage(st))
 		rec := serveAs(h, http.MethodGet, "/api/datasets/org/repo/duplicate/status", "", alice)
 		if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || body != `{"pending":false}` {
 			t.Errorf("status = %d, body = %s; want 200 %s", rec.Code, body, `{"pending":false}`)
 		}
-		if want := []string{"permission read_repo datasets/org/repo {Ref: DestRepo: Author:}"}; !slices.Equal(hooks, want) {
+		if want := []string{"preopen datasets/org/repo false"}; !slices.Equal(hooks, want) {
 			t.Errorf("hook calls = %q, want %q", hooks, want)
-		}
-		// A pre-open call shows the open goes through openRepoChecked, not openRepoDirect.
-		if want := []string{"preopen datasets/org/repo false"}; !slices.Equal(opens, want) {
-			t.Errorf("pre-open calls = %q, want %q", opens, want)
 		}
 	})
 
 	t.Run("Missing", func(t *testing.T) {
-		var hooks, opens []string
-		h := newCatalogHandler(t, &catalogFakes{}, nil, &hooks, WithStorage(st), WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-			opens = append(opens, fmt.Sprintf("preopen %s %v", name, write))
-			return nil
-		}))
+		var hooks []string
+		h := newCatalogHandler(t, &catalogFakes{}, nil, &hooks, WithStorage(st))
 		rec := serveAs(h, http.MethodGet, "/api/datasets/org/missing/duplicate/status", "", alice)
 		var body struct{ Error string }
 		if rec.Code != http.StatusNotFound || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != `repository "datasets/org/missing" not found` {
 			t.Errorf("status = %d, body = %s; want 404 naming datasets/org/missing", rec.Code, rec.Body)
 		}
-		if want := []string{"permission read_repo datasets/org/missing {Ref: DestRepo: Author:}"}; !slices.Equal(hooks, want) {
+		if want := []string{"preopen datasets/org/missing false"}; !slices.Equal(hooks, want) {
 			t.Errorf("hook calls = %q, want %q", hooks, want)
-		}
-		if want := []string{"preopen datasets/org/missing false"}; !slices.Equal(opens, want) {
-			t.Errorf("pre-open calls = %q, want %q", opens, want)
 		}
 	})
 }
 
-// TestMoveRepo pins that both names take the request type's prefix, that every gate and the pre-open hook run before the callback, and that no post-receive follows it.
+// TestMoveRepo pins that both names take the request type's prefix, that pre-open admits the source as a write once both names are valid and before the callback, and that no post-receive follows it.
 func TestMoveRepo(t *testing.T) {
 	const datasetBody = `{"fromRepo":"org/repo","toRepo":"org/moved","type":"dataset"}`
-	const moveCheck = "permission move_repo datasets/org/repo {Ref: DestRepo:datasets/org/moved Author:}"
-	recordPreOpen := func(into *[]string, err error) Option {
-		return WithPreOpenHookFunc(func(_ context.Context, name string, write bool) error {
-			*into = append(*into, fmt.Sprintf("preopen %s %v", name, write))
-			return err
-		})
-	}
+	const preopen = "preopen datasets/org/repo true"
 
 	for _, tc := range []struct {
 		name, body, wantCall, wantURL string
 		wantHooks                     []string
 	}{
 		{"SuccessDataset", datasetBody, "move datasets/org/repo datasets/org/moved", "http://example.com/datasets/org/moved",
-			[]string{moveCheck, "preopen datasets/org/repo false"}},
+			[]string{preopen}},
 		{"SuccessModel", `{"fromRepo":"org/repo","toRepo":"org/moved"}`, "move org/repo org/moved", "http://example.com/org/moved",
-			[]string{"permission move_repo org/repo {Ref: DestRepo:org/moved Author:}", "preopen org/repo false"}},
+			[]string{"preopen org/repo true"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
 			var hooks []string
-			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks, recordPreOpen(&hooks, nil)), http.MethodPost, "/api/repos/move", tc.body, alice)
+			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, "/api/repos/move", tc.body, alice)
 			var body map[string]any
 			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil || !maps.Equal(body, map[string]any{"url": tc.wantURL}) {
 				t.Errorf("status = %d, body = %s; want 200 with only url %s", rec.Code, rec.Body, tc.wantURL)
@@ -760,24 +714,26 @@ func TestMoveRepo(t *testing.T) {
 		name, body string
 		hookErr    error
 		want       int
-		wantHooks  []string
+		fixed      string
+		wantCalls  []string
 	}{
-		{"Denied", datasetBody, permission.ErrDenied, http.StatusForbidden, []string{moveCheck}},
-		{"HookError", datasetBody, errors.New("boom"), http.StatusInternalServerError, []string{moveCheck}},
-		{"Malformed", `{not json`, nil, http.StatusBadRequest, nil},
+		{"PreOpenBeforeCallback", datasetBody, nil, http.StatusOK, "", []string{preopen, "move datasets/org/repo datasets/org/moved"}},
+		{"PreOpenDenied", datasetBody, testDenied, http.StatusForbidden, "permission denied", []string{preopen}},
+		{"PreOpenUnauthenticated", datasetBody, testUnauthenticated, http.StatusUnauthorized, "Unauthorized", []string{preopen}},
+		{"PreOpenNotExists", datasetBody, repository.ErrRepositoryNotExists, http.StatusNotFound, "", []string{preopen}},
+		{"PreOpenError", datasetBody, errors.New("sync failed"), http.StatusInternalServerError, "", []string{preopen}},
+		{"Malformed", `{not json`, nil, http.StatusBadRequest, "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
-			var hooks []string
-			rec := serveAs(newCatalogHandler(t, fakes, tc.hookErr, &hooks, recordPreOpen(&hooks, nil)), http.MethodPost, "/api/repos/move", tc.body, alice)
-			if rec.Code != tc.want {
+			rec := serveAs(newCatalogHandler(t, fakes, tc.hookErr, &fakes.calls), http.MethodPost, "/api/repos/move", tc.body, alice)
+			if tc.fixed != "" {
+				assertFixedError(t, rec, tc.want, tc.fixed)
+			} else if rec.Code != tc.want {
 				t.Errorf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body)
 			}
-			if len(fakes.calls) != 0 {
-				t.Errorf("callback calls = %q, want none", fakes.calls)
-			}
-			if !slices.Equal(hooks, tc.wantHooks) {
-				t.Errorf("hook calls = %q, want %q", hooks, tc.wantHooks)
+			if !slices.Equal(fakes.calls, tc.wantCalls) {
+				t.Errorf("pre-open and callback calls = %q, want %q", fakes.calls, tc.wantCalls)
 			}
 		})
 	}
@@ -794,8 +750,7 @@ func TestMoveRepo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
 			var hooks []string
-			h := newCatalogHandler(t, fakes, nil, &hooks, recordPreOpen(&hooks, nil))
-			rec := serveAs(h, http.MethodPost, "/api/repos/move", fmt.Sprintf(`{"fromRepo":%q,"toRepo":"org/moved","type":"dataset"}`, tc.from), alice)
+			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, "/api/repos/move", fmt.Sprintf(`{"fromRepo":%q,"toRepo":"org/moved","type":"dataset"}`, tc.from), alice)
 			var body struct{ Error string }
 			if rec.Code != http.StatusNotFound || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != fmt.Sprintf("repository %q not found", "datasets/"+tc.from) {
 				t.Errorf("status = %d, body = %s; want 404 naming %q", rec.Code, rec.Body, "datasets/"+tc.from)
@@ -803,9 +758,9 @@ func TestMoveRepo(t *testing.T) {
 			if len(fakes.calls) != 0 {
 				t.Errorf("callback calls = %q, want none", fakes.calls)
 			}
-			// One permission check and no pre-open pin the source 404 between the two.
-			if want := fmt.Sprintf("permission move_repo datasets/%s {Ref: DestRepo:datasets/org/moved Author:}", tc.from); !slices.Equal(hooks, []string{want}) {
-				t.Errorf("hook calls = %q, want exactly [%q]", hooks, want)
+			// The source is refused before admission.
+			if len(hooks) != 0 {
+				t.Errorf("hook calls = %q, want none", hooks)
 			}
 		})
 	}
@@ -825,8 +780,7 @@ func TestMoveRepo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{}
 			var hooks []string
-			h := newCatalogHandler(t, fakes, nil, &hooks, recordPreOpen(&hooks, nil))
-			rec := serveAs(h, http.MethodPost, "/api/repos/move", fmt.Sprintf(`{"fromRepo":"org/repo","toRepo":%q,"type":"dataset"}`, tc.dest), alice)
+			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, "/api/repos/move", fmt.Sprintf(`{"fromRepo":"org/repo","toRepo":%q,"type":"dataset"}`, tc.dest), alice)
 			var body struct{ Error string }
 			if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != fmt.Sprintf("invalid destination repository: %q", tc.dest) {
 				t.Errorf("status = %d, body = %s; want 400 naming %q", rec.Code, rec.Body, tc.dest)
@@ -834,59 +788,40 @@ func TestMoveRepo(t *testing.T) {
 			if len(fakes.calls) != 0 {
 				t.Errorf("callback calls = %q, want none", fakes.calls)
 			}
-			// One permission check and no pre-open pin the destination 400 between the two.
-			if want := fmt.Sprintf("permission move_repo datasets/org/repo {Ref: DestRepo:datasets/%s Author:}", tc.dest); !slices.Equal(hooks, []string{want}) {
-				t.Errorf("hook calls = %q, want exactly [%q]", hooks, want)
+			// The destination is refused before admission.
+			if len(hooks) != 0 {
+				t.Errorf("hook calls = %q, want none", hooks)
 			}
 		})
 	}
 
 	for _, tc := range []struct {
-		name string
-		err  error
-		want int
+		name  string
+		err   error
+		want  int
+		fixed string
 	}{
-		{"CallbackNotExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound},
-		{"CallbackAlreadyExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict},
-		{"CallbackError", errors.New("backend down"), http.StatusInternalServerError},
+		{"CallbackDenied", testDenied, http.StatusForbidden, "permission denied"},
+		{"CallbackUnauthenticated", testUnauthenticated, http.StatusUnauthorized, "Unauthorized"},
+		{"CallbackNotExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryNotExists), http.StatusNotFound, ""},
+		{"CallbackAlreadyExists", fmt.Errorf("wrapped: %w", repository.ErrRepositoryAlreadyExists), http.StatusConflict, ""},
+		{"CallbackError", errors.New("backend down"), http.StatusInternalServerError, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakes := &catalogFakes{err: tc.err}
 			var hooks []string
 			rec := serveAs(newCatalogHandler(t, fakes, nil, &hooks), http.MethodPost, "/api/repos/move", datasetBody, alice)
-			// Unlike duplicate's 409, move's carries no url.
-			var body map[string]any
-			if rec.Code != tc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || !maps.Equal(body, map[string]any{"error": tc.err.Error()}) {
-				t.Errorf("status = %d, body = %s; want %d with only error %q", rec.Code, rec.Body, tc.want, tc.err)
+			if tc.fixed != "" {
+				assertFixedError(t, rec, tc.want, tc.fixed)
+			} else {
+				// Unlike duplicate's 409, move's carries no url.
+				var body map[string]any
+				if rec.Code != tc.want || json.Unmarshal(rec.Body.Bytes(), &body) != nil || !maps.Equal(body, map[string]any{"error": tc.err.Error()}) {
+					t.Errorf("status = %d, body = %s; want %d with only error %q", rec.Code, rec.Body, tc.want, tc.err)
+				}
 			}
-			if !slices.Equal(hooks, []string{moveCheck}) {
-				t.Errorf("hook calls = %q, want only %q", hooks, moveCheck)
-			}
-		})
-	}
-
-	const preopen = "preopen datasets/org/repo false"
-	for _, tc := range []struct {
-		name             string
-		hookErr, openErr error
-		want             int
-		wantCalls        []string
-	}{
-		{"PreOpenBeforeCallback", nil, nil, http.StatusOK, []string{preopen, "move datasets/org/repo datasets/org/moved"}},
-		{"PreOpenNotExists", nil, repository.ErrRepositoryNotExists, http.StatusNotFound, []string{preopen}},
-		{"PreOpenError", nil, errors.New("sync failed"), http.StatusInternalServerError, []string{preopen}},
-		{"PreOpenSkippedWhenDenied", permission.ErrDenied, nil, http.StatusForbidden, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fakes := &catalogFakes{}
-			var hooks []string
-			h := newCatalogHandler(t, fakes, tc.hookErr, &hooks, recordPreOpen(&fakes.calls, tc.openErr))
-			rec := serveAs(h, http.MethodPost, "/api/repos/move", datasetBody, alice)
-			if rec.Code != tc.want {
-				t.Errorf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body)
-			}
-			if !slices.Equal(fakes.calls, tc.wantCalls) {
-				t.Errorf("pre-open and callback calls = %q, want %q", fakes.calls, tc.wantCalls)
+			if !slices.Equal(hooks, []string{preopen}) {
+				t.Errorf("hook calls = %q, want only %q", hooks, preopen)
 			}
 		})
 	}

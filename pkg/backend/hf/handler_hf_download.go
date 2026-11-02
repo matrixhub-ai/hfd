@@ -15,7 +15,6 @@ import (
 
 	"github.com/matrixhub-ai/hfd/internal/seekable"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -37,9 +36,6 @@ func (h *Handler) handleTree(w http.ResponseWriter, r *http.Request) {
 	recursive, _ := strconv.ParseBool(query.Get("recursive"))
 	expand, _ := strconv.ParseBool(query.Get("expand"))
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return
@@ -108,9 +104,6 @@ func (h *Handler) handleTreeSize(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return
@@ -142,9 +135,6 @@ func (h *Handler) handleResolve(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	revpath := vars["revpath"]
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	iofs "io/fs"
 	"log/slog"
 	"maps"
 	"path/filepath"
@@ -335,5 +336,339 @@ func TestPreOpenPullTTL(t *testing.T) {
 	}
 	if got := mainRef(t, localFS, repoPath); got != second {
 		t.Fatalf("after TTL expiry main = %s, want %s", got, second)
+	}
+}
+
+// TestPreOpenPullOnlyMirrorReadOnly pins that PreOpen refuses a write to a pull-only mirror before any sync and lets every other open through.
+func TestPreOpenPullOnlyMirrorReadOnly(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx := context.Background()
+	// The sync uses the source URL verbatim, so a local-path source needs the .git suffix.
+	repoName := "org/repo.git"
+	repoPath := repository.ResolvePath(repoName)
+
+	t.Run("write before first sync is refused", func(t *testing.T) {
+		// No source repository exists, so a sync attempt would fail without fs.ErrPermission.
+		hooks := roMirrorHooks(t, roMirrorUnder(t.TempDir()))
+		logs.Reset()
+		roMirrorRefused(t, "PreOpen write", hooks.PreOpen(ctx, repoName, true), repoName)
+		if repository.IsRepository(hooks.Storage.RepositoriesFS(), repoPath) {
+			t.Error("refused PreOpen write created the local repository")
+		}
+		if _, ok := hooks.lastPull.Load(repoPath); ok {
+			t.Error("refused PreOpen write recorded lastPull")
+		}
+		if logs.Len() != 0 {
+			t.Errorf("refused PreOpen write logged %q, want nothing", logs.String())
+		}
+	})
+
+	t.Run("write within TTL is refused", func(t *testing.T) {
+		srcRoot := t.TempDir()
+		hooks := roMirrorHooks(t, roMirrorUnder(srcRoot))
+		fs := hooks.Storage.RepositoriesFS()
+		src, head := roMirrorSource(t, srcRoot, repoName)
+		if err := hooks.PreOpen(ctx, repoName, false); err != nil {
+			t.Fatalf("PreOpen read: %v", err)
+		}
+		if got := mainRef(t, fs, repoPath); got != head {
+			t.Fatalf("main after the read = %s, want the source's %s", got, head)
+		}
+		last, ok := hooks.lastPull.Load(repoPath)
+		if !ok {
+			t.Fatal("PreOpen read did not record lastPull")
+		}
+		// The TTL skips the sync even for a permitted write; only the error shows the refusal.
+		addCommit(t, src, "new.txt")
+		roMirrorRefused(t, "PreOpen write", hooks.PreOpen(ctx, repoName, true), repoName)
+		if got, _ := hooks.lastPull.Load(repoPath); got != last {
+			t.Errorf("lastPull after the refused write = %v, want unchanged %v", got, last)
+		}
+		if got := mainRef(t, fs, repoPath); got != head {
+			t.Errorf("main after the refused write = %s, want unchanged %s", got, head)
+		}
+	})
+
+	t.Run("write to push target syncs", func(t *testing.T) {
+		srcRoot := t.TempDir()
+		hooks := roMirrorHooks(t, roMirrorUnder(srcRoot), roMirrorPushed())
+		_, head := roMirrorSource(t, srcRoot, repoName)
+		if err := hooks.PreOpen(ctx, repoName, true); err != nil {
+			t.Fatalf("PreOpen write: %v", err)
+		}
+		if got := mainRef(t, hooks.Storage.RepositoriesFS(), repoPath); got != head {
+			t.Errorf("main = %s, want the source's %s", got, head)
+		}
+		if _, ok := hooks.lastPull.Load(repoPath); !ok {
+			t.Error("PreOpen write did not record lastPull")
+		}
+	})
+
+	t.Run("write to non-mirror passes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			hooks *Hooks
+		}{
+			{"other source", roMirrorHooks(t, roMirrorOnly("datasets/org/mirrored"))},
+			{"nil mirror", &Hooks{Storage: newStorage(t), PullTTL: time.Hour}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if err := tc.hooks.PreOpen(ctx, repoName, true); err != nil {
+					t.Errorf("PreOpen write = %v, want nil", err)
+				}
+				if repository.IsRepository(tc.hooks.Storage.RepositoriesFS(), repoPath) {
+					t.Error("PreOpen write created the local repository")
+				}
+				if _, ok := tc.hooks.lastPull.Load(repoPath); ok {
+					t.Error("PreOpen write recorded lastPull")
+				}
+			})
+		}
+	})
+
+	t.Run("lookup errors pass through", func(t *testing.T) {
+		errBoom := errors.New("boom")
+		failing := func(context.Context, string) (string, bool, error) { return "", false, errBoom }
+		srcRoot := t.TempDir()
+		roMirrorSource(t, srcRoot, repoName)
+		for _, tc := range []struct {
+			name  string
+			hooks *Hooks
+		}{
+			{"source", roMirrorHooks(t, failing)},
+			{"destination", roMirrorHooks(t, roMirrorUnder(srcRoot), mirror.WithMirrorDestinationFunc(failing))},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if err := tc.hooks.PreOpen(ctx, repoName, true); !errors.Is(err, errBoom) || errors.Is(err, iofs.ErrPermission) {
+					t.Errorf("PreOpen write = %v, want the lookup's errBoom without fs.ErrPermission", err)
+				}
+				if repository.IsRepository(tc.hooks.Storage.RepositoriesFS(), repoPath) {
+					t.Error("PreOpen write created the local repository")
+				}
+			})
+		}
+	})
+}
+
+// TestHooksCatalogPullOnlyMirrorReadOnly pins that MoveRepo, DuplicateRepo and UpdateRepoSettings refuse a pull-only mirror target before anything else, logging each call once.
+func TestHooksCatalogPullOnlyMirrorReadOnly(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	logged := func(t *testing.T, want string) {
+		t.Helper()
+		if got := logs.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, want) {
+			t.Errorf("log = %q, want one line containing %q", got, want)
+		}
+		logs.Reset()
+	}
+
+	ctx := authenticate.WithIdentity(context.Background(), authenticate.NewIdentity("alice", "alice@example.com"))
+	const mirrored = "datasets/org/mirrored"
+	create := func(t *testing.T, hooks *Hooks, repoName string) {
+		t.Helper()
+		if _, err := hooks.CreateRepo(ctx, repoName, backendhf.CreateRepoRequest{}); err != nil {
+			t.Fatalf("CreateRepo %s: %v", repoName, err)
+		}
+		logs.Reset()
+	}
+	exists := func(hooks *Hooks, repoName string) bool {
+		return repository.IsRepository(hooks.Storage.RepositoriesFS(), repository.ResolvePath(repoName))
+	}
+	private := true
+	settings := backendhf.RepoSettings{Private: &private}
+
+	t.Run("MoveRepo onto mirror is refused", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		create(t, hooks, "datasets/org/repo")
+		roMirrorRefused(t, "MoveRepo", hooks.MoveRepo(ctx, "datasets/org/repo", mirrored), mirrored)
+		logged(t, `msg="Move repository" user=alice from=datasets/org/repo to=datasets/org/mirrored`)
+		if !exists(hooks, "datasets/org/repo") || exists(hooks, mirrored) {
+			t.Error("refused MoveRepo moved datasets/org/repo onto datasets/org/mirrored")
+		}
+	})
+
+	t.Run("MoveRepo of missing repo is refused first", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		logs.Reset()
+		err := hooks.MoveRepo(ctx, "datasets/org/missing", mirrored)
+		roMirrorRefused(t, "MoveRepo", err, mirrored)
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			t.Errorf("MoveRepo = %v, want the refusal ahead of ErrRepositoryNotExists", err)
+		}
+		logged(t, `msg="Move repository" user=alice from=datasets/org/missing to=datasets/org/mirrored`)
+	})
+
+	t.Run("MoveRepo onto push target moves", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored), roMirrorPushed())
+		create(t, hooks, "datasets/org/repo")
+		if err := hooks.MoveRepo(ctx, "datasets/org/repo", mirrored); err != nil {
+			t.Errorf("MoveRepo = %v, want nil", err)
+		}
+		logged(t, `msg="Move repository" user=alice from=datasets/org/repo to=datasets/org/mirrored`)
+		if exists(hooks, "datasets/org/repo") || !exists(hooks, mirrored) {
+			t.Error("MoveRepo did not move datasets/org/repo onto datasets/org/mirrored")
+		}
+	})
+
+	t.Run("MoveRepo onto non-mirror moves", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		create(t, hooks, "datasets/org/repo")
+		if err := hooks.MoveRepo(ctx, "datasets/org/repo", "datasets/org/other"); err != nil {
+			t.Errorf("MoveRepo = %v, want nil", err)
+		}
+		logged(t, `msg="Move repository" user=alice from=datasets/org/repo to=datasets/org/other`)
+		if exists(hooks, "datasets/org/repo") || !exists(hooks, "datasets/org/other") {
+			t.Error("MoveRepo did not move datasets/org/repo onto datasets/org/other")
+		}
+	})
+
+	t.Run("DuplicateRepo onto mirror is refused", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		create(t, hooks, "datasets/org/src")
+		src, err := repository.Open(hooks.Storage.RepositoriesFS(), repository.ResolvePath("datasets/org/src"))
+		if err != nil {
+			t.Fatalf("open source: %v", err)
+		}
+		srcRefs, err := src.Refs()
+		if err != nil {
+			t.Fatalf("source refs: %v", err)
+		}
+		roMirrorRefused(t, "DuplicateRepo", hooks.DuplicateRepo(ctx, "datasets/org/src", mirrored, backendhf.DuplicateRepoRequest{Repository: "org/mirrored"}), mirrored)
+		logged(t, `msg="Duplicate repository" user=alice from=datasets/org/src to=datasets/org/mirrored private=false`)
+		if exists(hooks, mirrored) {
+			t.Error("refused DuplicateRepo created datasets/org/mirrored")
+		}
+		if refs, err := src.Refs(); err != nil || !maps.Equal(refs, srcRefs) {
+			t.Errorf("source refs after the refused DuplicateRepo = %v, %v; want unchanged %v", refs, err, srcRefs)
+		}
+	})
+
+	t.Run("DuplicateRepo onto push target copies", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored), roMirrorPushed())
+		create(t, hooks, "datasets/org/src")
+		fs := hooks.Storage.RepositoriesFS()
+		src, err := repository.Open(fs, repository.ResolvePath("datasets/org/src"))
+		if err != nil {
+			t.Fatalf("open source: %v", err)
+		}
+		srcRefs, err := src.Refs()
+		if err != nil {
+			t.Fatalf("source refs: %v", err)
+		}
+		if err := hooks.DuplicateRepo(ctx, "datasets/org/src", mirrored, backendhf.DuplicateRepoRequest{Repository: "org/mirrored"}); err != nil {
+			t.Errorf("DuplicateRepo = %v, want nil", err)
+		}
+		logged(t, `msg="Duplicate repository" user=alice from=datasets/org/src to=datasets/org/mirrored private=false`)
+		dst, err := repository.Open(fs, repository.ResolvePath(mirrored))
+		if err != nil {
+			t.Fatalf("open copy: %v", err)
+		}
+		if refs, err := dst.Refs(); err != nil || !maps.Equal(refs, srcRefs) {
+			t.Errorf("copy refs = %v, %v; want the source's %v", refs, err, srcRefs)
+		}
+	})
+
+	t.Run("UpdateRepoSettings is refused", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		create(t, hooks, mirrored)
+		roMirrorRefused(t, "UpdateRepoSettings", hooks.UpdateRepoSettings(ctx, mirrored, settings), mirrored)
+		logged(t, `msg="Update repository settings" user=alice repo=datasets/org/mirrored`)
+	})
+
+	t.Run("UpdateRepoSettings of missing repo is refused first", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		logs.Reset()
+		err := hooks.UpdateRepoSettings(ctx, mirrored, settings)
+		roMirrorRefused(t, "UpdateRepoSettings", err, mirrored)
+		if errors.Is(err, repository.ErrRepositoryNotExists) {
+			t.Errorf("UpdateRepoSettings = %v, want the refusal ahead of ErrRepositoryNotExists", err)
+		}
+		logged(t, `msg="Update repository settings" user=alice repo=datasets/org/mirrored`)
+	})
+
+	t.Run("UpdateRepoSettings of push target passes", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored), roMirrorPushed())
+		create(t, hooks, mirrored)
+		if err := hooks.UpdateRepoSettings(ctx, mirrored, settings); err != nil {
+			t.Errorf("UpdateRepoSettings = %v, want nil", err)
+		}
+		logged(t, `msg="Update repository settings" user=alice repo=datasets/org/mirrored`)
+	})
+
+	t.Run("UpdateRepoSettings of non-mirror passes", func(t *testing.T) {
+		hooks := roMirrorHooks(t, roMirrorOnly(mirrored))
+		create(t, hooks, "datasets/org/repo")
+		if err := hooks.UpdateRepoSettings(ctx, "datasets/org/repo", settings); err != nil {
+			t.Errorf("UpdateRepoSettings = %v, want nil", err)
+		}
+		logged(t, `msg="Update repository settings" user=alice repo=datasets/org/repo`)
+	})
+
+	t.Run("UpdateRepoSettings lookup error passes through", func(t *testing.T) {
+		errBoom := errors.New("boom")
+		hooks := roMirrorHooks(t, func(context.Context, string) (string, bool, error) { return "", false, errBoom })
+		create(t, hooks, mirrored)
+		if err := hooks.UpdateRepoSettings(ctx, mirrored, settings); !errors.Is(err, errBoom) || errors.Is(err, iofs.ErrPermission) {
+			t.Errorf("UpdateRepoSettings = %v, want the lookup's errBoom without fs.ErrPermission", err)
+		}
+		logged(t, `msg="Update repository settings" user=alice repo=datasets/org/mirrored`)
+	})
+}
+
+func roMirrorHooks(t *testing.T, source mirror.SourceFunc, opts ...mirror.Option) *Hooks {
+	t.Helper()
+	st := newStorage(t)
+	m, err := mirror.NewMirror(append([]mirror.Option{
+		mirror.WithRepositoriesFS(st.RepositoriesFS()),
+		mirror.WithXETStorage(st.XETStorage()),
+		mirror.WithXETCache(xetclient.NewCache(st.XETMirrorDir(), 0, 0)),
+		mirror.WithDataDir(st.XETDir()),
+		mirror.WithMirrorSourceFunc(source),
+	}, opts...)...)
+	if err != nil {
+		t.Fatalf("build mirror: %v", err)
+	}
+	t.Cleanup(m.Wait)
+	return &Hooks{Storage: st, Mirror: m, PullTTL: time.Hour}
+}
+
+func roMirrorUnder(root string) mirror.SourceFunc {
+	return func(_ context.Context, repoName string) (string, bool, error) {
+		return root + "/" + repoName, true, nil
+	}
+}
+
+// roMirrorOnly needs no source URL: only PreOpen pulls, and never for a name it rejects.
+func roMirrorOnly(name string) mirror.SourceFunc {
+	return func(_ context.Context, repoName string) (string, bool, error) {
+		return "", repoName == name, nil
+	}
+}
+
+func roMirrorPushed() mirror.Option {
+	return mirror.WithMirrorDestinationFunc(func(context.Context, string) (string, bool, error) {
+		return "", true, nil
+	})
+}
+
+func roMirrorSource(t *testing.T, root, repoName string) (*repository.Repository, string) {
+	t.Helper()
+	src, err := repository.Init(context.Background(), osfs.Default, filepath.Join(root, repoName), "main")
+	if err != nil {
+		t.Fatalf("init source repo: %v", err)
+	}
+	return src, addCommit(t, src, "README.md")
+}
+
+func roMirrorRefused(t *testing.T, call string, err error, repoName string) {
+	t.Helper()
+	if !errors.Is(err, iofs.ErrPermission) || !errors.Is(err, errReadOnlyMirror) || !strings.Contains(err.Error(), fmt.Sprintf("repository %q", repoName)) {
+		t.Errorf("%s = %v, want the errReadOnlyMirror refusal (fs.ErrPermission) naming repository %q", call, err, repoName)
 	}
 }

@@ -6,38 +6,45 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 )
 
 // TestAPIHookMatrix checks API hooks through the authenticated HTTP chain.
 func TestAPIHookMatrix(t *testing.T) {
 	preRecorder, postRecorder := &matrixHookRecorder{}, &matrixHookRecorder{}
-	type permissionCall struct {
-		op       permission.Operation
-		repoName string
-		ctx      permission.Context
-		user     string
+	// admissionCall is one PreOpen call (op "preopen") or one catalog gate call.
+	type admissionCall struct {
+		op, repoName, dest, user string
+		write                    bool
 	}
 	var mu sync.Mutex
-	var calls []permissionCall
-	permissionAllow, preAllow := true, true
-	var permissionErr, preErr error
-	hook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
+	var calls []admissionCall
+	preAllow := true
+	var preOpenErr, catalogErr, preErr error
+	preOpen := func(ctx context.Context, repoName string, write bool) error {
 		user := authenticate.IdentityFrom(ctx).Name()
 		mu.Lock()
 		defer mu.Unlock()
-		calls = append(calls, permissionCall{op: op, repoName: repoName, ctx: opCtx, user: user})
-		return permissionAllow, permissionErr
+		calls = append(calls, admissionCall{op: "preopen", repoName: repoName, user: user, write: write})
+		return preOpenErr
+	}
+	gate := func(ctx context.Context, op, repoName, dest string) error {
+		user := authenticate.IdentityFrom(ctx).Name()
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, admissionCall{op: op, repoName: repoName, dest: dest, user: user})
+		return catalogErr
 	}
 	pre := func(ctx context.Context, repoName string, updates []receive.RefUpdate) (bool, error) {
 		_ = preRecorder.hook(ctx, repoName, updates)
@@ -45,19 +52,19 @@ func TestAPIHookMatrix(t *testing.T) {
 		defer mu.Unlock()
 		return preAllow, preErr
 	}
-	s := newE2EServer(t, withAuth(authMatrixUser, authMatrixPass), withPermissionHook(hook), withHooks(pre, postRecorder.hook), withAPIHooks())
-	reset := func(allow bool, hookErr error, allowPre bool, receiveErr error) {
+	s := newE2EServer(t, withAuth(authMatrixUser, authMatrixPass), withPreOpenHook(preOpen), withCatalogGate(gate), withHooks(pre, postRecorder.hook), withAPIHooks())
+	reset := func(openErr, gateErr error, allowPre bool, receiveErr error) {
 		mu.Lock()
-		permissionAllow, permissionErr, preAllow, preErr = allow, hookErr, allowPre, receiveErr
+		preOpenErr, catalogErr, preAllow, preErr = openErr, gateErr, allowPre, receiveErr
 		calls = nil
 		mu.Unlock()
 		preRecorder.reset()
 		postRecorder.reset()
 	}
-	permissionCalls := func() []permissionCall {
+	admissionCalls := func() []admissionCall {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]permissionCall(nil), calls...)
+		return append([]admissionCall(nil), calls...)
 	}
 	request := func(t *testing.T, method, route, contentType, body string, basic bool, wantStatus int) []byte {
 		t.Helper()
@@ -77,15 +84,14 @@ func TestAPIHookMatrix(t *testing.T) {
 		defer resp.Body.Close()
 		responseBody, err := io.ReadAll(resp.Body)
 		if err != nil || resp.StatusCode != wantStatus {
-			t.Fatalf("%s %s status=%d want=%d body=%s read=%v calls=%+v pre=%+v post=%+v", method, route, resp.StatusCode, wantStatus, responseBody, err, permissionCalls(), preRecorder.getCalls(), postRecorder.getCalls())
+			t.Fatalf("%s %s status=%d want=%d body=%s read=%v calls=%+v pre=%+v post=%+v", method, route, resp.StatusCode, wantStatus, responseBody, err, admissionCalls(), preRecorder.getCalls(), postRecorder.getCalls())
 		}
 		return responseBody
 	}
-	assertPermission := func(t *testing.T, op permission.Operation, repoID, ref, destRepo, user string, body []byte) {
+	assertAdmission := func(t *testing.T, want []admissionCall, body []byte) {
 		t.Helper()
-		recorded := permissionCalls()
-		if len(recorded) != 1 || recorded[0].op != op || recorded[0].repoName != repoID || recorded[0].ctx.Ref != ref || recorded[0].ctx.DestRepo != destRepo || recorded[0].user != user {
-			t.Fatalf("want op=%s repo=%q ref=%q dest=%q user=%q; body=%s calls=%+v", op, repoID, ref, destRepo, user, body, recorded)
+		if recorded := admissionCalls(); !slices.Equal(recorded, want) {
+			t.Fatalf("admission calls = %+v, want %+v; body=%s", recorded, want, body)
 		}
 	}
 
@@ -129,12 +135,7 @@ func TestAPIHookMatrix(t *testing.T) {
 		if err := json.Unmarshal(responseBody, &result); err != nil || resp.StatusCode != http.StatusOK || len(result.CommitOid) != 40 || result.CommitOid == previousHead || result.CommitOid == receive.ZeroHash {
 			t.Fatalf("commit status=%d body=%s decode=%v previousHead=%q", resp.StatusCode, responseBody, err, previousHead)
 		}
-		mu.Lock()
-		permissionCalls := append([]permissionCall(nil), calls...)
-		mu.Unlock()
-		if len(permissionCalls) != 1 || permissionCalls[0].op != permission.OperationUpdateRepo || permissionCalls[0].repoName != repoID || permissionCalls[0].ctx.Ref != "main" || permissionCalls[0].user != authMatrixUser {
-			t.Fatalf("commit permission calls = %+v", permissionCalls)
-		}
+		assertAdmission(t, []admissionCall{{op: "preopen", repoName: repoID, user: authMatrixUser, write: true}}, responseBody)
 		for _, phase := range []struct {
 			name     string
 			recorder *matrixHookRecorder
@@ -156,29 +157,32 @@ func TestAPIHookMatrix(t *testing.T) {
 
 	t.Run("HFCreateRepo", func(t *testing.T) {
 		const repoID = "api-hook-org/create-deny"
-		reset(false, nil, true, nil)
+		reset(nil, fs.ErrPermission, true, nil)
 		body := request(t, http.MethodPost, "/api/repos/create", "application/json", `{"type":"model","name":"create-deny","organization":"api-hook-org"}`, true, http.StatusForbidden)
-		assertPermission(t, permission.OperationCreateRepo, repoID, "", "", authMatrixUser, body)
-		recorded := permissionCalls()
+		assertAdmission(t, []admissionCall{{op: "create", repoName: repoID, user: authMatrixUser}}, body)
+		recorded := admissionCalls()
 		if !strings.Contains(string(body), "permission denied") || len(preRecorder.getCalls()) != 0 || len(postRecorder.getCalls()) != 0 {
 			t.Fatalf("body=%s calls=%+v pre=%+v post=%+v", body, recorded, preRecorder.getCalls(), postRecorder.getCalls())
 		}
-		reset(true, nil, true, nil)
+		reset(nil, nil, true, nil)
 		request(t, http.MethodGet, "/api/models/"+repoID, "application/json", "", true, http.StatusNotFound)
 	})
 
 	t.Run("HFDuplicateRepo/Allow", func(t *testing.T) {
 		const repoID, destRepo = "api-hook-org/duplicate-allow", "api-hook-org/duplicate-allow-copy"
-		reset(true, nil, true, nil)
+		reset(nil, nil, true, nil)
 		s.createRepo(t, "api-hook-org", "duplicate-allow")
 		// Create's post-receive proves the recorder is live, so an empty one after the copy is meaningful.
 		initial := postRecorder.getCalls()
 		if len(initial) != 1 || len(initial[0].updates) != 1 {
 			t.Fatalf("create post-receive calls=%+v", initial)
 		}
-		reset(true, nil, true, nil)
+		reset(nil, nil, true, nil)
 		body := request(t, http.MethodPost, "/api/models/"+repoID+"/duplicate", "application/json", fmt.Sprintf(`{"repository":%q}`, destRepo), true, http.StatusOK)
-		assertPermission(t, permission.OperationDuplicateRepo, repoID, "", destRepo, authMatrixUser, body)
+		assertAdmission(t, []admissionCall{
+			{op: "preopen", repoName: repoID, user: authMatrixUser},
+			{op: "duplicate", repoName: repoID, dest: destRepo, user: authMatrixUser},
+		}, body)
 		if preCalls, postCalls := preRecorder.getCalls(), postRecorder.getCalls(); len(preCalls) != 0 || len(postCalls) != 0 {
 			t.Fatalf("pre-receive calls=%+v post-receive calls=%+v, want none; body=%s", preCalls, postCalls, body)
 		}
@@ -186,16 +190,19 @@ func TestAPIHookMatrix(t *testing.T) {
 
 	t.Run("HFMoveRepo/Allow", func(t *testing.T) {
 		const repoID, destRepo = "api-hook-org/move-allow", "api-hook-org/move-allow-moved"
-		reset(true, nil, true, nil)
+		reset(nil, nil, true, nil)
 		s.createRepo(t, "api-hook-org", "move-allow")
 		// Create's post-receive proves the recorder is live, so an empty one after the move is meaningful.
 		initial := postRecorder.getCalls()
 		if len(initial) != 1 || len(initial[0].updates) != 1 {
 			t.Fatalf("create post-receive calls=%+v", initial)
 		}
-		reset(true, nil, true, nil)
+		reset(nil, nil, true, nil)
 		body := request(t, http.MethodPost, "/api/repos/move", "application/json", fmt.Sprintf(`{"fromRepo":%q,"toRepo":%q,"type":"model"}`, repoID, destRepo), true, http.StatusOK)
-		assertPermission(t, permission.OperationMoveRepo, repoID, "", destRepo, authMatrixUser, body)
+		assertAdmission(t, []admissionCall{
+			{op: "preopen", repoName: repoID, user: authMatrixUser, write: true},
+			{op: "move", repoName: repoID, dest: destRepo, user: authMatrixUser},
+		}, body)
 		if preCalls, postCalls := preRecorder.getCalls(), postRecorder.getCalls(); len(preCalls) != 0 || len(postCalls) != 0 {
 			t.Fatalf("pre-receive calls=%+v post-receive calls=%+v, want none; body=%s", preCalls, postCalls, body)
 		}
@@ -203,22 +210,21 @@ func TestAPIHookMatrix(t *testing.T) {
 	})
 
 	for _, row := range []struct {
-		name          string
-		allow         bool
-		permissionErr error
-		allowPre      bool
-		preErr        error
-		status        int
-		message       string
-		wantPre       int
+		name       string
+		preOpenErr error
+		allowPre   bool
+		preErr     error
+		status     int
+		message    string
+		wantPre    int
 	}{
-		{name: "PermissionDeny", status: http.StatusForbidden, message: "permission denied"},
-		{name: "PreReceiveDeny", allow: true, status: http.StatusForbidden, message: "pre-receive hook denied the commit", wantPre: 1},
-		{name: "HookError/Permission", permissionErr: errors.New("matrix permission error"), status: http.StatusInternalServerError, message: "matrix permission error"},
-		{name: "HookError/PreReceive", allow: true, preErr: errors.New("matrix pre-receive error"), status: http.StatusInternalServerError, message: "matrix pre-receive error", wantPre: 1},
+		{name: "PreOpenDeny", preOpenErr: fs.ErrPermission, status: http.StatusForbidden, message: "permission denied"},
+		{name: "PreReceiveDeny", status: http.StatusForbidden, message: "pre-receive hook denied the commit", wantPre: 1},
+		{name: "HookError/PreOpen", preOpenErr: errors.New("matrix pre-open error"), status: http.StatusInternalServerError, message: "matrix pre-open error"},
+		{name: "HookError/PreReceive", preErr: errors.New("matrix pre-receive error"), status: http.StatusInternalServerError, message: "matrix pre-receive error", wantPre: 1},
 	} {
 		t.Run("HFCommit/"+row.name, func(t *testing.T) {
-			reset(true, nil, true, nil)
+			reset(nil, nil, true, nil)
 			repoName := "commit-" + strings.ToLower(strings.ReplaceAll(row.name, "/", "-"))
 			repoID := "api-hook-org/" + repoName
 			s.createRepo(t, "api-hook-org", repoName)
@@ -229,12 +235,12 @@ func TestAPIHookMatrix(t *testing.T) {
 			previousHead := initial[0].updates[0].NewRev()
 			refsRoute := "/api/models/" + repoID + "/refs"
 			before := request(t, http.MethodGet, refsRoute, "application/json", "", true, http.StatusOK)
-			reset(row.allow, row.permissionErr, row.allowPre, row.preErr)
+			reset(row.preOpenErr, nil, row.allowPre, row.preErr)
 			body := request(t, http.MethodPost, "/api/models/"+repoID+"/commit/main", "application/x-ndjson",
 				"{\"key\":\"header\",\"value\":{\"summary\":\"Denied commit\"}}\n"+
 					"{\"key\":\"file\",\"value\":{\"path\":\"README.md\",\"content\":\"must not land\\n\",\"encoding\":\"utf-8\"}}\n", true, row.status)
-			assertPermission(t, permission.OperationUpdateRepo, repoID, "main", "", authMatrixUser, body)
-			recorded := permissionCalls()
+			assertAdmission(t, []admissionCall{{op: "preopen", repoName: repoID, user: authMatrixUser, write: true}}, body)
+			recorded := admissionCalls()
 			preCalls, postCalls := preRecorder.getCalls(), postRecorder.getCalls()
 			if !strings.Contains(string(body), row.message) || len(preCalls) != row.wantPre || len(postCalls) != 0 {
 				t.Fatalf("body=%s want=%q calls=%+v pre=%+v post=%+v", body, row.message, recorded, preCalls, postCalls)
@@ -248,7 +254,7 @@ func TestAPIHookMatrix(t *testing.T) {
 					t.Fatalf("pre ref=%q old=%q new=%q want old=%q; body=%s calls=%+v", update.RefName(), update.OldRev(), update.NewRev(), previousHead, body, recorded)
 				}
 			}
-			reset(true, nil, true, nil)
+			reset(nil, nil, true, nil)
 			after := request(t, http.MethodGet, refsRoute, "application/json", "", true, http.StatusOK)
 			if string(after) != string(before) {
 				t.Fatalf("refs changed: before=%s after=%s body=%s calls=%+v", before, after, body, recorded)
@@ -257,28 +263,28 @@ func TestAPIHookMatrix(t *testing.T) {
 	}
 
 	for _, row := range []struct {
-		name     string
-		method   string
-		route    string
-		body     string
-		op       permission.Operation
-		ref      string
-		destRepo string
+		name    string
+		method  string
+		route   string
+		body    string
+		write   bool
+		catalog string
+		dest    string
 	}{
-		{name: "HFCreateBranch", method: http.MethodPost, route: "/api/models/%s/branch/feature", body: `{}`, op: permission.OperationUpdateRepo, ref: "feature"},
-		{name: "HFDeleteRepo", method: http.MethodDelete, route: "/api/repos/delete", op: permission.OperationDeleteRepo},
-		{name: "HFDuplicateRepo", method: http.MethodPost, route: "/api/models/%s/duplicate", body: `{"repository":"api-hook-org/hfduplicaterepo-copy"}`, op: permission.OperationDuplicateRepo, destRepo: "api-hook-org/hfduplicaterepo-copy"},
-		{name: "HFMoveRepo", method: http.MethodPost, route: "/api/repos/move", body: `{"fromRepo":"api-hook-org/hfmoverepo","toRepo":"api-hook-org/hfmoverepo-moved","type":"model"}`, op: permission.OperationMoveRepo, destRepo: "api-hook-org/hfmoverepo-moved"},
-		{name: "HFResolve", method: http.MethodGet, route: "/%s/resolve/main/README.md", op: permission.OperationReadRepo},
-		{name: "LFSBatchDownload", method: http.MethodPost, route: "/%s.git/info/lfs/objects/batch", op: permission.OperationReadRepo},
-		{name: "LFSBatchUpload", method: http.MethodPost, route: "/%s.git/info/lfs/objects/batch", op: permission.OperationUpdateRepo},
-		{name: "LFSLockCreate", method: http.MethodPost, route: "/%s.git/info/lfs/locks", body: `{"path":"model.bin"}`, op: permission.OperationUpdateRepo},
-		{name: "LFSLocksList", method: http.MethodGet, route: "/%s.git/info/lfs/locks", op: permission.OperationReadRepo},
-		{name: "CASReadToken", method: http.MethodGet, route: "/api/models/%s/xet-read-token/main", op: permission.OperationReadRepo, ref: "main"},
-		{name: "CASWriteToken", method: http.MethodGet, route: "/api/models/%s/xet-write-token/main", op: permission.OperationUpdateRepo, ref: "main"},
+		{name: "HFCreateBranch", method: http.MethodPost, route: "/api/models/%s/branch/feature", body: `{}`, write: true},
+		{name: "HFDeleteRepo", method: http.MethodDelete, route: "/api/repos/delete", catalog: "delete"},
+		{name: "HFDuplicateRepo", method: http.MethodPost, route: "/api/models/%s/duplicate", body: `{"repository":"api-hook-org/hfduplicaterepo-copy"}`, catalog: "duplicate", dest: "api-hook-org/hfduplicaterepo-copy"},
+		{name: "HFMoveRepo", method: http.MethodPost, route: "/api/repos/move", body: `{"fromRepo":"api-hook-org/hfmoverepo","toRepo":"api-hook-org/hfmoverepo-moved","type":"model"}`, write: true, catalog: "move", dest: "api-hook-org/hfmoverepo-moved"},
+		{name: "HFResolve", method: http.MethodGet, route: "/%s/resolve/main/README.md"},
+		{name: "LFSBatchDownload", method: http.MethodPost, route: "/%s.git/info/lfs/objects/batch"},
+		{name: "LFSBatchUpload", method: http.MethodPost, route: "/%s.git/info/lfs/objects/batch", write: true},
+		{name: "LFSLockCreate", method: http.MethodPost, route: "/%s.git/info/lfs/locks", body: `{"path":"model.bin"}`, write: true},
+		{name: "LFSLocksList", method: http.MethodGet, route: "/%s.git/info/lfs/locks"},
+		{name: "CASReadToken", method: http.MethodGet, route: "/api/models/%s/xet-read-token/main"},
+		{name: "CASWriteToken", method: http.MethodGet, route: "/api/models/%s/xet-write-token/main", write: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			reset(true, nil, true, nil)
+			reset(nil, nil, true, nil)
 			repoName := strings.ToLower(row.name)
 			repoID := "api-hook-org/" + repoName
 			if row.name == "HFResolve" {
@@ -303,21 +309,34 @@ func TestAPIHookMatrix(t *testing.T) {
 			}
 			refsRoute := "/api/models/" + repoID + "/refs"
 			before := request(t, http.MethodGet, refsRoute, "application/json", "", true, http.StatusOK)
-			reset(false, nil, true, nil)
+			// Catalog rows are refused by the gate once PreOpen admitted the source; the others by PreOpen.
+			if row.catalog != "" {
+				reset(nil, fs.ErrPermission, true, nil)
+			} else {
+				reset(fs.ErrPermission, nil, true, nil)
+			}
 			basic, user := true, authMatrixUser
 			if row.name == "HFResolve" {
 				basic, user = false, "<anonymous>"
 			}
+			// Delete is judged by its callback alone.
+			var want []admissionCall
+			if row.catalog != "delete" {
+				want = append(want, admissionCall{op: "preopen", repoName: repoID, user: user, write: row.write})
+			}
+			if row.catalog != "" {
+				want = append(want, admissionCall{op: row.catalog, repoName: repoID, dest: row.dest, user: user})
+			}
 			body := request(t, row.method, route, mediaType, payload, basic, http.StatusForbidden)
-			assertPermission(t, row.op, repoID, row.ref, row.destRepo, user, body)
-			recorded := permissionCalls()
+			assertAdmission(t, want, body)
+			recorded := admissionCalls()
 			if !strings.Contains(string(body), "permission denied") || len(preRecorder.getCalls()) != 0 || len(postRecorder.getCalls()) != 0 {
 				t.Fatalf("body=%s calls=%+v pre=%+v post=%+v", body, recorded, preRecorder.getCalls(), postRecorder.getCalls())
 			}
 			if strings.HasPrefix(row.name, "CAS") && strings.Contains(string(body), "accessToken") {
 				t.Fatalf("denied token leaked: body=%s calls=%+v", body, recorded)
 			}
-			reset(true, nil, true, nil)
+			reset(nil, nil, true, nil)
 			after := request(t, http.MethodGet, refsRoute, "application/json", "", true, http.StatusOK)
 			if string(after) != string(before) {
 				t.Fatalf("refs changed: before=%s after=%s body=%s calls=%+v", before, after, body, recorded)
@@ -327,34 +346,34 @@ func TestAPIHookMatrix(t *testing.T) {
 				if strings.Contains(string(after), `"feature"`) {
 					t.Fatalf("denied branch exists: refs=%s body=%s calls=%+v", after, body, recorded)
 				}
-				reset(true, nil, true, nil)
+				reset(nil, nil, true, nil)
 				allowed := request(t, row.method, route, mediaType, payload, true, http.StatusOK)
-				assertPermission(t, row.op, repoID, row.ref, row.destRepo, authMatrixUser, allowed)
+				assertAdmission(t, want, allowed)
 				refs := request(t, http.MethodGet, refsRoute, "application/json", "", true, http.StatusOK)
 				if !strings.Contains(string(refs), `"feature"`) {
-					t.Fatalf("allowed branch absent: refs=%s body=%s calls=%+v", refs, allowed, permissionCalls())
+					t.Fatalf("allowed branch absent: refs=%s body=%s calls=%+v", refs, allowed, admissionCalls())
 				}
 			case "HFDeleteRepo":
 				request(t, http.MethodGet, "/api/models/"+repoID, "application/json", "", true, http.StatusOK)
-				reset(true, nil, true, nil)
+				reset(nil, nil, true, nil)
 				allowed := request(t, row.method, route, mediaType, payload, true, http.StatusOK)
-				assertPermission(t, row.op, repoID, "", "", authMatrixUser, allowed)
+				assertAdmission(t, want, allowed)
 				request(t, http.MethodGet, "/api/models/"+repoID, "application/json", "", true, http.StatusNotFound)
 			case "HFDuplicateRepo":
 				// The allowed copy is HFDuplicateRepo/Allow's.
-				request(t, http.MethodGet, "/api/models/"+row.destRepo, "application/json", "", true, http.StatusNotFound)
+				request(t, http.MethodGet, "/api/models/"+row.dest, "application/json", "", true, http.StatusNotFound)
 			case "HFMoveRepo":
 				// The allowed move is HFMoveRepo/Allow's.
-				request(t, http.MethodGet, "/api/models/"+row.destRepo, "application/json", "", true, http.StatusNotFound)
+				request(t, http.MethodGet, "/api/models/"+row.dest, "application/json", "", true, http.StatusNotFound)
 			case "HFResolve":
 				allowed := request(t, row.method, route, mediaType, payload, false, http.StatusOK)
 				if string(allowed) != authMatrixReadme {
 					t.Fatalf("resolve changed: allowed=%s denied=%s calls=%+v", allowed, body, recorded)
 				}
 			case "LFSLockCreate", "LFSLocksList":
-				reset(true, nil, true, nil)
+				reset(nil, nil, true, nil)
 				allowed := request(t, http.MethodGet, "/"+repoID+".git/info/lfs/locks", mediaType, "", true, http.StatusOK)
-				assertPermission(t, permission.OperationReadRepo, repoID, "", "", authMatrixUser, allowed)
+				assertAdmission(t, []admissionCall{{op: "preopen", repoName: repoID, user: authMatrixUser}}, allowed)
 				var result struct {
 					Locks []lfsLockEntry `json:"locks"`
 				}
@@ -366,14 +385,14 @@ func TestAPIHookMatrix(t *testing.T) {
 					t.Fatalf("locks verify=%+v denied=%s calls=%+v", verified, body, recorded)
 				}
 			case "CASReadToken", "CASWriteToken":
-				reset(true, nil, true, nil)
+				reset(nil, nil, true, nil)
 				allowed := request(t, row.method, route, mediaType, payload, true, http.StatusOK)
-				assertPermission(t, row.op, repoID, row.ref, row.destRepo, authMatrixUser, allowed)
+				assertAdmission(t, want, allowed)
 				var token struct {
 					AccessToken string `json:"accessToken"`
 				}
 				if err := json.Unmarshal(allowed, &token); err != nil || token.AccessToken == "" {
-					t.Fatalf("token body=%s decode=%v calls=%+v", allowed, err, permissionCalls())
+					t.Fatalf("token body=%s decode=%v calls=%+v", allowed, err, admissionCalls())
 				}
 			}
 		})
@@ -684,8 +703,8 @@ func (r *matrixHookRecorder) reset() {
 	r.calls = nil
 }
 
-// TestPermissionHookMatrix tests permission hooks across protocols
-func TestPermissionHookMatrix(t *testing.T) {
+// TestPreOpenHookMatrix tests a PreOpen hook refusing writes across protocols
+func TestPreOpenHookMatrix(t *testing.T) {
 	protocols := []struct {
 		name string
 		ssh  bool
@@ -696,15 +715,14 @@ func TestPermissionHookMatrix(t *testing.T) {
 
 	for _, protocol := range protocols {
 		t.Run(protocol.name, func(t *testing.T) {
-			permHook := func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-				// Deny write operations (only allow read)
-				if !op.IsRead() {
-					return false, nil
+			readOnly := func(_ context.Context, _ string, write bool) error {
+				if write {
+					return fs.ErrPermission
 				}
-				return true, nil
+				return nil
 			}
 
-			repoURL, env := setupHookServer(t, protocol.ssh, withPermissionHook(permHook))
+			repoURL, env := setupHookServer(t, protocol.ssh, withPreOpenHook(readOnly))
 
 			clientDir, err := os.MkdirTemp("", "perm-test-client")
 			if err != nil {
@@ -712,11 +730,11 @@ func TestPermissionHookMatrix(t *testing.T) {
 			}
 			defer os.RemoveAll(clientDir)
 
-			// Clone should succeed (read permission)
+			// Clone should succeed (read admitted)
 			cloneDir := filepath.Join(clientDir, "clone")
 			runGit(t, "", env, "clone", repoURL, cloneDir)
 
-			// Push should fail (write denied)
+			// Push should fail (write refused)
 			runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
 			runGit(t, cloneDir, env, "config", "user.name", "Test User")
 
@@ -727,12 +745,13 @@ func TestPermissionHookMatrix(t *testing.T) {
 			runGit(t, cloneDir, env, "add", "README.md")
 			runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
 
-			cmd := exec.CommandContext(t.Context(), "git", "push", "origin", "main")
-			cmd.Dir = cloneDir
-			cmd.Env = append(testEnv(), env...)
-			output, err := cmd.Output()
-			if err == nil {
-				t.Fatalf("Expected push to fail due to permission hook, but it succeeded: %s", output)
+			// HTTP refuses the receive-pack discovery with 403; SSH reports the refusal on stderr.
+			want := "403"
+			if protocol.ssh {
+				want = "permission denied"
+			}
+			if _, stderr, err := gitCmd(t, cloneDir, env, "push", "origin", "main"); err == nil || !strings.Contains(stderr, want) {
+				t.Fatalf("push: err=%v, want a failure naming %q; stderr:\n%s", err, want, stderr)
 			}
 		})
 	}

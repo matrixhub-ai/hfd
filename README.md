@@ -16,8 +16,8 @@ storage, optionally with pull-through or push mirroring of another hub.
 
 There is no web UI, and no external database service is required. Identity
 comes from HTTP basic auth, bearer or signed tokens, and SSH keys;
-authorization and push handling go through pluggable permission and receive
-hooks.
+authorization goes through a pluggable pre-open hook and the catalog callbacks,
+push handling through receive hooks.
 
 ## Protocols and Clients
 

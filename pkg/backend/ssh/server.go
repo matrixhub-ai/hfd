@@ -9,7 +9,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -25,7 +24,6 @@ type PublicKey = ssh.PublicKey
 type Server struct {
 	storage             *storage.Storage
 	config              *ssh.ServerConfig
-	permissionHookFunc  permission.PermissionHookFunc
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
@@ -35,20 +33,13 @@ type Server struct {
 
 type identityKey struct{}
 
-// PreOpenHookFunc is called before opening a repository for a git service request.
+// PreOpenHookFunc admits a command; errors exit 1, with a stderr reason only for permission/auth/not-found.
 type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option configures the SSH server.
 type Option func(*Server)
 
-// WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
-	return func(s *Server) {
-		s.permissionHookFunc = fn
-	}
-}
-
-// WithPreOpenHookFunc sets a hook called before repository open.
+// WithPreOpenHookFunc sets the hook that admits git-upload-pack, git-receive-pack and git-lfs-authenticate commands.
 func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
 	return func(s *Server) {
 		s.preOpenHookFunc = fn

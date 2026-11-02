@@ -35,9 +35,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
-	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -63,7 +61,8 @@ type e2eConfig struct {
 	apiHooks      bool
 	preReceive    receive.PreReceiveHookFunc
 	postReceive   receive.PostReceiveHookFunc
-	permission    permission.PermissionHookFunc
+	preOpen       func(context.Context, string, bool) error
+	catalogGate   catalogGateFunc
 	mirrorSources upstreamMap
 	refFilter     mirror.RefFilterFunc
 }
@@ -96,13 +95,13 @@ func withWrap(mw func(http.Handler) http.Handler) e2eOption {
 }
 
 // withAuth wires basic, static-token, signed LFS, and CAS auth the way cmd/hfd does.
-// Anonymous requests pass through; permission hooks enforce access.
+// Anonymous requests pass through; the PreOpen hook enforces access.
 func withAuth(username, password string) e2eOption {
 	return func(c *e2eConfig) { c.authUser = username; c.authPass = password }
 }
 
 // withBasicUsers adds basic-auth identities (username to password) beside
-// withAuth's user, so one permission policy can be compared across principals.
+// withAuth's user, so one PreOpen policy can be compared across principals.
 func withBasicUsers(users map[string]string) e2eOption {
 	return func(c *e2eConfig) { c.basicUsers = users }
 }
@@ -113,13 +112,17 @@ func withHooks(pre receive.PreReceiveHookFunc, post receive.PostReceiveHookFunc)
 	return func(c *e2eConfig) { c.preReceive = pre; c.postReceive = post }
 }
 
-// withPermissionHook installs the permission hook on git HTTP and SSH only.
-// With withAPIHooks it also applies to HF, LFS, and CAS token routes.
-func withPermissionHook(fn permission.PermissionHookFunc) e2eOption {
-	return func(c *e2eConfig) { c.permission = fn }
+// withPreOpenHook admits every repository request on git HTTP, SSH, LFS and HF through fn.
+func withPreOpenHook(fn func(context.Context, string, bool) error) e2eOption {
+	return func(c *e2eConfig) { c.preOpen = fn }
 }
 
-// withAPIHooks extends configured permission hooks to HF, LFS, and CAS, and receive hooks to HF.
+// withCatalogGate judges every catalog call but whoami through fn before the server default runs.
+func withCatalogGate(fn catalogGateFunc) e2eOption {
+	return func(c *e2eConfig) { c.catalogGate = fn }
+}
+
+// withAPIHooks extends the receive hooks to HF.
 func withAPIHooks() e2eOption {
 	return func(c *e2eConfig) { c.apiHooks = true }
 }
@@ -169,47 +172,60 @@ func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
 	}
 }
 
-// newMirrorPreOpenHook pulls mirror-source repositories from their remote
-// before they are opened, creating them locally on first access.
-func newMirrorPreOpenHook(sharedMirror *mirror.Mirror) func(context.Context, string, bool) error {
-	return func(ctx context.Context, repoName string, write bool) error {
-		if sharedMirror == nil {
-			return nil
-		}
+// catalogGateFunc judges a catalog op (create, delete, move, duplicate, settings, list) before the server
+// default runs; dest is the move or duplicate destination and list passes the repository type as repoName.
+type catalogGateFunc func(ctx context.Context, op, repoName, dest string) error
 
-		isMirror, err := sharedMirror.IsMirrorSource(ctx, repoName)
-		if err != nil {
-			return err
-		}
-		if !isMirror {
-			return nil
-		}
-
-		repoPath := repository.ResolvePath(repoName)
-		if repoPath == "" {
-			return fmt.Errorf("repository path not found for %s", repoName)
-		}
-		return sharedMirror.PullFromRemote(ctx, repoPath, repoName, nil)
+// catalogOptions enables the seven catalog routes over hooks like cmd/hfd does, gate judging all but whoami first.
+func catalogOptions(hooks *server.Hooks, gate catalogGateFunc) []backendhf.Option {
+	if gate == nil {
+		gate = func(context.Context, string, string, string) error { return nil }
 	}
-}
-
-// catalogOptions enables the seven catalog routes with the server defaults like cmd/hfd does.
-func catalogOptions(st *storage.Storage) []backendhf.Option {
-	hooks := &server.Hooks{Storage: st}
 	return []backendhf.Option{
-		backendhf.WithCreateRepoFunc(hooks.CreateRepo),
-		backendhf.WithDeleteRepoFunc(hooks.DeleteRepo),
-		backendhf.WithMoveRepoFunc(hooks.MoveRepo),
-		backendhf.WithDuplicateRepoFunc(hooks.DuplicateRepo),
-		backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
-		backendhf.WithListReposFunc(hooks.ListRepos),
+		backendhf.WithCreateRepoFunc(func(ctx context.Context, repoName string, req backendhf.CreateRepoRequest) ([]receive.RefUpdate, error) {
+			if err := gate(ctx, "create", repoName, ""); err != nil {
+				return nil, err
+			}
+			return hooks.CreateRepo(ctx, repoName, req)
+		}),
+		backendhf.WithDeleteRepoFunc(func(ctx context.Context, repoName string) error {
+			if err := gate(ctx, "delete", repoName, ""); err != nil {
+				return err
+			}
+			return hooks.DeleteRepo(ctx, repoName)
+		}),
+		backendhf.WithMoveRepoFunc(func(ctx context.Context, fromName, toName string) error {
+			if err := gate(ctx, "move", fromName, toName); err != nil {
+				return err
+			}
+			return hooks.MoveRepo(ctx, fromName, toName)
+		}),
+		backendhf.WithDuplicateRepoFunc(func(ctx context.Context, fromName, toName string, req backendhf.DuplicateRepoRequest) error {
+			if err := gate(ctx, "duplicate", fromName, toName); err != nil {
+				return err
+			}
+			return hooks.DuplicateRepo(ctx, fromName, toName, req)
+		}),
+		backendhf.WithUpdateRepoSettingsFunc(func(ctx context.Context, repoName string, settings backendhf.RepoSettings) error {
+			if err := gate(ctx, "settings", repoName, ""); err != nil {
+				return err
+			}
+			return hooks.UpdateRepoSettings(ctx, repoName, settings)
+		}),
+		backendhf.WithListReposFunc(func(ctx context.Context, repoType string, q backendhf.ListQuery) ([]backendhf.RepoListItem, bool, error) {
+			if err := gate(ctx, "list", repoType, ""); err != nil {
+				return nil, false, err
+			}
+			return hooks.ListRepos(ctx, repoType, q)
+		}),
 		backendhf.WithWhoamiFunc(hooks.Whoami),
 	}
 }
 
 // newE2EServer wires the handler chain in pkg/server's order (internal API →
-// xet CAS server → authentication → http → lfs → hf); withMirrorSource
-// installs PullMirrorReadOnly on the git transports. The xet engine ingests
+// xet CAS server → authentication → http → lfs → hf); withMirrorSource puts
+// the server's default PreOpen (mirror pull, pull-only mirrors read-only)
+// ahead of withPreOpenHook's on all four backends. The xet engine ingests
 // from the mirror source when one is set — like cmd/hfd does with
 // --pull-mirror-url — so mirrored LFS resolves stream through the engine
 // instead of racing the batch-API fallback; plain servers only serve local
@@ -240,14 +256,22 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	sharedMirror, xet := newTestMirror(t, st, cfg.mirrorSources != nil, mirrorOpts...)
 
-	perm := cfg.permission
-	var preOpen func(context.Context, string, bool) error
+	hooks := &server.Hooks{Storage: st}
+	preOpen := cfg.preOpen
 	if cfg.mirrorSources != nil {
-		perm = permission.All(permission.PullMirrorReadOnly(sharedMirror), cfg.permission)
-		preOpen = newMirrorPreOpenHook(sharedMirror)
+		hooks.Mirror = sharedMirror
+		preOpen = hooks.PreOpen
+		if cfg.preOpen != nil {
+			preOpen = func(ctx context.Context, repoName string, write bool) error {
+				if err := hooks.PreOpen(ctx, repoName, write); err != nil {
+					return err
+				}
+				return cfg.preOpen(ctx, repoName, write)
+			}
+		}
 	}
 
-	hfOpts := append(catalogOptions(st),
+	hfOpts := append(catalogOptions(hooks, cfg.catalogGate),
 		backendhf.WithStorage(st),
 		backendhf.WithMirror(sharedMirror),
 		backendhf.WithNext(http.NotFoundHandler()),
@@ -257,7 +281,6 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	if cfg.apiHooks {
 		hfOpts = append(hfOpts,
-			backendhf.WithPermissionHookFunc(cfg.permission),
 			backendhf.WithPreReceiveHookFunc(cfg.preReceive),
 			backendhf.WithPostReceiveHookFunc(cfg.postReceive))
 	}
@@ -269,8 +292,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendlfs.WithMirror(sharedMirror),
 		backendlfs.WithTokenSignValidator(signValidator),
 	}
-	if cfg.apiHooks {
-		lfsOpts = append(lfsOpts, backendlfs.WithPermissionHookFunc(cfg.permission))
+	if preOpen != nil {
+		lfsOpts = append(lfsOpts, backendlfs.WithPreOpenHookFunc(preOpen))
 	}
 	handler = backendlfs.NewHandler(lfsOpts...)
 	httpOpts := []backendhttp.Option{
@@ -285,9 +308,6 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	if cfg.postReceive != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(cfg.postReceive))
-	}
-	if perm != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPermissionHookFunc(perm))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
 	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
@@ -365,9 +385,6 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	if cfg.postReceive != nil {
 		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(cfg.postReceive))
-	}
-	if perm != nil {
-		sshOpts = append(sshOpts, backendssh.WithPermissionHookFunc(perm))
 	}
 	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -7,7 +7,6 @@ import (
 	"github.com/gorilla/mux"
 
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
@@ -18,13 +17,12 @@ type Handler struct {
 	storage             *storage.Storage
 	root                *mux.Router
 	next                http.Handler
-	permissionHookFunc  permission.PermissionHookFunc
 	preOpenHookFunc     PreOpenHookFunc
 	preReceiveHookFunc  receive.PreReceiveHookFunc
 	postReceiveHookFunc receive.PostReceiveHookFunc
 }
 
-// PreOpenHookFunc is called before opening a repository for a git service request.
+// PreOpenHookFunc admits a request to repoName before it opens or serves the repository; write reports whether the request may change it. Errors wrapping fs.ErrPermission answer 403, authenticate.ErrUnauthenticated 401, repository.ErrRepositoryNotExists 404, anything else 500.
 type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
@@ -44,14 +42,7 @@ func WithNext(next http.Handler) Option {
 	}
 }
 
-// WithPermissionHookFunc sets the permission hook for verifying operations.
-func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
-	return func(h *Handler) {
-		h.permissionHookFunc = fn
-	}
-}
-
-// WithPreOpenHookFunc sets a hook called before repository open.
+// WithPreOpenHookFunc sets the hook that admits info/refs, git-upload-pack and git-receive-pack requests.
 func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
 	return func(h *Handler) {
 		h.preOpenHookFunc = fn

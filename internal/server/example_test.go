@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +12,6 @@ import (
 	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -27,20 +27,29 @@ func ExampleNewHTTPHandler() {
 		}
 		return "", false, false, nil
 	})
-	hook := permission.PermissionHookFunc(func(ctx context.Context, op permission.Operation, repoName string, opCtx permission.Context) (bool, error) {
-		return authenticate.IdentityFrom(ctx).Name() == "alice", nil
-	})
+	preOpen := func(ctx context.Context, _ string, _ bool) error {
+		if authenticate.IdentityFrom(ctx).Name() == "alice" {
+			return nil
+		}
+		return fs.ErrPermission
+	}
 	st, err := storage.NewStorage(storage.WithRootDir(root))
 	if err != nil {
 		panic(err)
 	}
 	// Catalog routes are off until a callback is registered; Hooks carries the filesystem defaults.
 	hooks := &server.Hooks{Storage: st}
+	list := func(ctx context.Context, repoType string, query backendhf.ListQuery) ([]backendhf.RepoListItem, bool, error) {
+		if authenticate.IdentityFrom(ctx).Name() != "alice" {
+			return nil, false, fs.ErrPermission
+		}
+		return hooks.ListRepos(ctx, repoType, query)
+	}
 	handler := server.NewHTTPHandler(server.Options{
 		Storage:        st,
 		Authenticators: &authenticate.Authenticators{Token: validator},
-		Permission:     hook,
-		HFOptions:      []backendhf.Option{backendhf.WithWhoamiFunc(hooks.Whoami), backendhf.WithListReposFunc(hooks.ListRepos)},
+		PreOpen:        preOpen,
+		HFOptions:      []backendhf.Option{backendhf.WithWhoamiFunc(hooks.Whoami), backendhf.WithListReposFunc(list)},
 	})
 	get := func(path, bearer string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -56,7 +65,8 @@ func ExampleNewHTTPHandler() {
 	if err := json.Unmarshal(whoami.Body.Bytes(), &body); err != nil {
 		panic(err)
 	}
-	// The hook sees the authenticated name on the gated listing route; anonymous callers are refused.
-	fmt.Println(whoami.Code, body.Name, get("/api/models", "s3cret").Code, get("/api/models", "").Code)
-	// Output: 200 alice 200 403
+	// list gates /api/models and PreOpen gates org/repo: alice passes (404: org/repo is missing), anonymous callers get 403.
+	fmt.Println(whoami.Code, body.Name, get("/api/models", "s3cret").Code, get("/api/models", "").Code,
+		get("/api/models/org/repo", "s3cret").Code, get("/api/models/org/repo", "").Code)
+	// Output: 200 alice 200 403 404 403
 }

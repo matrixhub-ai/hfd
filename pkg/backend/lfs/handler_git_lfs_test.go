@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,7 +24,6 @@ import (
 	xetserver "github.com/wzshiming/xet/server"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
@@ -167,10 +167,10 @@ func TestBatchXETTokenDenied(t *testing.T) {
 		calls++
 		return "", 0, nil
 	}))
-	deny := func(context.Context, permission.Operation, string, permission.Context) (bool, error) {
-		return false, nil
-	}
-	h := NewHandler(WithMirror(m), WithPermissionHookFunc(deny))
+	deny := PreOpenHookFunc(func(context.Context, string, bool) error {
+		return fmt.Errorf("x: %w", fs.ErrPermission)
+	})
+	h := NewHandler(WithMirror(m), WithPreOpenHookFunc(deny))
 	body := fmt.Sprintf(`{"operation":"upload","transfers":["xet","basic"],"objects":[{"oid":%q,"size":1}]}`, strings.Repeat("a", 64))
 	req := httptest.NewRequest(http.MethodPost, "/org/repo.git/info/lfs/objects/batch", strings.NewReader(body))
 	req.Header.Set("Content-Type", metaMediaType)
@@ -179,6 +179,45 @@ func TestBatchXETTokenDenied(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || calls != 0 || strings.Contains(rec.Body.String(), "X-Xet-Access-Token") {
 		t.Fatalf("status = %d, mint calls = %d, body = %s; want 403 without minting", rec.Code, calls, rec.Body.String())
+	}
+}
+
+type signCounter struct{ signs int }
+
+func (s *signCounter) Sign(context.Context, string, string, string, time.Duration) (string, error) {
+	s.signs++
+	return "signed", nil
+}
+
+func (s *signCounter) Validate(context.Context, string, string, string) (string, bool, bool, error) {
+	return "", false, false, nil
+}
+
+func TestBatchDownloadDenied(t *testing.T) {
+	m, _ := newXETDataPlane(t, "")
+	data := bytes.Repeat([]byte("known download bytes. "), 1024)
+	sum := sha256.Sum256(data)
+	oid := hex.EncodeToString(sum[:])
+	if err := m.PutObject(context.Background(), oid, bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatalf("put object: %v", err)
+	}
+	signer := &signCounter{}
+	var refusal error
+	h := NewHandler(WithMirror(m), WithTokenSignValidator(signer), WithPreOpenHookFunc(func(context.Context, string, bool) error {
+		return refusal
+	}))
+	body := fmt.Sprintf(`{"operation":"download","objects":[{"oid":%q,"size":%d}]}`, oid, len(data))
+	batch := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, lfsTestRequest(http.MethodPost, "/org/repo.git/info/lfs/objects/batch", body))
+		return rec
+	}
+	if rec := batch(); rec.Code != http.StatusOK || signer.signs != 1 {
+		t.Fatalf("admitted download: status = %d, signs = %d, body = %s; want 200 with one signed link", rec.Code, signer.signs, rec.Body.String())
+	}
+	refusal, signer.signs = fmt.Errorf("x: %w", fs.ErrPermission), 0
+	if rec := batch(); rec.Code != http.StatusForbidden || signer.signs != 0 || strings.TrimSpace(rec.Body.String()) != `{"error":"permission denied"}` {
+		t.Fatalf("refused download: status = %d, signs = %d, body = %s; want 403 {\"error\":\"permission denied\"} without signing", rec.Code, signer.signs, rec.Body.String())
 	}
 }
 

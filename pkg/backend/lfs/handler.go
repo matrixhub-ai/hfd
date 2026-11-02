@@ -1,6 +1,11 @@
 package lfs
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -9,7 +14,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/backend/internal/httpapi"
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
-	"github.com/matrixhub-ai/hfd/pkg/permission"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
@@ -19,10 +24,13 @@ type Handler struct {
 	root               *mux.Router
 	next               http.Handler
 	locksStorage       *lfs.LockStorage
-	permissionHookFunc permission.PermissionHookFunc
+	preOpenHook        PreOpenHookFunc
 	tokenSignValidator authenticate.TokenSignValidator
 	mirror             *mirror.Mirror
 }
+
+// PreOpenHookFunc admits a batch or lock request; errors answer 403/401/404 for permission/auth/not-found, else 500.
+type PreOpenHookFunc func(ctx context.Context, repoName string, write bool) error
 
 // Option defines a functional option for configuring the Handler.
 type Option func(*Handler)
@@ -41,10 +49,10 @@ func WithNext(next http.Handler) Option {
 	}
 }
 
-// WithPermissionHookFunc sets the authentication hook for verifying operations.
-func WithPermissionHookFunc(fn permission.PermissionHookFunc) Option {
+// WithPreOpenHookFunc sets the hook that admits batch and lock requests.
+func WithPreOpenHookFunc(fn PreOpenHookFunc) Option {
 	return func(h *Handler) {
-		h.permissionHookFunc = fn
+		h.preOpenHook = fn
 	}
 }
 
@@ -114,22 +122,27 @@ func responseJSON(w http.ResponseWriter, data any, sc int) {
 	httpapi.RespondJSON(w, data, sc)
 }
 
-// checkPermission runs the permission hook and writes the failure response.
-// It returns true when the operation may proceed.
-func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string) bool {
-	return permission.Guard{
-		Hook:    h.permissionHookFunc,
-		Respond: func(w http.ResponseWriter, msg string, sc int) { responseJSON(w, msg, sc) },
-	}.Allow(w, r, op, repoName, permission.Context{})
-}
-
-// checkLockPermission is checkPermission rendering failures as lock lists,
-// preserving the lock endpoints' response bodies.
-func (h *Handler) checkLockPermission(w http.ResponseWriter, r *http.Request, op permission.Operation, repoName string) bool {
-	return permission.Guard{
-		Hook: h.permissionHookFunc,
-		Respond: func(w http.ResponseWriter, msg string, sc int) {
-			responseJSON(w, &lfs.VerifiableLockList{Message: msg}, sc)
-		},
-	}.Allow(w, r, op, repoName, permission.Context{})
+// admit runs the pre-open hook, answering a refusal as {key: text}; it reports whether the request may proceed.
+func (h *Handler) admit(w http.ResponseWriter, r *http.Request, repoName string, write bool, key string) bool {
+	if h.preOpenHook == nil {
+		return true
+	}
+	err := h.preOpenHook(r.Context(), repoName, write)
+	if err == nil {
+		return true
+	}
+	sc, text := http.StatusInternalServerError, err.Error()
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		sc, text = http.StatusForbidden, "permission denied"
+	case errors.Is(err, authenticate.ErrUnauthenticated):
+		w.Header().Set("WWW-Authenticate", `Basic realm="hfd"`)
+		sc, text = http.StatusUnauthorized, "Unauthorized"
+	case errors.Is(err, repository.ErrRepositoryNotExists):
+		sc, text = http.StatusNotFound, fmt.Sprintf("repository %q not found", repoName)
+	default:
+		slog.ErrorContext(r.Context(), "pre-open hook error", "repo", repoName, "write", write, "error", err)
+	}
+	responseJSON(w, map[string]string{key: text}, sc)
+	return false
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/gorilla/mux"
 
-	"github.com/matrixhub-ai/hfd/pkg/permission"
 	"github.com/matrixhub-ai/hfd/pkg/receive"
 )
 
@@ -18,10 +17,7 @@ func (h *Handler) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
-	repo, ok := h.openRepoDirect(w, ri.RepoName)
+	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
 	}
@@ -78,9 +74,6 @@ func (h *Handler) handleDeleteBranch(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
@@ -129,9 +122,6 @@ func (h *Handler) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
@@ -190,9 +180,6 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 	rev := vars["rev"]
 
-	if !h.checkPermission(w, r, permission.OperationUpdateRepo, ri.RepoName, permission.Context{Ref: rev}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, true)
 	if !ok {
 		return
@@ -233,9 +220,6 @@ func (h *Handler) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleListRefs(w http.ResponseWriter, r *http.Request) {
 	ri := getRepoInformation(r)
 
-	if !h.checkPermission(w, r, permission.OperationReadRepo, ri.RepoName, permission.Context{}) {
-		return
-	}
 	repo, ok := h.openRepoChecked(w, r, ri.RepoName, false)
 	if !ok {
 		return

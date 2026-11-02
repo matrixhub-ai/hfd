@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -26,7 +27,10 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 )
 
-// Hooks is the default hook set: mirror pull before opens (at most once per PullTTL per repository), logging on receive, push-mirroring after receive, and the HF catalog callbacks over the repositories on Storage.
+// errReadOnlyMirror refuses writes to a pull-only mirror; wraps fs.ErrPermission for the backends.
+var errReadOnlyMirror = fmt.Errorf("pull-only mirror is read-only: %w", iofs.ErrPermission)
+
+// Hooks is the default hook set: mirror pull before opens (at most once per PullTTL per repository) with pull-only mirrors kept read-only, logging on receive, push-mirroring after receive, and the HF catalog callbacks over the repositories on Storage.
 type Hooks struct {
 	Storage    *storage.Storage
 	Mirror     *mirror.Mirror
@@ -35,7 +39,7 @@ type Hooks struct {
 	lastPull   sync.Map
 }
 
-// PreOpen syncs mirror sources before the repository is opened, at most once per PullTTL per repository.
+// PreOpen syncs mirror sources before the repository is opened, at most once per PullTTL per repository; a write to a pull-only mirror is refused with fs.ErrPermission before any sync.
 func (h *Hooks) PreOpen(ctx context.Context, repoName string, write bool) error {
 	if h.Mirror == nil {
 		return nil
@@ -53,6 +57,11 @@ func (h *Hooks) PreOpen(ctx context.Context, repoName string, write bool) error 
 	if !isMirror {
 		return nil
 	}
+	if write {
+		if err := h.checkWritable(ctx, repoName); err != nil {
+			return err
+		}
+	}
 
 	if h.PullTTL > 0 {
 		if last, ok := h.lastPull.Load(repoPath); ok && time.Since(last.(time.Time)) < h.PullTTL {
@@ -66,6 +75,28 @@ func (h *Hooks) PreOpen(ctx context.Context, repoName string, write bool) error 
 		h.lastPull.Store(repoPath, time.Now())
 	}
 	return nil
+}
+
+// checkWritable refuses writes to a pull-only mirror: a mirror source that is not also a push destination.
+func (h *Hooks) checkWritable(ctx context.Context, repoName string) error {
+	if h.Mirror == nil {
+		return nil
+	}
+	src, err := h.Mirror.IsMirrorSource(ctx, repoName)
+	if err != nil {
+		return err
+	}
+	if !src {
+		return nil
+	}
+	dst, err := h.Mirror.IsMirrorDestination(ctx, repoName)
+	if err != nil {
+		return err
+	}
+	if dst {
+		return nil
+	}
+	return fmt.Errorf("repository %q: %w", repoName, errReadOnlyMirror)
 }
 
 // PreReceive logs and allows every ref update.
@@ -198,9 +229,12 @@ func (h *Hooks) DeleteRepo(ctx context.Context, repoName string) error {
 	return nil
 }
 
-// MoveRepo renames the repository; an existing destination is a conflict.
+// MoveRepo renames the repository; a pull-only mirror destination is refused and an existing one is a conflict.
 func (h *Hooks) MoveRepo(ctx context.Context, fromName, toName string) error {
 	slog.InfoContext(ctx, "Move repository", "user", authenticate.IdentityFrom(ctx).Name(), "from", fromName, "to", toName)
+	if err := h.checkWritable(ctx, toName); err != nil {
+		return err
+	}
 	repo, err := h.openRepo(fromName)
 	if err != nil {
 		return err
@@ -215,9 +249,12 @@ func (h *Hooks) MoveRepo(ctx context.Context, fromName, toName string) error {
 	return nil
 }
 
-// DuplicateRepo copies the repository with every ref; an existing destination is a conflict.
+// DuplicateRepo copies the repository with every ref; a pull-only mirror destination is refused and an existing one is a conflict.
 func (h *Hooks) DuplicateRepo(ctx context.Context, fromName, toName string, request backendhf.DuplicateRepoRequest) error {
 	slog.InfoContext(ctx, "Duplicate repository", "user", authenticate.IdentityFrom(ctx).Name(), "from", fromName, "to", toName, "private", request.Private)
+	if err := h.checkWritable(ctx, toName); err != nil {
+		return err
+	}
 	repo, err := h.openRepo(fromName)
 	if err != nil {
 		return err
@@ -232,9 +269,12 @@ func (h *Hooks) DuplicateRepo(ctx context.Context, fromName, toName string, requ
 	return nil
 }
 
-// UpdateRepoSettings accepts the payload; private and gated are not enforced here.
+// UpdateRepoSettings accepts the payload unless the repository is a pull-only mirror; private and gated are not enforced here.
 func (h *Hooks) UpdateRepoSettings(ctx context.Context, repoName string, _ backendhf.RepoSettings) error {
 	slog.InfoContext(ctx, "Update repository settings", "user", authenticate.IdentityFrom(ctx).Name(), "repo", repoName)
+	if err := h.checkWritable(ctx, repoName); err != nil {
+		return err
+	}
 	_, err := h.openRepo(repoName)
 	return err
 }

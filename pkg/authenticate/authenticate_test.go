@@ -3,6 +3,7 @@ package authenticate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -478,5 +479,14 @@ func TestNoAuthenticate(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
+	}
+}
+
+func TestErrUnauthenticated(t *testing.T) {
+	if err := fmt.Errorf("x: %w", ErrUnauthenticated); !errors.Is(err, ErrUnauthenticated) {
+		t.Errorf("errors.Is(%v, ErrUnauthenticated) = false, want true", err)
+	}
+	if got := ErrUnauthenticated.Error(); got != "unauthenticated" {
+		t.Errorf("ErrUnauthenticated.Error() = %q, want %q", got, "unauthenticated")
 	}
 }
