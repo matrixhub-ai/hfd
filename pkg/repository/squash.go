@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 )
 
 // SuperSquash squashes all commits in the given rev into a single root commit
@@ -18,11 +19,19 @@ func (r *Repository) SuperSquash(ctx context.Context, rev string, message string
 
 	refName := plumbing.NewBranchReferenceName(rev)
 
-	tipHash, err := r.repo.ResolveRevision(plumbing.Revision(refName))
+	set, err := r.reachable(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, err)
 	}
-	tipCommit, err := r.repo.CommitObject(*tipHash)
+	ref, err := storer.ResolveReference(r.repo.Storer, refName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, err)
+	}
+	tipHash, ok := set.peel(ref.Hash())
+	if !ok {
+		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, ErrRevisionNotFound)
+	}
+	tipCommit, err := r.repo.CommitObject(tipHash)
 	if err != nil {
 		return "", fmt.Errorf("failed to get tree for rev %q: %w", rev, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,14 +49,24 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
+	// Refused before its pack is read, a push stores nothing.
+	if hooks.PreReceive != nil {
+		if denied := hooks.PreReceive(ctx, r.refUpdates(req.Commands)); denied != nil {
+			return rejectReceivePack(w, rd, req, denied)
+		}
+	}
 	rs := &packp.ReportStatus{UnpackStatus: "ok"}
+	var refused []bool
 	if slices.ContainsFunc(req.Commands, func(c *packp.Command) bool { return c.Action() != packp.Delete }) {
-		if err := packfile.UpdateObjectStorage(st, rd); err != nil {
+		delivered, bases, err := r.unpackPack(ctx, rd)
+		if err != nil {
 			// A cancelled request is the caller's failure, not an unpack status to report.
 			if ctx.Err() != nil {
 				return errors.Join(err, ctx.Err())
 			}
 			rs.UnpackStatus = err.Error()
+		} else if refused, err = r.checkPushed(ctx, req.Commands, delivered, bases); err != nil {
+			return err
 		}
 	}
 	if rs.UnpackStatus != "ok" {
@@ -64,14 +75,18 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 		}
 		return writeReport(w, &req.Capabilities, rs)
 	}
-	if hooks.PreReceive != nil {
-		if denied := hooks.PreReceive(ctx, r.refUpdates(req.Commands)); denied != nil {
-			return rejectReceivePack(w, rd, req, denied)
-		}
-	}
+	return r.applyCommands(ctx, w, req, cfg, refused, hooks)
+}
+
+// applyCommands updates every ref but the refused ones, reports each command and hands those applied to PostReceive.
+func (r *Repository) applyCommands(ctx context.Context, output io.Writer, req *packp.UpdateRequests, cfg receiveConfig, refused []bool, hooks ReceivePackHooks) error {
+	rs := &packp.ReportStatus{UnpackStatus: "ok"}
 	var applied []*packp.Command
-	for _, cmd := range req.Commands {
-		status := r.updateReference(cmd, cfg)
+	for i, cmd := range req.Commands {
+		status := errMissingObject.Error()
+		if refused == nil || !refused[i] {
+			status = r.updateReference(cmd, cfg)
+		}
 		if status == "" {
 			status = "ok"
 			applied = append(applied, cmd)
@@ -79,11 +94,111 @@ func (r *Repository) receivePack(ctx context.Context, output io.Writer, input io
 		rs.CommandStatuses = append(rs.CommandStatuses, &packp.CommandStatus{ReferenceName: cmd.Name, Status: status})
 	}
 	// Like git, the report goes out before post-receive runs.
-	err = writeReport(w, &req.Capabilities, rs)
+	err := writeReport(output, &req.Capabilities, rs)
 	if len(applied) > 0 && hooks.PostReceive != nil {
 		hooks.PostReceive(ctx, r.refUpdates(applied))
 	}
 	return err
+}
+
+// unpackPack stores the pack read from rd up to EOF and returns which objects it delivered and the objects outside it its deltas were resolved against; a repository not sharing the pool gets a nil delivered, whatever its store holds being its own.
+func (r *Repository) unpackPack(ctx context.Context, rd io.Reader) (delivered func(plumbing.Hash) bool, bases []plumbing.Hash, err error) {
+	st, ok := r.repo.Storer.(*sharedStorer)
+	if !ok {
+		return nil, nil, packfile.UpdateObjectStorage(r.repo.Storer, rd)
+	}
+	w, err := st.PackfileWriter()
+	if err != nil {
+		return nil, nil, err
+	}
+	objs := &packObjects{held: map[plumbing.Hash]struct{}{}, bases: map[plumbing.Hash]struct{}{}}
+	pw := w.(*sharedPackWriter)
+	pw.observers, pw.onRead = []packfile.Observer{objs}, objs.read
+	_, err = io.Copy(w, rd)
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	// A delta copying its outside base whole holds that base without delivering it.
+	return func(h plumbing.Hash) bool {
+		_, held := objs.held[h]
+		_, base := objs.bases[h]
+		return held && !base
+	}, slices.Collect(maps.Keys(objs.bases)), nil
+}
+
+// packObjects collects every object a parsed pack holds, resolved deltas and objects the store already had included, and the bases from outside it its deltas were read against.
+type packObjects struct {
+	held, bases map[plumbing.Hash]struct{}
+}
+
+func (*packObjects) OnHeader(uint32) error { return nil }
+
+func (*packObjects) OnInflatedObjectHeader(plumbing.ObjectType, int64, int64) error { return nil }
+
+func (p *packObjects) OnInflatedObjectContent(h plumbing.Hash, _ int64, _ uint32, _ []byte) error {
+	p.held[h] = struct{}{}
+	return nil
+}
+
+func (*packObjects) OnFooter(plumbing.Hash) error { return nil }
+
+// read notes a base the parser reads back; the pack's own are stored before any delta reads them, so only an outside one is new to held.
+func (p *packObjects) read(h plumbing.Hash) {
+	if _, ok := p.held[h]; !ok {
+		p.bases[h] = struct{}{}
+	}
+}
+
+// checkPushed tells which commands to refuse with errMissingObject, judging each on its own as git does: its new value must be delivered or a commit or tag the refs reach, and all that value and the pack's outside bases reach must be delivered or reachable; a nil delivered asks only that it exist.
+func (r *Repository) checkPushed(ctx context.Context, cmds []*packp.Command, delivered func(plumbing.Hash) bool, bases []plumbing.Hash) ([]bool, error) {
+	refused := make([]bool, len(cmds))
+	var set *reachSet
+	var owned []int
+	for i, cmd := range cmds {
+		if cmd.Action() == packp.Delete {
+			continue
+		}
+		if delivered != nil && !delivered(cmd.New) {
+			if set == nil {
+				var err error
+				if set, err = r.reachable(ctx); err != nil {
+					return nil, err
+				}
+			}
+			if !set.contains(cmd.New) {
+				refused[i] = true
+				continue
+			}
+		}
+		owned = append(owned, i)
+	}
+	if len(owned) == 0 {
+		return refused, nil
+	}
+	// Queued ahead of the new values, the bases are judged after every pushed commit, against the trees of the parents those name.
+	tips := slices.Clone(bases)
+	for _, i := range owned {
+		tips = append(tips, cmds[i].New)
+	}
+	// Like git, one walk covers every command, and only a failed one is redone command by command.
+	switch err := r.checkConnectivity(ctx, tips, delivered); {
+	case err == nil:
+		return refused, nil
+	case !errors.Is(err, errMissingObject):
+		return nil, err
+	}
+	for _, i := range owned {
+		err := r.checkConnectivity(ctx, append(slices.Clone(bases), cmds[i].New), delivered)
+		if errors.Is(err, errMissingObject) {
+			refused[i] = true
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	return refused, nil
 }
 
 func (r *Repository) updateReference(cmd *packp.Command, cfg receiveConfig) string {

@@ -244,7 +244,8 @@ func TestHandlerGCFailedPruneStillSweeps(t *testing.T) {
 	f := newFixture(t)
 	live, dead := f.put(t, "live-p "), f.put(t, "dead-p ")
 	f.commitPointer(t, "org/broken", live)
-	if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/refs/heads/dangling", []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+	// An undecodable loose object fails Git GC while every reachable object stays readable from the shared pool.
+	if err := util.WriteFile(f.st.RepositoriesFS(), "/org/broken.git/objects/11/"+strings.Repeat("1", 38), []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res, body := gcStep(t, f.handler(), "grace=0")
@@ -512,14 +513,19 @@ func TestHandlerUsageSpoolAndMirror(t *testing.T) {
 	if err != nil || xet.Xorbs.Count == 0 || xet.SHA256Index.Count == 0 {
 		t.Fatalf("xet usage = %+v, %v; want stored xorbs and sha256 entries", xet, err)
 	}
-	git, err := gc.NewGC(f.st.RepositoriesFS(), xetstore.New(f.xs)).Usage(ctx)
-	if err != nil || git.Objects.Count == 0 {
-		t.Fatalf("repository usage = %+v, %v; want the committed objects", git, err)
+	g := gc.NewGC(f.st.RepositoriesFS(), xetstore.New(f.xs))
+	git, err := g.Usage(ctx)
+	if err != nil || git.Objects.Count != 0 || git.Other.Count == 0 {
+		t.Fatalf("repository usage = %+v, %v; want metadata only, the committed objects being shared", git, err)
+	}
+	shared, err := g.SharedObjectsUsage(ctx)
+	if err != nil || shared.Count != 3 {
+		t.Fatalf("shared objects usage = %+v, %v; want the committed commit, tree and pointer blob", shared, err)
 	}
 
 	rec := do(f.handler(WithSpool(sp), WithMirror(engine)), http.MethodGet, "/internal/usage")
 	t.Logf("usage JSON: %s", rec.Body)
-	want := usageResponse{Repository: git, Xet: xet, Spool: xetstorage.ObjectUsage{Count: 1, Bytes: int64(len(content))}, Mirror: index}
+	want := usageResponse{Repository: git, SharedObjects: shared, Xet: xet, Spool: xetstorage.ObjectUsage{Count: 1, Bytes: int64(len(content))}, Mirror: index}
 	var got usageResponse
 	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil || got != want {
 		t.Fatalf("usage %d %s; want %+v", rec.Code, rec.Body, want)
@@ -571,8 +577,12 @@ func TestHandlerUsageStore(t *testing.T) {
 		if err != nil || xet == before.Xet {
 			t.Fatalf("second upload left xet usage at %+v (%v)", xet, err)
 		}
-		if after := getUsage(t, h); after != (usageResponse{Repository: before.Repository, Xet: xet}) {
-			t.Fatalf("usage after an xet-only upload = %+v; want the repositories unchanged and xet at %+v", after, xet)
+		shared, err := h.gc.SharedObjectsUsage(ctx)
+		if err != nil {
+			t.Fatalf("shared objects usage: %v", err)
+		}
+		if after := getUsage(t, h); after != (usageResponse{Repository: before.Repository, SharedObjects: shared, Xet: xet}) {
+			t.Fatalf("usage after an xet-only upload = %+v; want the repositories unchanged, shared objects at %+v and xet at %+v", after, shared, xet)
 		}
 	})
 	t.Run("StoreErrorAborts", func(t *testing.T) {

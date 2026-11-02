@@ -127,6 +127,12 @@ func testMirrorPullThroughClone(t *testing.T, ssh bool) {
 	if string(content) != readme {
 		t.Errorf("Unexpected content from proxy clone: %q", content)
 	}
+
+	// Mirroring fetches into the proxy's shared pool, leaving the mirror no object of its own.
+	if loose, packs := gitObjectFiles(t, proxy.storage.RepositoriesFS(), repository.ResolvePath(repoID)); loose != 0 || packs != 0 {
+		t.Errorf("mirror objects/ holds %d loose objects and %d packs, want none", loose, packs)
+	}
+	requirePooled(t, proxy.storage.FS(), gitObjects(t, cloneDir, "--all"))
 }
 
 // testMirrorCachedClone: after the first clone mirrors the repo, the second

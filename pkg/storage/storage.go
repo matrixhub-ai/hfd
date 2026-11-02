@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 
 	"github.com/go-git/go-billy/v6"
-	"github.com/go-git/go-billy/v6/helper/chroot"
 	"github.com/go-git/go-billy/v6/osfs"
 	xetstorage "github.com/wzshiming/xet/storage"
 	xetlocal "github.com/wzshiming/xet/storage/local"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 // Storage owns repository filesystems, xet content storage, and local caches.
@@ -59,7 +60,7 @@ func NewStorage(opts ...Option) (*Storage, error) {
 		h.fs = osfs.New(h.rootDir)
 	}
 
-	h.repositoriesFS = chrootFS(h.fs, "/repositories")
+	h.repositoriesFS = repository.BindSharedObjects(h.fs, "/repositories", "/git/sha1")
 
 	if h.xetStorage == nil {
 		xs, err := xetlocal.NewStorage(xetlocal.WithBasePath(h.XETDir()))
@@ -76,15 +77,6 @@ func NewStorage(opts ...Option) (*Storage, error) {
 	}
 
 	return h, nil
-}
-
-// chrootFS scopes fs to dir, preferring the filesystem's own Chroot.
-func chrootFS(fs billy.Filesystem, dir string) billy.Filesystem {
-	sub, err := fs.Chroot(dir)
-	if err != nil {
-		return chroot.New(fs, dir)
-	}
-	return sub
 }
 
 // FS returns the filesystem holding repositories.

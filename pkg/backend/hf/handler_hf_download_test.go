@@ -586,12 +586,13 @@ func TestTreeHubShape(t *testing.T) {
 
 	t.Run("UnreadableBlobOmitted", func(t *testing.T) {
 		const behavior = "top.txt, whose blob cannot be read, is left out instead of leaving a blank slot"
-		// A repository of its own: the shared one must keep top.txt readable.
+		// A storage and pool of its own: the repository the other subtests read must keep top.txt readable.
 		st, _ := newLFSRepo(t, files)
 		const helloBlob = "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0" // git blob id of "hello"
-		loose := filepath.Join(repository.ResolvePath("org/repo"), "objects", helloBlob[:2], helloBlob[2:])
-		if err := st.RepositoriesFS().Remove(loose); err != nil {
-			t.Fatalf("remove the loose blob of top.txt: %v", err)
+		// Written objects live in the storage's shared pool, not in the repository's objects/.
+		loose := filepath.Join("/git/sha1/objects", helloBlob[:2], helloBlob[2:])
+		if err := st.FS().Remove(loose); err != nil {
+			t.Fatalf("remove the pooled loose blob of top.txt: %v", err)
 		}
 		h := NewHandler(WithStorage(st))
 		for _, want := range []struct {

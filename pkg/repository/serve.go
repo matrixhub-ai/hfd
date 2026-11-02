@@ -30,10 +30,10 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 		return r.serveGit(ctx, dir, service, gitProtocol, output, input, true, hooks, nil)
 	}
 	w := ioutil.WriteNopCloser(output)
-	in := io.NopCloser(input)
 	switch service {
 	case GitUploadPack:
 		if transport.ProtocolVersion(gitProtocol) == protocol.V2 {
+			in := io.NopCloser(newWantFilter(input, output, r.wantAllowed(ctx)))
 			return transport.UploadPack(ctx, r.repo.Storer, in, w, &transport.UploadPackRequest{
 				GitProtocol:  gitProtocol,
 				StatelessRPC: true,
@@ -72,13 +72,14 @@ func (r *Repository) serveStatelessUploadPackV0(ctx context.Context, output io.W
 	}
 
 	if uploadPackRequestHasDone(body) {
-		return transport.UploadPack(ctx, r.repo.Storer, io.NopCloser(bytes.NewReader(body)), ioutil.WriteNopCloser(output), &transport.UploadPackRequest{
+		in := io.NopCloser(newWantFilter(bytes.NewReader(body), output, r.wantAllowed(ctx)))
+		return transport.UploadPack(ctx, r.repo.Storer, in, ioutil.WriteNopCloser(output), &transport.UploadPackRequest{
 			GitProtocol:  gitProtocol,
 			StatelessRPC: true,
 		})
 	}
 
-	return r.serveUploadPackNegotiationRound(bytes.NewReader(body), output)
+	return r.serveUploadPackNegotiationRound(ctx, bytes.NewReader(body), output)
 }
 
 // uploadPackRequestHasDone reports whether an upload-pack request body
@@ -102,8 +103,8 @@ func uploadPackRequestHasDone(body []byte) bool {
 // according to the negotiated multi_ack capability and the round is closed
 // with NAK. Unlike C git, the NAK is sent even when commons were found;
 // fetch-pack treats NAK as the round terminator either way.
-func (r *Repository) serveUploadPackNegotiationRound(body io.Reader, output io.Writer) error {
-	rd := bufio.NewReader(body)
+func (r *Repository) serveUploadPackNegotiationRound(ctx context.Context, body io.Reader, output io.Writer) error {
+	rd := bufio.NewReader(newWantFilter(body, output, r.wantAllowed(ctx)))
 
 	l, _, err := pktline.PeekLine(rd)
 	if err != nil {
@@ -209,9 +210,9 @@ func (r *Repository) Serve(ctx context.Context, rw io.ReadWriter, service string
 		return r.serveGit(ctx, dir, service, gitProtocol, rw, rw, false, hooks, stderr)
 	}
 	w := ioutil.WriteNopCloser(rw)
-	in := io.NopCloser(rw)
 	switch service {
 	case GitUploadPack:
+		in := io.NopCloser(newWantFilter(rw, rw, r.wantAllowed(ctx)))
 		return transport.UploadPack(ctx, r.repo.Storer, in, w, &transport.UploadPackRequest{
 			GitProtocol: gitProtocol,
 		})

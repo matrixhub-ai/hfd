@@ -24,9 +24,9 @@ import (
 // Handler is hfd's unauthenticated management API, meant to sit behind the operator-only --internal gate; it assembles the
 // usage report and the GC step from the repository GC, the xet store, the spool and the engine:
 // GET /internal/objects lists stored objects,
-// GET /internal/usage reports repository, xet storage, spool and mirror index usage,
+// GET /internal/usage reports repository, shared Git object, xet storage, spool and mirror index usage,
 // POST /internal/gc (?dry_run=&grace=&max=&budget=) runs one GC step: Git GC in every repository, then unlinking of the sha256 index
-// entries no surviving LFS pointer names (the prune pass, uncharged and unbounded), then the budgeted sweep passes — storage
+// entries no reachable LFS pointer names (the prune pass, uncharged and unbounded), then the budgeted sweep passes — storage
 // (sha256-anchored, max bounds it), idle spools and the engine index — under the same grace and dry run with budget as one
 // wall-clock budget spent storage → spool → mirror; the response carries the prune section even when that pass failed and a
 // section per sweep pass that ran and succeeded (storage, spools, mirror), lists failed passes in errors with status 200, and
@@ -220,10 +220,11 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 
 // usageResponse is the usage report; unconfigured sections stay, at zero.
 type usageResponse struct {
-	Repository repository.Usage
-	Xet        xetstorage.Usage
-	Spool      xetstorage.ObjectUsage
-	Mirror     xetstorage.ObjectUsage
+	Repository    repository.Usage
+	SharedObjects repository.ObjectUsage // loose objects of the store the repositories share; Repository leaves them out
+	Xet           xetstorage.Usage
+	Spool         xetstorage.ObjectUsage
+	Mirror        xetstorage.ObjectUsage
 }
 
 func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +261,9 @@ func (h *Handler) usage(r *http.Request) (usageResponse, error) {
 	}
 	if resp.Repository, err = h.gc.Usage(ctx); err != nil {
 		return resp, err
+	}
+	if resp.SharedObjects, err = h.gc.SharedObjectsUsage(ctx); err != nil {
+		return resp, fmt.Errorf("shared objects usage: %w", err)
 	}
 	return resp, nil
 }

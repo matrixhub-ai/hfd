@@ -2,13 +2,19 @@ package e2e_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-git/go-billy/v6/util"
+
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
 const (
@@ -57,6 +63,7 @@ func TestGitOperationsMatrix(t *testing.T) {
 	}{
 		{name: "CloneEmptyRepo", test: testCloneEmptyRepo},
 		{name: "PushCommit", test: testPushCommit},
+		{name: "PushLandsInSharedStore", test: testPushLandsInSharedStore},
 		{name: "CloneWithContent", test: testCloneWithContent},
 		{name: "FetchFromRepo", test: testFetchFromRepo},
 		{name: "PushMoreCommits", test: testPushMoreCommits},
@@ -108,6 +115,60 @@ func testPushCommit(t *testing.T, s *e2eServer, remote string, env []string) {
 	runGit(t, cloneDir, env, "add", "README.md")
 	runGit(t, cloneDir, env, "commit", "-m", "Initial commit")
 	runGit(t, cloneDir, env, "push", "origin", "main")
+}
+
+// testPushLandsInSharedStore pushes two commits, the second rewriting the
+// file the first added, so native receive-pack gets a thin pack whose delta
+// base only the shared pool holds; go-git advertises no-thin and gets a full
+// one. Every object the client has must then be a loose file in the pool,
+// the repository's objects/ must hold only its alternates, and a fresh clone
+// must read both commits back.
+func testPushLandsInSharedStore(t *testing.T, s *e2eServer, remote string, env []string) {
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	runGit(t, "", env, "clone", remote, cloneDir)
+	runGit(t, cloneDir, env, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, env, "config", "user.name", "Test User")
+
+	var base strings.Builder
+	for i := range 256 {
+		fmt.Fprintf(&base, "line %03d of the delta base\n", i)
+	}
+	first := base.String()
+	second := first + "appended line\n"
+	for _, content := range []string{first, second} {
+		if err := os.WriteFile(filepath.Join(cloneDir, "notes.txt"), []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write notes.txt: %v", err)
+		}
+		runGit(t, cloneDir, env, "add", "notes.txt")
+		runGit(t, cloneDir, env, "commit", "-m", "Write notes.txt")
+		runGit(t, cloneDir, env, "push", "origin", "main")
+	}
+
+	dataFS := s.storage.FS()
+	objectsDir := filepath.Join("/repositories", repository.ResolvePath(gitMatrixRepoID), "objects")
+	const wantAlternates = "../../../../git/sha1/objects\n"
+	if alternates, err := util.ReadFile(dataFS, filepath.Join(objectsDir, "info", "alternates")); err != nil || string(alternates) != wantAlternates {
+		t.Errorf("alternates = %q, %v; want %q", alternates, err, wantAlternates)
+	}
+	var files []string
+	err := util.Walk(dataFS, objectsDir, func(name string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			files = append(files, strings.TrimPrefix(name, objectsDir+"/"))
+		}
+		return err
+	})
+	if err != nil || !slices.Equal(files, []string{"info/alternates"}) {
+		t.Errorf("repository objects/ files = %q, %v; want only info/alternates", files, err)
+	}
+	requirePooled(t, dataFS, gitObjects(t, cloneDir, "--all"))
+
+	verifyDir := filepath.Join(t.TempDir(), "verify")
+	runGit(t, "", env, "clone", remote, verifyDir)
+	for rev, want := range map[string]string{"HEAD~1": first, "HEAD": second} {
+		if got, _, err := gitCmd(t, verifyDir, nil, "show", rev+":notes.txt"); err != nil || got != want {
+			t.Errorf("fresh clone %s:notes.txt differs from the pushed content (%d bytes, want %d): %v", rev, len(got), len(want), err)
+		}
+	}
 }
 
 func testCloneWithContent(t *testing.T, s *e2eServer, remote string, env []string) {
