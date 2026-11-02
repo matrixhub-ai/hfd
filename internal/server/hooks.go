@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-git/go-billy/v6"
 
+	"github.com/matrixhub-ai/hfd/internal/lru"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	"github.com/matrixhub-ai/hfd/pkg/hfmeta"
@@ -30,21 +31,45 @@ import (
 // errReadOnlyMirror refuses writes to a pull-only mirror; wraps fs.ErrPermission for the backends.
 var errReadOnlyMirror = fmt.Errorf("pull-only mirror is read-only: %w", iofs.ErrPermission)
 
+// Maintainer schedules background maintenance of the repository at repoPath on fs.
+type Maintainer interface {
+	Notify(fs billy.Filesystem, repoPath string)
+}
+
+var _ Maintainer = (*repository.Maintainer)(nil)
+
+// maintenanceSeenLimit caps PreOpen's first-sight memory, as any client can name arbitrary repositories.
+const maintenanceSeenLimit = 4096
+
 // Hooks is the default hook set: mirror pull before opens (at most once per PullTTL per repository) with pull-only mirrors kept read-only, logging on receive, push-mirroring after receive, and the HF catalog callbacks over the repositories on Storage.
 type Hooks struct {
 	Storage    *storage.Storage
 	Mirror     *mirror.Mirror
 	ProxyToken string
 	PullTTL    time.Duration
+	Maintainer Maintainer // notified after every receive and on PreOpen's first sight of a repository; nil disables
 	lastPull   sync.Map
+	checkOnce  sync.Once
+	checked    *lru.Cache[string, struct{}] // recently opened repository paths PreOpen has notified Maintainer of
 }
 
-// PreOpen syncs mirror sources before the repository is opened, at most once per PullTTL per repository; a write to a pull-only mirror is refused with fs.ErrPermission before any sync.
+// PreOpen notifies Maintainer on a repository's first sight per process, again once seen after eviction from the bounded memory, then syncs mirror sources before the repository is opened, at most once per PullTTL per repository; a write to a pull-only mirror is refused with fs.ErrPermission before any sync.
 func (h *Hooks) PreOpen(ctx context.Context, repoName string, write bool) error {
+	repoPath := repository.ResolvePath(repoName)
+	if h.Maintainer != nil && repoPath != "" {
+		h.checkOnce.Do(func() { h.checked = lru.New[string, struct{}](maintenanceSeenLimit) })
+		var first bool
+		h.checked.GetOrNew(repoPath, func() (struct{}, bool) {
+			first = true
+			return struct{}{}, true
+		})
+		if first {
+			h.Maintainer.Notify(h.Storage.RepositoriesFS(), repoPath)
+		}
+	}
 	if h.Mirror == nil {
 		return nil
 	}
-	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
 		return nil
@@ -108,18 +133,22 @@ func (h *Hooks) PreReceive(ctx context.Context, repoName string, updates []recei
 	return true, nil
 }
 
-// PostReceive logs ref updates and pushes branch/tag changes to the push mirror.
+// PostReceive logs ref updates, notifies Maintainer and pushes branch/tag changes to the push mirror.
 func (h *Hooks) PostReceive(ctx context.Context, repoName string, updates []receive.RefUpdate) error {
 	for _, e := range updates {
 		slog.InfoContext(ctx, "Post-receive hook", "user", authenticate.IdentityFrom(ctx).Name(), "repo", repoName, "event", e.String(),
 			"ref", e.RefName(), "old", e.OldRev(), "new", e.NewRev())
 	}
 
+	repoPath := repository.ResolvePath(repoName)
+	if h.Maintainer != nil && repoPath != "" {
+		h.Maintainer.Notify(h.Storage.RepositoriesFS(), repoPath)
+	}
+
 	if h.Mirror == nil {
 		return nil
 	}
 
-	repoPath := repository.ResolvePath(repoName)
 	if repoPath == "" {
 		slog.WarnContext(ctx, "Cannot resolve repo path for push mirror", "repo", repoName)
 		return nil

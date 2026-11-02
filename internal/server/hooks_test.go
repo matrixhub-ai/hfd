@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/receive"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
@@ -671,4 +673,219 @@ func roMirrorRefused(t *testing.T, call string, err error, repoName string) {
 	if !errors.Is(err, iofs.ErrPermission) || !errors.Is(err, errReadOnlyMirror) || !strings.Contains(err.Error(), fmt.Sprintf("repository %q", repoName)) {
 		t.Errorf("%s = %v, want the errReadOnlyMirror refusal (fs.ErrPermission) naming repository %q", call, err, repoName)
 	}
+}
+
+// mtRecorder is a Maintainer recording each Notify.
+type mtRecorder struct {
+	mu    sync.Mutex
+	calls []mtNotify
+}
+
+// mtNotify is one Notify an mtRecorder saw.
+type mtNotify struct {
+	fs   billy.Filesystem
+	path string
+}
+
+func (r *mtRecorder) Notify(fs billy.Filesystem, repoPath string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, mtNotify{fs, repoPath})
+}
+
+// take returns the calls since the last take.
+func (r *mtRecorder) take() []mtNotify {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	calls := r.calls
+	r.calls = nil
+	return calls
+}
+
+// mtRequireNotified requires calls to be exactly one Notify of path on fs.
+func mtRequireNotified(t *testing.T, what string, calls []mtNotify, fs billy.Filesystem, path string) {
+	t.Helper()
+	if len(calls) == 1 && calls[0].fs == fs && calls[0].path == path {
+		return
+	}
+	var got []string
+	for _, c := range calls {
+		if c.fs != fs {
+			c.path += " on another filesystem"
+		}
+		got = append(got, c.path)
+	}
+	t.Errorf("%s notified %q, want one Notify of %q on the repositories filesystem", what, got, path)
+}
+
+// TestMaintenancePostReceive pins that PostReceive notifies Hooks.Maintainer once for any ref update, ahead of the mirror checks, and logs as before without one.
+func TestMaintenancePostReceive(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx := authenticate.WithIdentity(context.Background(), authenticate.NewIdentity("alice", "alice@example.com"))
+	const repoName = "org/repo"
+	branch := receive.NewRefUpdate(strings.Repeat("1", 40), strings.Repeat("2", 40), "refs/heads/main", nil)
+	pr := receive.NewRefUpdate(receive.ZeroHash, strings.Repeat("3", 40), "refs/pr/1", nil)
+	branchLog := `msg="Post-receive hook" user=alice repo=org/repo event=branch_push:main ref=refs/heads/main`
+	prLog := `msg="Post-receive hook" user=alice repo=org/repo event=ref_update:refs/pr/1 ref=refs/pr/1`
+	withoutMirror := func(t *testing.T) *Hooks { return &Hooks{Storage: newStorage(t)} }
+	// No destination is configured, so the push mirror returns before pushing.
+	withMirror := func(t *testing.T) *Hooks { return roMirrorHooks(t, roMirrorOnly("other/repo")) }
+	for _, tc := range []struct {
+		name   string
+		hooks  func(t *testing.T) *Hooks
+		update receive.RefUpdate
+		logs   []string
+	}{
+		{"BranchWithoutMirror", withoutMirror, branch, []string{branchLog}},
+		{"PRWithoutMirror", withoutMirror, pr, []string{prLog}},
+		{"PRSkippedByPushFilter", withMirror, pr, []string{prLog, `msg="Skip push mirror for non-branch/tag refs" repo=org/repo`}},
+		{"BranchToPushMirror", withMirror, branch, []string{branchLog}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("Maintainer", func(t *testing.T) {
+				rec := &mtRecorder{}
+				hooks := tc.hooks(t)
+				hooks.Maintainer = rec
+				if err := hooks.PostReceive(ctx, repoName, []receive.RefUpdate{tc.update}); err != nil {
+					t.Fatalf("PostReceive = %v, want nil", err)
+				}
+				mtRequireNotified(t, "PostReceive of "+tc.update.RefName(), rec.take(), hooks.Storage.RepositoriesFS(), repository.ResolvePath(repoName))
+			})
+			t.Run("MaintainerNil", func(t *testing.T) {
+				hooks := tc.hooks(t)
+				logs.Reset()
+				if err := hooks.PostReceive(ctx, repoName, []receive.RefUpdate{tc.update}); err != nil {
+					t.Fatalf("PostReceive = %v, want nil", err)
+				}
+				got := strings.Split(strings.TrimSuffix(logs.String(), "\n"), "\n")
+				if len(got) != len(tc.logs) {
+					t.Fatalf("log = %q, want %d lines holding %q", logs.String(), len(tc.logs), tc.logs)
+				}
+				for i, want := range tc.logs {
+					if !strings.Contains(got[i], want) {
+						t.Errorf("log line %d = %q, want it to hold %q", i+1, got[i], want)
+					}
+				}
+			})
+		})
+	}
+}
+
+// TestMaintenancePreOpenFirstSight pins that PreOpen notifies Hooks.Maintainer the first time it sees a repository, under any name form or access, with or without a mirror.
+func TestMaintenancePreOpenFirstSight(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		hooks func(t *testing.T) *Hooks
+	}{
+		{"Mirror", func(t *testing.T) *Hooks { return roMirrorHooks(t, roMirrorOnly("datasets/org/mirrored")) }},
+		{"MirrorNil", func(t *testing.T) *Hooks { return &Hooks{Storage: newStorage(t)} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &mtRecorder{}
+			hooks := tc.hooks(t)
+			hooks.Maintainer = rec
+			fs := hooks.Storage.RepositoriesFS()
+			open := func(repoName string, write bool) {
+				t.Helper()
+				if err := hooks.PreOpen(ctx, repoName, write); err != nil {
+					t.Fatalf("PreOpen %s = %v, want nil", repoName, err)
+				}
+			}
+			open("org/a", false)
+			open("org/a", true)
+			open("org/a.git", false)
+			mtRequireNotified(t, "PreOpen of org/a by two names, read and write,", rec.take(), fs, "/org/a.git")
+			open("org/b", true)
+			mtRequireNotified(t, "the first PreOpen of org/b", rec.take(), fs, "/org/b.git")
+			open("org/a", false)
+			open("org/b", false)
+			if calls := rec.take(); len(calls) != 0 {
+				t.Errorf("PreOpen of repositories already seen notified %d times, want none", len(calls))
+			}
+		})
+	}
+}
+
+func mtName(i int) string { return fmt.Sprintf("org/r%d", i) }
+
+func mtOpen(t *testing.T, hooks *Hooks, repoName string) {
+	t.Helper()
+	if err := hooks.PreOpen(context.Background(), repoName, false); err != nil {
+		t.Fatalf("PreOpen %s = %v, want nil", repoName, err)
+	}
+}
+
+// mtOpenNew opens mtName(from) through mtName(to-1) and requires one Notify of each, in order.
+func mtOpenNew(t *testing.T, hooks *Hooks, rec *mtRecorder, from, to int) {
+	t.Helper()
+	for i := from; i < to; i++ {
+		mtOpen(t, hooks, mtName(i))
+	}
+	calls := rec.take()
+	if len(calls) != to-from {
+		t.Fatalf("the first PreOpens of %s through %s notified %d times, want %d", mtName(from), mtName(to-1), len(calls), to-from)
+	}
+	fs := hooks.Storage.RepositoriesFS()
+	for i, c := range calls {
+		if want := repository.ResolvePath(mtName(from + i)); c.fs != fs || c.path != want {
+			t.Fatalf("Notify %d of the first PreOpens of %s through %s = %q, want %q on the repositories filesystem", i, mtName(from), mtName(to-1), c.path, want)
+		}
+	}
+}
+
+// mtRequireQuiet requires calls to hold no Notify.
+func mtRequireQuiet(t *testing.T, what string, calls []mtNotify) {
+	t.Helper()
+	if len(calls) != 0 {
+		t.Errorf("%s notified %d times, want none", what, len(calls))
+	}
+}
+
+// TestMaintenanceSeenBoundedByLimit pins that PreOpen forgets the least recently seen repository past maintenanceSeenLimit and notifies it again on its next sight.
+func TestMaintenanceSeenBoundedByLimit(t *testing.T) {
+	rec := &mtRecorder{}
+	hooks := &Hooks{Storage: newStorage(t), Maintainer: rec}
+	mtOpenNew(t, hooks, rec, 0, maintenanceSeenLimit+1)
+	mtOpen(t, hooks, mtName(0))
+	mtRequireNotified(t, fmt.Sprintf("PreOpen of %s after %d newer repositories", mtName(0), maintenanceSeenLimit), rec.take(), hooks.Storage.RepositoriesFS(), repository.ResolvePath(mtName(0)))
+	mtOpen(t, hooks, mtName(maintenanceSeenLimit))
+	mtRequireQuiet(t, fmt.Sprintf("PreOpen of %s, the last new repository seen,", mtName(maintenanceSeenLimit)), rec.take())
+}
+
+// TestMaintenanceSeenResightRefreshesRecency pins that seeing a repository again makes it the most recently seen, so an older one is forgotten first.
+func TestMaintenanceSeenResightRefreshesRecency(t *testing.T) {
+	rec := &mtRecorder{}
+	hooks := &Hooks{Storage: newStorage(t), Maintainer: rec}
+	mtOpenNew(t, hooks, rec, 0, maintenanceSeenLimit)
+	mtOpen(t, hooks, mtName(0))
+	mtRequireQuiet(t, fmt.Sprintf("PreOpen of %s among %d repositories seen", mtName(0), maintenanceSeenLimit), rec.take())
+	mtOpenNew(t, hooks, rec, maintenanceSeenLimit, maintenanceSeenLimit+1)
+	mtOpen(t, hooks, mtName(0))
+	mtRequireQuiet(t, fmt.Sprintf("PreOpen of %s, seen again just before %s,", mtName(0), mtName(maintenanceSeenLimit)), rec.take())
+	mtOpen(t, hooks, mtName(1))
+	mtRequireNotified(t, fmt.Sprintf("PreOpen of %s, the least recently seen when %s came,", mtName(1), mtName(maintenanceSeenLimit)), rec.take(), hooks.Storage.RepositoriesFS(), repository.ResolvePath(mtName(1)))
+}
+
+// TestMaintenanceSeenConcurrentFirstSight pins that concurrent first PreOpens of one repository notify Maintainer exactly once.
+func TestMaintenanceSeenConcurrentFirstSight(t *testing.T) {
+	rec := &mtRecorder{}
+	hooks := &Hooks{Storage: newStorage(t), Maintainer: rec}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Go(func() {
+			<-start
+			if err := hooks.PreOpen(context.Background(), mtName(0), false); err != nil {
+				t.Errorf("PreOpen %s = %v, want nil", mtName(0), err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	mtRequireNotified(t, "64 concurrent first PreOpens of "+mtName(0), rec.take(), hooks.Storage.RepositoriesFS(), repository.ResolvePath(mtName(0)))
 }

@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-// Cache is an LRU cache. It is not safe for concurrent access.
+// Cache is an LRU cache. It is safe for concurrent use by multiple goroutines.
 type Cache[K comparable, V any] struct {
 	// MaxEntries is the maximum number of cache entries before
 	// an item is evicted. Zero means no limit.

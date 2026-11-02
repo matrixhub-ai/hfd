@@ -15,6 +15,7 @@ import (
 	"github.com/matrixhub-ai/hfd/internal/server"
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
+	"github.com/matrixhub-ai/hfd/pkg/repository"
 	pkgssh "github.com/matrixhub-ai/hfd/pkg/ssh"
 	"github.com/matrixhub-ai/hfd/pkg/storage"
 	s3fs "github.com/wzshiming/go-billy-s3fs"
@@ -173,6 +174,17 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 	}
 
 	return mirror.NewMirror(opts...)
+}
+
+// buildMaintainer returns the background repository maintainer, or nil when maintenance is disabled.
+func buildMaintainer(cfg *config) *repository.Maintainer {
+	if !cfg.Maintenance {
+		return nil
+	}
+	return repository.NewMaintainer(repository.MaintainerOptions{
+		Debounce:    cfg.MaintenanceDebounce,
+		Concurrency: cfg.MaintenanceConcurrency,
+	})
 }
 
 // buildAuthenticators creates validators for each configured authentication scheme.

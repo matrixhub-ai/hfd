@@ -72,6 +72,13 @@ func (r *Repository) ReusablePack(ctx context.Context) (*ReusablePack, error) {
 
 // NeedsRepack reports whether Repack would change the layout: a hash ref exists and the manifest is invalid or its refs have moved.
 func (r *Repository) NeedsRepack(ctx context.Context) (bool, error) {
+	r.rlock()
+	defer r.runlock()
+	return r.needsRepackLocked(ctx)
+}
+
+// needsRepackLocked is NeedsRepack for a caller holding serveMu.
+func (r *Repository) needsRepackLocked(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -93,6 +100,13 @@ func (r *Repository) NeedsRepack(ctx context.Context) (bool, error) {
 
 // Repack lays r out as the reusable pack plus the rest; unlike GC, a zero cutoff keeps all garbage.
 func (r *Repository) Repack(ctx context.Context, cutoff time.Time) error {
+	r.lock()
+	defer r.unlock()
+	return r.repackLocked(ctx, cutoff)
+}
+
+// repackLocked is Repack for a caller holding serveMu exclusively.
+func (r *Repository) repackLocked(ctx context.Context, cutoff time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -105,6 +119,19 @@ func (r *Repository) Repack(ctx context.Context, cutoff time.Time) error {
 	err = errors.Join(err, r.reindex())
 	r.objectCache.Clear()
 	return err
+}
+
+// maintain repacks r when it needs it, reporting busy instead of waiting while r is served by go-git upload-pack, repacked or collected.
+func (r *Repository) maintain(ctx context.Context) (busy bool, err error) {
+	if !r.tryLock() {
+		return true, nil
+	}
+	defer r.unlock()
+	needs, err := r.needsRepackLocked(ctx)
+	if err != nil || !needs {
+		return false, err
+	}
+	return false, r.repackLocked(ctx, time.Time{})
 }
 
 // packScoped reports whether the layout applies to r: go-git serves it and it borrows no objects.

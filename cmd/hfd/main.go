@@ -44,6 +44,10 @@ func run(ctx context.Context, cfg *config) error {
 
 	// Phase 2: auth layer.
 	hooks := &server.Hooks{Storage: st, ProxyToken: cfg.ProxyToken, PullTTL: cfg.ProxyCacheTTL}
+	if m := buildMaintainer(cfg); m != nil {
+		hooks.Maintainer = m
+		defer m.Close()
+	}
 	auth, err := buildAuthenticators(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("prepare authenticators: %w", err)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-git/go-billy/v6"
@@ -50,6 +51,8 @@ type Repository struct {
 	repoPath      string
 	localDir      string // host directory when fs is OS-backed, else ""
 	defaultBranch atomic.Pointer[string]
+	serveMu       *sync.RWMutex // read-held by go-git upload-pack serves, write-held by repacks and GC; nil locks nothing
+	reuseIndex    atomic.Pointer[reuseIndex]
 }
 
 // LargeObjectThreshold is the size in bytes above which loose objects are streamed from disk on every read instead of cached in memory.
@@ -166,6 +169,9 @@ type cacheKey struct {
 
 var lruCache = lru.New[cacheKey, *Repository](128) // Cache up to 128 repositories in memory
 
+// repoLocks maps a cacheKey to its serveMu, so a handle re-created after lruCache eviction shares it.
+var repoLocks sync.Map
+
 // Open opens an existing git repository on fs at the given path.
 func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
@@ -176,6 +182,7 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 		if err != nil {
 			return nil, false
 		}
+		mu, _ := repoLocks.LoadOrStore(cacheKey{fs, repoPath}, new(sync.RWMutex))
 		return &Repository{
 			repo:        r,
 			refs:        refs,
@@ -183,6 +190,7 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 			fs:          fs,
 			repoPath:    repoPath,
 			localDir:    localDir(fs, repoPath),
+			serveMu:     mu.(*sync.RWMutex),
 		}, true
 
 	})
@@ -203,6 +211,34 @@ func (r *Repository) liveRef(name plumbing.ReferenceName) (*plumbing.Reference, 
 		return r.repo.Storer.Reference(name)
 	}
 	return r.refs.liveReference(name)
+}
+
+func (r *Repository) lock() {
+	if r.serveMu != nil {
+		r.serveMu.Lock()
+	}
+}
+
+func (r *Repository) unlock() {
+	if r.serveMu != nil {
+		r.serveMu.Unlock()
+	}
+}
+
+func (r *Repository) tryLock() bool {
+	return r.serveMu == nil || r.serveMu.TryLock()
+}
+
+func (r *Repository) rlock() {
+	if r.serveMu != nil {
+		r.serveMu.RLock()
+	}
+}
+
+func (r *Repository) runlock() {
+	if r.serveMu != nil {
+		r.serveMu.RUnlock()
+	}
 }
 
 // SplitRevisionAndPath splits a refpath into a revision (branch or tag) and a file path.

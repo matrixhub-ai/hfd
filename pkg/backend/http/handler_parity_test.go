@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v6/osfs"
 
@@ -491,6 +492,66 @@ func TestHTTPServeGitParity(t *testing.T) {
 					t.Fatalf("refs after mixed push:\n%s", refs)
 				}
 			})
+
+			if !native {
+				t.Run("CloneRepacked", func(t *testing.T) {
+					// Fresh servers: MixedRejection left hfd with a branch git http-backend lacks.
+					f := newServeParityFixture(t, native)
+					repo, err := repository.Open(f.storage.RepositoriesFS(), "/repo.git")
+					if err != nil {
+						t.Fatalf("open repository: %v", err)
+					}
+					if err := repo.Repack(t.Context(), time.Time{}); err != nil {
+						t.Fatalf("Repack: %v", err)
+					}
+					clone := func(t *testing.T, url, name string, args ...string) string {
+						t.Helper()
+						dir := filepath.Join(t.TempDir(), name)
+						parityGit(t, "", protoVer, append(append([]string{"-c", "transfer.fsckObjects=true", "clone", "--quiet"}, args...), url, dir)...)
+						return dir
+					}
+					requireSameClone := func(t *testing.T, hfdClone, gitClone string) {
+						t.Helper()
+						if got, want := forEachRefLines(t, hfdClone), forEachRefLines(t, gitClone); got != want {
+							t.Fatalf("cloned refs mismatch:\nhfd served:\n%s\ngit served:\n%s", got, want)
+						}
+						if got, want := runGitCmd(t, hfdClone, "symbolic-ref", "HEAD"), runGitCmd(t, gitClone, "symbolic-ref", "HEAD"); got != want {
+							t.Fatalf("cloned HEAD mismatch: hfd served %q, git served %q", got, want)
+						}
+						runGitCmd(t, hfdClone, "fsck", "--full", "--strict")
+					}
+					for _, tc := range []struct {
+						name string
+						args []string
+						skip string // why go-git already diverges from git http-backend below protocol v2
+					}{
+						{"Default", nil, ""},
+						{"Mirror", []string{"--mirror"}, ""},
+						{"SingleBranch", []string{"--single-branch"}, "go-git's v0 upload-pack lacks include-tag, so the annotated tag v2 is not followed"},
+						{"Depth1", []string{"--depth", "1"}, "hfd answers a stateless v0 deepen round with a bare NAK, which git rejects"},
+						{"NoTags", []string{"--no-tags"}, ""},
+						{"FilterBlobNone", []string{"--filter=blob:none"}, ""},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							if tc.skip != "" && protoVer < 2 {
+								t.Skipf("go-git diverges from git http-backend here without Repack too: %s", tc.skip)
+							}
+							requireSameClone(t, clone(t, f.hfdURL, "hfd", tc.args...), clone(t, f.gitURL, "git", tc.args...))
+						})
+					}
+					t.Run("FollowUpFetch", func(t *testing.T) {
+						hfdClone, gitClone := clone(t, f.hfdURL, "hfd"), clone(t, f.gitURL, "git")
+						f.commit(t, "file.txt", "after repack\n", "after repack")
+						f.pushBoth(t, "refs/heads/main")
+						for _, dir := range []string{hfdClone, gitClone} {
+							parityGit(t, dir, protoVer, "fetch", "--quiet", "origin")
+						}
+						requireSameClone(t, hfdClone, gitClone)
+						// main now lies past the reusable pack, so a new clone gets the commit spliced on.
+						requireSameClone(t, clone(t, f.hfdURL, "hfd-after"), clone(t, f.gitURL, "git-after"))
+					})
+				})
+			}
 		})
 	}
 }

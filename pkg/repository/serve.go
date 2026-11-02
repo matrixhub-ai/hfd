@@ -29,17 +29,19 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 	if dir := r.gitDir(); dir != "" {
 		return r.serveGit(ctx, dir, service, gitProtocol, output, input, true, hooks, nil)
 	}
-	w := ioutil.WriteNopCloser(output)
-	in := io.NopCloser(input)
 	switch service {
 	case GitUploadPack:
-		if transport.ProtocolVersion(gitProtocol) == protocol.V2 {
-			return transport.UploadPack(ctx, r.repo.Storer, in, w, &transport.UploadPackRequest{
-				GitProtocol:  gitProtocol,
-				StatelessRPC: true,
-			})
+		// Read before locking, so a client still sending its request holds up no repack.
+		body, err := readUploadPackRequest(input)
+		if err != nil {
+			return err
 		}
-		return r.serveStatelessUploadPackV0(ctx, output, input, gitProtocol)
+		r.rlock()
+		defer r.runlock()
+		if transport.ProtocolVersion(gitProtocol) == protocol.V2 {
+			return r.serveStatelessUploadPackV2(ctx, output, body, gitProtocol)
+		}
+		return r.serveStatelessUploadPackV0(ctx, output, body, gitProtocol)
 	case GitReceivePack:
 		return r.receivePack(ctx, output, input, gitProtocol, true, hooks)
 	default:
@@ -47,11 +49,37 @@ func (r *Repository) Stateless(ctx context.Context, output io.Writer, input io.R
 	}
 }
 
-// maxUploadPackRequestSize caps a buffered v0 upload-pack request body,
+// maxUploadPackRequestSize caps a buffered upload-pack request body,
 // matching git http-backend's http.maxRequestBuffer default. Negotiation
 // bodies are small (wants plus replayed haves); the cap guards against
 // oversized or decompression-bomb payloads on this unauthenticated path.
 const maxUploadPackRequestSize = 10 << 20
+
+// readUploadPackRequest buffers a stateless upload-pack request body of at most maxUploadPackRequestSize bytes.
+func readUploadPackRequest(input io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(input, maxUploadPackRequestSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading upload-pack request: %w", err)
+	}
+	if len(body) > maxUploadPackRequestSize {
+		return nil, fmt.Errorf("upload-pack request larger than maximum size %d", maxUploadPackRequestSize)
+	}
+	return body, nil
+}
+
+// serveStatelessUploadPackV2 serves one stateless-RPC git-upload-pack request
+// for wire protocol v2, answering a fetch from the reusable pack when it can.
+func (r *Repository) serveStatelessUploadPackV2(ctx context.Context, output io.Writer, body []byte, gitProtocol string) error {
+	if _, line, err := pktline.PeekLine(bufio.NewReader(bytes.NewReader(body))); err == nil && strings.TrimSuffix(string(line), "\n") == "command=fetch" {
+		if served, err := r.serveUploadPackReuse(ctx, output, body, protocol.V2); served {
+			return err
+		}
+	}
+	return transport.UploadPack(ctx, r.repo.Storer, io.NopCloser(bytes.NewReader(body)), ioutil.WriteNopCloser(output), &transport.UploadPackRequest{
+		GitProtocol:  gitProtocol,
+		StatelessRPC: true,
+	})
+}
 
 // serveStatelessUploadPackV0 serves one stateless-RPC git-upload-pack request
 // for wire protocol v0/v1.
@@ -61,17 +89,13 @@ const maxUploadPackRequestSize = 10 << 20
 // transport.UploadPack keeps reading rounds from the same request body until
 // the client sends "done" and fails with EOF on intermediate rounds. Requests
 // without "done" are therefore answered here with a single ACK/NAK round,
-// exactly like git http-backend; final rounds are delegated to go-git.
-func (r *Repository) serveStatelessUploadPackV0(ctx context.Context, output io.Writer, input io.Reader, gitProtocol string) error {
-	body, err := io.ReadAll(io.LimitReader(input, maxUploadPackRequestSize+1))
-	if err != nil {
-		return fmt.Errorf("reading upload-pack request: %w", err)
-	}
-	if len(body) > maxUploadPackRequestSize {
-		return fmt.Errorf("upload-pack request larger than maximum size %d", maxUploadPackRequestSize)
-	}
-
+// exactly like git http-backend; final rounds are answered from the reusable
+// pack when they qualify and are otherwise delegated to go-git.
+func (r *Repository) serveStatelessUploadPackV0(ctx context.Context, output io.Writer, body []byte, gitProtocol string) error {
 	if uploadPackRequestHasDone(body) {
+		if served, err := r.serveUploadPackReuse(ctx, output, body, transport.ProtocolVersion(gitProtocol)); served {
+			return err
+		}
 		return transport.UploadPack(ctx, r.repo.Storer, io.NopCloser(bytes.NewReader(body)), ioutil.WriteNopCloser(output), &transport.UploadPackRequest{
 			GitProtocol:  gitProtocol,
 			StatelessRPC: true,
@@ -212,6 +236,8 @@ func (r *Repository) Serve(ctx context.Context, rw io.ReadWriter, service string
 	in := io.NopCloser(rw)
 	switch service {
 	case GitUploadPack:
+		r.rlock()
+		defer r.runlock()
 		return transport.UploadPack(ctx, r.repo.Storer, in, w, &transport.UploadPackRequest{
 			GitProtocol: gitProtocol,
 		})
