@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,15 +47,19 @@ type e2eServer struct {
 	httpURL string
 	sshURL  string
 	sshEnv  []string
+	dataDir string
 	storage *storage.Storage
 	issuer  *auth.Issuer
 	mirror  *mirror.Mirror
+	traffic *trafficCounter
 }
 
 type e2eConfig struct {
 	ssh           bool
 	sshLFSURL     bool
 	internalAPI   bool
+	goGit         bool
+	traffic       *trafficCounter
 	wraps         []func(http.Handler) http.Handler
 	authUser      string
 	authPass      string
@@ -64,6 +70,7 @@ type e2eConfig struct {
 	preOpen       func(context.Context, string, bool) error
 	catalogGate   catalogGateFunc
 	mirrorSources upstreamMap
+	mirrorDest    mirror.DestinationFunc
 	refFilter     mirror.RefFilterFunc
 }
 
@@ -163,6 +170,27 @@ func withRefFilter(fn mirror.RefFilterFunc) e2eOption {
 	return func(c *e2eConfig) { c.refFilter = fn }
 }
 
+// withGoGit has go-git serve the repositories; the S3 pass ignores it, go-git serving S3 already.
+func withGoGit() e2eOption {
+	return func(c *e2eConfig) { c.goGit = true }
+}
+
+// withMirrorDestination push-mirrors every repository to the same name under
+// baseURL from the git transports' post-receive hook, before the push returns.
+func withMirrorDestination(baseURL string) e2eOption {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	return func(c *e2eConfig) {
+		c.mirrorDest = func(ctx context.Context, repoName string) (string, bool, error) {
+			return baseURL + "/" + repoName, true, nil
+		}
+	}
+}
+
+// withTransportStats counts the bytes on the HTTP and SSH connections for transportBytes.
+func withTransportStats() e2eOption {
+	return func(c *e2eConfig) { c.traffic = &trafficCounter{} }
+}
+
 // newMirrorSourceFunc maps every repository name onto the same upstream base
 // URL, marking all of them as mirror sources.
 func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
@@ -231,21 +259,24 @@ func catalogOptions(hooks *server.Hooks, gate catalogGateFunc) []backendhf.Optio
 // instead of racing the batch-API fallback; plain servers only serve local
 // content and, like cmd/hfd without --pull-mirror, have no engine. During
 // the S3 pass the xet storage lives in the fake S3 bucket, like production.
-func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
-	t.Helper()
+func newE2EServer(tb testing.TB, opts ...e2eOption) *e2eServer {
+	tb.Helper()
 	cfg := &e2eConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	dataDir := newDataDir(t, "e2e-server-data")
-	st := newTestStorage(t, dataDir)
+	dataDir := newDataDir(tb, "e2e-server-data")
+	st := newTestStorageEngine(tb, dataDir, cfg.goGit)
 
 	mirrorOpts := []mirror.Option{mirror.WithRepositoriesFS(st.RepositoriesFS())}
 	if cfg.mirrorSources != nil {
 		mirrorOpts = append(mirrorOpts,
 			mirror.WithMirrorSourceFunc(cfg.mirrorSources.sourceFunc),
 			mirror.WithSyncUserInfoFunc(cfg.mirrorSources.userInfo))
+	}
+	if cfg.mirrorDest != nil {
+		mirrorOpts = append(mirrorOpts, mirror.WithMirrorDestinationFunc(cfg.mirrorDest))
 	}
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
@@ -254,7 +285,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.authPass != "" {
 		signValidator = authenticate.NewTokenSignValidator([]byte(cfg.authPass))
 	}
-	sharedMirror, xet := newTestMirror(t, st, cfg.mirrorSources != nil, mirrorOpts...)
+	sharedMirror, xet := newTestMirror(tb, st, cfg.mirrorSources != nil, mirrorOpts...)
 
 	hooks := &server.Hooks{Storage: st}
 	preOpen := cfg.preOpen
@@ -268,6 +299,17 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 				}
 				return cfg.preOpen(ctx, repoName, write)
 			}
+		}
+	}
+	postReceive := cfg.postReceive
+	if cfg.mirrorDest != nil {
+		postReceive = func(ctx context.Context, name string, updates []receive.RefUpdate) error {
+			if cfg.postReceive != nil {
+				if err := cfg.postReceive(ctx, name, updates); err != nil {
+					return err
+				}
+			}
+			return sharedMirror.PushToRemote(ctx, repository.ResolvePath(name), name, nil)
 		}
 	}
 
@@ -306,8 +348,8 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.preReceive != nil {
 		httpOpts = append(httpOpts, backendhttp.WithPreReceiveHookFunc(cfg.preReceive))
 	}
-	if cfg.postReceive != nil {
-		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(cfg.postReceive))
+	if postReceive != nil {
+		httpOpts = append(httpOpts, backendhttp.WithPostReceiveHookFunc(postReceive))
 	}
 	handler = backendhttp.NewHandler(httpOpts...)
 	// Always mounted like cmd/hfd: without credentials it only names requests <anonymous>.
@@ -344,29 +386,35 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		handler = w(handler)
 	}
 
-	httpServer := httptest.NewServer(handler)
-	t.Cleanup(httpServer.Close)
+	httpServer := httptest.NewUnstartedServer(handler)
+	if cfg.traffic != nil {
+		httpServer.Listener = &countingListener{Listener: httpServer.Listener, traffic: cfg.traffic}
+	}
+	httpServer.Start()
+	tb.Cleanup(httpServer.Close)
 
 	s := &e2eServer{
 		httpURL: httpServer.URL,
+		dataDir: dataDir,
 		storage: st,
 		issuer:  xet.issuer,
 		mirror:  sharedMirror,
+		traffic: cfg.traffic,
 	}
 	if !cfg.ssh {
 		return s
 	}
 
-	keyFile := filepath.Join(t.TempDir(), "id_e2e")
-	pubKey := generateTestKeyFile(t, keyFile)
+	keyFile := filepath.Join(tb.TempDir(), "id_e2e")
+	pubKey := generateTestKeyFile(tb, keyFile)
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("generate host key: %v", err)
+		tb.Fatalf("generate host key: %v", err)
 	}
 	hostKey, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
-		t.Fatalf("create host key signer: %v", err)
+		tb.Fatalf("create host key signer: %v", err)
 	}
 	sshOpts := []backendssh.Option{
 		backendssh.WithHostKey(hostKey),
@@ -383,17 +431,20 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	if cfg.preReceive != nil {
 		sshOpts = append(sshOpts, backendssh.WithPreReceiveHookFunc(cfg.preReceive))
 	}
-	if cfg.postReceive != nil {
-		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(cfg.postReceive))
+	if postReceive != nil {
+		sshOpts = append(sshOpts, backendssh.WithPostReceiveHookFunc(postReceive))
 	}
 	sshServer := backendssh.NewServer(sshOpts...)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen for SSH: %v", err)
+		tb.Fatalf("listen for SSH: %v", err)
 	}
-	t.Cleanup(func() { listener.Close() })
+	if cfg.traffic != nil {
+		listener = &countingListener{Listener: listener, traffic: cfg.traffic}
+	}
+	tb.Cleanup(func() { listener.Close() })
 	go func() {
-		_ = sshServer.Serve(t.Context(), listener)
+		_ = sshServer.Serve(tb.Context(), listener)
 	}()
 
 	addr := listener.Addr().(*net.TCPAddr)
@@ -402,39 +453,39 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	return s
 }
 
-func (s *e2eServer) createRepo(t *testing.T, org, name string) {
-	t.Helper()
+func (s *e2eServer) createRepo(tb testing.TB, org, name string) {
+	tb.Helper()
 	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
 	resp, err := http.Post(s.httpURL+"/api/repos/create", "application/json", strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("create repo: %v", err)
+		tb.Fatalf("create repo: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("create repo status = %d, want 200", resp.StatusCode)
+		tb.Fatalf("create repo status = %d, want 200", resp.StatusCode)
 	}
 }
 
-func (s *e2eServer) deleteRepo(t *testing.T, org, name string) {
-	t.Helper()
-	deleteRepoAt(t, s.httpURL, org, name)
+func (s *e2eServer) deleteRepo(tb testing.TB, org, name string) {
+	tb.Helper()
+	deleteRepoAt(tb, s.httpURL, org, name)
 }
 
-func deleteRepoAt(t *testing.T, baseURL, org, name string) {
-	t.Helper()
+func deleteRepoAt(tb testing.TB, baseURL, org, name string) {
+	tb.Helper()
 	body := fmt.Sprintf(`{"type":"model","name":%q,"organization":%q}`, name, org)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, baseURL+"/api/repos/delete", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(tb.Context(), http.MethodDelete, baseURL+"/api/repos/delete", strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("build delete repo request: %v", err)
+		tb.Fatalf("build delete repo request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("delete repo: %v", err)
+		tb.Fatalf("delete repo: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete repo status = %d, want 200", resp.StatusCode)
+		tb.Fatalf("delete repo status = %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -446,12 +497,84 @@ func (s *e2eServer) sshRemote(repoID string) (string, []string) {
 	return s.sshURL + repoID + ".git", s.sshEnv
 }
 
+// transportBytes reports the bytes the server read and wrote on its HTTP and
+// SSH connections so far; (0, 0) without withTransportStats.
+func (s *e2eServer) transportBytes() (in, out int64) {
+	if s.traffic == nil {
+		return 0, 0
+	}
+	return s.traffic.in.Load(), s.traffic.out.Load()
+}
+
+// repoDir is repoID's bare repository on the host, or "" during the S3 pass.
+func (s *e2eServer) repoDir(repoID string) string {
+	if testS3Client != nil {
+		return ""
+	}
+	return filepath.Join(s.dataDir, "repositories", filepath.FromSlash(strings.TrimPrefix(repository.ResolvePath(repoID), "/")))
+}
+
+// trafficCounter tallies the bytes a server read (in) and wrote (out).
+type trafficCounter struct{ in, out atomic.Int64 }
+
+// countingListener hands out connections whose traffic adds to traffic.
+type countingListener struct {
+	net.Listener
+	traffic *trafficCounter
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &countingConn{Conn: conn, traffic: l.traffic}, nil
+}
+
+type countingConn struct {
+	net.Conn
+	traffic *trafficCounter
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.traffic.in.Add(int64(n))
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.traffic.out.Add(int64(n))
+	return n, err
+}
+
+// requireEngine fails tb unless repoURL advertises the git binary (native) or go-git as its agent.
+func requireEngine(tb testing.TB, repoURL string, native bool) {
+	tb.Helper()
+	resp, err := http.Get(repoURL + "/info/refs?service=git-upload-pack")
+	if err != nil {
+		tb.Fatalf("get %s advertisement: %v", repoURL, err)
+	}
+	defer resp.Body.Close()
+	adv, err := io.ReadAll(resp.Body)
+	if err != nil {
+		tb.Fatalf("read %s advertisement: %v", repoURL, err)
+	}
+	want := "agent=go-git/"
+	if native {
+		want = "agent=git/"
+	}
+	if !bytes.Contains(adv, []byte(want)) {
+		tb.Fatalf("%s advertisement lacks %q: %q", repoURL, want, adv[:min(len(adv), 200)])
+	}
+}
+
 // gitCmd runs a git command, keeping stdout separate from stderr and
 // returning the error, for call sites that parse output or assert failure.
 // A watchdog kills wedged subprocesses so hangs fail fast.
-func gitCmd(t *testing.T, dir string, env []string, args ...string) (stdout, stderr string, err error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+func gitCmd(tb testing.TB, dir string, env []string, args ...string) (stdout, stderr string, err error) {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
@@ -469,9 +592,9 @@ func gitCmd(t *testing.T, dir string, env []string, args ...string) (stdout, std
 // runGit runs a git command, failing the test on error with the full output
 // and returning the combined stdout+stderr. A watchdog kills wedged
 // subprocesses so hangs fail fast with their output.
-func runGit(t *testing.T, dir string, env []string, args ...string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+func runGit(tb testing.TB, dir string, env []string, args ...string) string {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
@@ -481,29 +604,29 @@ func runGit(t *testing.T, dir string, env []string, args ...string) string {
 	cmd.WaitDelay = 10 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("git %s failed (%v): %v\noutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
+		tb.Fatalf("git %s failed (%v): %v\noutput: %s", strings.Join(args, " "), ctx.Err(), err, output)
 	}
 	return string(output)
 }
 
 // generateTestKeyFile generates an ED25519 key pair and writes the private key to path.
 // Returns the SSH public key.
-func generateTestKeyFile(t *testing.T, path string) ssh.PublicKey {
-	t.Helper()
+func generateTestKeyFile(tb testing.TB, path string) ssh.PublicKey {
+	tb.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate client key: %v", err)
+		tb.Fatalf("Failed to generate client key: %v", err)
 	}
 	privKeyPEM, err := ssh.MarshalPrivateKey(priv, "")
 	if err != nil {
-		t.Fatalf("Failed to marshal private key: %v", err)
+		tb.Fatalf("Failed to marshal private key: %v", err)
 	}
 	if err := os.WriteFile(path, pem.EncodeToMemory(privKeyPEM), 0600); err != nil {
-		t.Fatalf("Failed to write private key: %v", err)
+		tb.Fatalf("Failed to write private key: %v", err)
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
-		t.Fatalf("Failed to create signer: %v", err)
+		tb.Fatalf("Failed to create signer: %v", err)
 	}
 	return signer.PublicKey()
 }
