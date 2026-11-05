@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,6 +218,119 @@ func TestServeOIDTriesEveryTarget(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), data) {
 		t.Fatalf("ServeOID status = %d, body %d bytes, want 200 with %d bytes", rec.Code, rec.Body.Len(), len(data))
+	}
+}
+
+// statusHub answers every request with status, counting them in hits.
+func statusHub(t *testing.T, status int, hits *atomic.Int64) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// checkServeOID fails unless ServeOID answers 502 when failed is set, or leaves the response to the caller otherwise.
+func checkServeOID(t *testing.T, m *mirror.Mirror, oid string, failed bool) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	served := m.ServeOID(rec, httptest.NewRequest(http.MethodGet, "/anything", nil), oid)
+	switch {
+	case failed && (!served || rec.Code != http.StatusBadGateway):
+		t.Fatalf("ServeOID = %v, status %d, want true with 502", served, rec.Code)
+	case !failed && (served || rec.Body.Len() != 0):
+		t.Fatalf("ServeOID = %v, body %q, want false with the response left to the caller's 404", served, rec.Body)
+	}
+}
+
+// Only an upstream not-found is left to the caller's 404. Any other answer is
+// a 502, again on the next request, which the engine answers from its retry
+// backoff without asking the hub.
+func TestServeOIDUpstreamFailure(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	for _, tc := range []struct {
+		status int
+		failed bool
+	}{
+		{http.StatusNotFound, false},
+		{http.StatusUnauthorized, true},
+		{http.StatusTooManyRequests, true},
+		{http.StatusServiceUnavailable, true},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+			var hits atomic.Int64
+			m := newMirror(t, statusHub(t, tc.status, &hits).URL)
+			m.RegisterObject(oid, "org/repo", strings.Repeat("c", 40), "model.bin", 1)
+			checkServeOID(t, m, oid, tc.failed)
+			checkServeOID(t, m, oid, tc.failed)
+			if n := hits.Load(); n != 1 {
+				t.Fatalf("hub requests = %d, want 1", n)
+			}
+		})
+	}
+}
+
+// A repository that is not mirrored has no upstream; a failing source callback or a source the engine cannot fetch from is a 502.
+func TestServeOIDSourceFailure(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	for _, tc := range []struct {
+		name   string
+		source mirror.SourceFunc
+		failed bool
+	}{
+		{"NotMirrored", func(context.Context, string) (string, bool, error) { return "", false, nil }, false},
+		{"CallbackError", func(context.Context, string) (string, bool, error) { return "", false, errors.New("lookup failed") }, true},
+		{"NotHTTP", func(context.Context, string) (string, bool, error) { return "/srv/org/repo.git", true, nil }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMirrorWithSource(t, tc.source)
+			m.RegisterObject(oid, "org/repo", strings.Repeat("c", 40), "model.bin", 1)
+			checkServeOID(t, m, oid, tc.failed)
+		})
+	}
+}
+
+// A failed target outranks one whose upstream lacks the file, whichever is tried first, and does not stop a later live one from serving.
+func TestServeOIDTargetFailures(t *testing.T) {
+	data := bytes.Repeat([]byte("target failure bytes. "), 2048)
+	sum := sha256.Sum256(data)
+	oid := hex.EncodeToString(sum[:])
+	missing := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(missing.Close)
+	var hits atomic.Int64
+	hubs := map[string]string{
+		"org/missing": missing.URL,
+		"org/failing": statusHub(t, http.StatusServiceUnavailable, &hits).URL,
+		"org/live":    fakeHub(t, "model.bin", data, oid).URL,
+	}
+	source := func(ctx context.Context, repoName string) (string, bool, error) {
+		return hubs[repoName] + "/" + repoName, true, nil
+	}
+	for _, tc := range []struct {
+		name  string
+		repos []string // registration order; the last registered is tried first
+		live  bool
+	}{
+		{"MissingFirst", []string{"org/failing", "org/missing"}, false},
+		{"FailingFirst", []string{"org/missing", "org/failing"}, false},
+		{"FailingThenLive", []string{"org/live", "org/failing"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMirrorWithSource(t, source)
+			for _, repo := range tc.repos {
+				m.RegisterObject(oid, repo, strings.Repeat("c", 40), "model.bin", int64(len(data)))
+			}
+			if !tc.live {
+				checkServeOID(t, m, oid, true)
+				return
+			}
+			rec := httptest.NewRecorder()
+			if !m.ServeOID(rec, httptest.NewRequest(http.MethodGet, "/anything", nil), oid) || rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), data) {
+				t.Fatalf("ServeOID status = %d, body %d bytes, want 200 with %d bytes", rec.Code, rec.Body.Len(), len(data))
+			}
+		})
 	}
 }
 

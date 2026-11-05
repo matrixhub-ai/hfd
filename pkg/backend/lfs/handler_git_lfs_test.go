@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -329,6 +330,40 @@ func TestGetContentServesIngested(t *testing.T) {
 			t.Fatalf("miss status = %d, want 404", rec.Code)
 		}
 	})
+}
+
+// TestGetContentUpstreamFailure pins the download answers for a known object
+// the upstream fails to serve: 404 only when the upstream lacks the file,
+// else a retryable 502, also while the engine backs off from the failure.
+func TestGetContentUpstreamFailure(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	for _, tc := range []struct{ upstream, want int }{
+		{http.StatusNotFound, http.StatusNotFound},
+		{http.StatusServiceUnavailable, http.StatusBadGateway},
+	} {
+		t.Run(fmt.Sprint(tc.upstream), func(t *testing.T) {
+			var hits atomic.Int64
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(tc.upstream)
+			}))
+			t.Cleanup(hub.Close)
+			m, _ := newXETDataPlane(t, hub.URL)
+			m.RegisterObject(oid, "org/repo", strings.Repeat("c", 40), "model.bin", 5)
+			h := NewHandler(WithMirror(m))
+
+			for _, method := range []string{http.MethodHead, http.MethodGet} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(method, "/objects/"+oid, nil))
+				if rec.Code != tc.want {
+					t.Fatalf("%s status = %d, want %d", method, rec.Code, tc.want)
+				}
+			}
+			if n := hits.Load(); n != 1 {
+				t.Fatalf("hub requests = %d, want 1", n)
+			}
+		})
+	}
 }
 
 // TestGetContentStreamsWhileIngesting pins the pull-scan streaming path:
