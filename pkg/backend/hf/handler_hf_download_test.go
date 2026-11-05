@@ -418,6 +418,38 @@ func TestResolveLFSUpstreamFailure(t *testing.T) {
 	}
 }
 
+// TestResolveLFSAbandoned pins the answer to a resolve whose client left
+// during the pre-open hook, as when a cold pull outlasts hf_hub's timeout:
+// nginx's 499 while the upstream has yet to answer, not a 404.
+func TestResolveLFSAbandoned(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	st, _ := newLFSRepo(t, map[string]string{
+		"model.bin": hfLFSPointerText(oid, 5),
+	})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.Close)
+	// Runs before upstream.Close, which waits for the held probe.
+	t.Cleanup(func() { close(release) })
+	m, _ := newXETDataPlane(t, upstream.URL, nil)
+
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		ctx, cancel := context.WithCancel(context.Background())
+		h := NewHandler(WithStorage(st), WithMirror(m), WithPreOpenHookFunc(func(context.Context, string, bool) error {
+			cancel()
+			return nil
+		}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/org/repo/resolve/main/model.bin", nil).WithContext(ctx))
+		if rec.Code != 499 {
+			t.Fatalf("%s status = %d, want 499", method, rec.Code)
+		}
+	}
+}
+
 // TestTreeHubShape pins the huggingface.co tree listing hf-mount mounts from:
 // directories are entries of their own, no slot is ever blank, and ingested
 // LFS files carry their xetHash.

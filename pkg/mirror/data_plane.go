@@ -24,6 +24,9 @@ import (
 // errNoUpstream marks a target whose repository is not mirrored, so no upstream can have the file.
 var errNoUpstream = errors.New("no upstream")
 
+// statusClientClosedRequest is nginx's 499, logged for a client that left before the answer.
+const statusClientClosedRequest = 499
+
 // resolveTarget locates a file in the upstream hub by its commit-pinned
 // resolve key, along with the object size from the pointer that named it.
 type resolveTarget struct {
@@ -72,6 +75,8 @@ func (m *Mirror) targets(oid string) []resolveTarget {
 // upstream has the file, letting the caller answer its own 404. Any other
 // failure, such as an upstream 5xx or 429, a network error, or a failure the
 // engine holds for its retry backoff, is answered 502 here so clients retry.
+// A request whose own context ends before it is answered gets 499, which
+// only the access log sees.
 func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bool {
 	if m.xetMirror == nil {
 		return false
@@ -87,7 +92,8 @@ func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bo
 		}
 		// A request whose own context ended saw no upstream failure.
 		if r.Context().Err() != nil {
-			return false
+			w.WriteHeader(statusClientClosedRequest)
+			return true
 		}
 		if failure == nil && !errors.Is(err, xetmirror.ErrUpstreamNotFound) && !errors.Is(err, errNoUpstream) {
 			failure, failed = err, t
