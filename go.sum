@@ -113,8 +113,6 @@ github.com/johannesboyne/gofakes3 v1.2.0 h1:I9VEzPWvvAUAGzDlhYFoZjF0AXMlkcEyZlmB
 github.com/johannesboyne/gofakes3 v1.2.0/go.mod h1:UHhRZRod9rENGFrUWTYnQHZqlNgSmjOq8DaD/ATQYRM=
 github.com/kevinburke/ssh_config v1.6.0 h1:J1FBfmuVosPHf5GRdltRLhPJtJpTlMdKTBjRgTaQBFY=
 github.com/kevinburke/ssh_config v1.6.0/go.mod h1:q2RIzfka+BXARoNexmF9gkxEX7DmvbW9P4hIVx2Kg4M=
-github.com/klauspost/cpuid/v2 v2.4.2 h1:xRw7IZEsAgVCp6trS/DgWbTAqpixhmywgVgBjYGg1bQ=
-github.com/klauspost/cpuid/v2 v2.4.2/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.2.1/go.mod h1:ipq/a2n7PKx3OHsz4KJII5eveXtPO4qwEXGdVfWzfnI=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
@@ -162,8 +160,8 @@ github.com/wzshiming/httpseek v0.7.0 h1:fF5DkcNGoEAWbSmaiCn5r5TZB9Evw+EXERVkZbsq
 github.com/wzshiming/httpseek v0.7.0/go.mod h1:YoZhlLIwNjTBDXIT8NpK5zRjOgZouRXPaBfjVXdqMMs=
 github.com/wzshiming/ioswmr v0.3.1 h1:S6sILTfV4tUz3XRfINHSGG0y7280v2Z1B7hs5YJ03ek=
 github.com/wzshiming/ioswmr v0.3.1/go.mod h1:TwwDyS1wnJG3AvKliA+PPB0kliN3yEjsabtH4o7xySQ=
-github.com/wzshiming/xet v0.0.0-20261105035354-2fc46e9c4c89 h1:rGmNZSEYs7lU9JeIj48mEuuXYF2rOst7GhjniklJ3MI=
-github.com/wzshiming/xet v0.0.0-20261105035354-2fc46e9c4c89/go.mod h1:qIMNcB96JyFoLyKDGJRbMyhm56beksdhVjhTPOKG9TI=
+github.com/wzshiming/xet v0.0.0-20261105101146-e7ba7eedf17b h1:6V8QeIXPEzj9TluSTYTFuFOJTMtxyI7qE9BCGnYAFXs=
+github.com/wzshiming/xet v0.0.0-20261105101146-e7ba7eedf17b/go.mod h1:ojaXkFc+PvDqvCqF6NxUB/9DXuRmDFha5p2t7AXQ67E=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f h1:J9EGpcZtP0E/raorCMxlFGSTBrsSlaDGf3jU/qvAE2c=
 github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f/go.mod h1:N2zxlSyiKSe5eX1tZViRH5QA0qijqEDrYZiPEAiq3wU=
 github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 h1:EzJWgHovont7NscjpAxXsDA8S8BMYve8Y5+7cuRE7R0=
@@ -172,8 +170,8 @@ github.com/xeipuuv/gojsonschema v0.0.0-20170210233622-6b67b3fab74d h1:BJPiQVOMMt
 github.com/xeipuuv/gojsonschema v0.0.0-20170210233622-6b67b3fab74d/go.mod h1:5yf86TLmAcydyeJq5YvxkGPE2fm/u4myDekKRoLuqhs=
 github.com/zeebo/assert v1.1.0 h1:hU1L1vLTHsnO8x8c9KAR5GmM5QscxHg5RNU5z5qbUWY=
 github.com/zeebo/assert v1.1.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
-github.com/zeebo/blake3 v0.2.4 h1:KYQPkhpRtcqh0ssGYcKLG1JYvddkEA8QwCM/yBqhaZI=
-github.com/zeebo/blake3 v0.2.4/go.mod h1:7eeQ6d2iXWRGF6npfaxl2CU+xy2Fjo2gxeyZGCRUjcE=
+github.com/zeebo/blake3 v0.2.5-0.20261020032212-28a397d2ee4c h1:pnYCVMR8ZOA7mebe9Pc5K8z/KVs0jDPs4QRWWkj4Bk8=
+github.com/zeebo/blake3 v0.2.5-0.20261020032212-28a397d2ee4c/go.mod h1:LiCbKyAim2kKpel9szwGBQr7WN0mHZVlEFAnZZfn0Z4=
 github.com/zeebo/pcg v1.0.1 h1:lyqfGeWiv4ahac6ttHs+I5hwtH/+1mrhlCtVNQM2kHo=
 github.com/zeebo/pcg v1.0.1/go.mod h1:09F0S9iiKrwn9rlI5yjLkmrug154/YRW6KnnXVDM/l4=
 go.etcd.io/bbolt v1.3.5 h1:XAzx9gjCb0Rxj7EoqcClPD1d5ZBxZJk0jbuoPHenBt0=

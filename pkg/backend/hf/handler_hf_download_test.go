@@ -27,6 +27,7 @@ import (
 	xetmirror "github.com/wzshiming/xet/mirror"
 	"github.com/wzshiming/xet/mirror/spool"
 	xetserver "github.com/wzshiming/xet/server"
+	"github.com/wzshiming/xet/shard"
 	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/mirror"
@@ -236,10 +237,6 @@ type zeroSizeStorage struct {
 	digest [32]byte
 }
 
-type emptyFile struct{ *bytes.Reader }
-
-func (emptyFile) Close() error { return nil }
-
 func (s zeroSizeStorage) GetFileHashBySHA256(ctx context.Context, digest [32]byte) (xet.FileHash, error) {
 	if digest == s.digest {
 		return xet.FileHash{}, nil
@@ -247,11 +244,11 @@ func (s zeroSizeStorage) GetFileHashBySHA256(ctx context.Context, digest [32]byt
 	return s.Storage.GetFileHashBySHA256(ctx, digest)
 }
 
-func (s zeroSizeStorage) GetReconstructedFile(ctx context.Context, digest [32]byte) (io.ReadSeekCloser, error) {
+func (s zeroSizeStorage) GetShardBySHA256(ctx context.Context, digest [32]byte) (*shard.Shard, error) {
 	if digest == s.digest {
-		return emptyFile{bytes.NewReader(nil)}, nil
+		return &shard.Shard{Files: []shard.FileBlock{{MetadataExt: &shard.FileMetadataExt{SHA256Hash: shard.NewSHA256Hash(digest)}}}}, nil
 	}
-	return s.Storage.GetReconstructedFile(ctx, digest)
+	return s.Storage.GetShardBySHA256(ctx, digest)
 }
 
 // TestResolveLFSZeroSize pins the hub-parity answer for ingested zero-size
