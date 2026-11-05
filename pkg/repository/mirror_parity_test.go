@@ -471,10 +471,11 @@ func testGitParityPullMirrorRefs(t *testing.T, native bool) {
 			sourceURL := tr.url(bare)
 
 			goGitMirror := filepath.Join(root, "gogit-mirror.git")
-			repo, err := InitMirror(ctx, osfs.Default, goGitMirror, sourceURL)
+			repo, remoteRefs, err := InitMirror(ctx, osfs.Default, goGitMirror, sourceURL)
 			if err != nil {
 				t.Fatalf("init go-git mirror: %v", err)
 			}
+			requireSameRefs(t, "InitMirror refs vs git ls-remote --refs", remoteRefs, gitLsRemoteRefs(t, sourceURL))
 			requireGitMode(t, repo, native)
 			legacyMirror := filepath.Join(root, "legacy-mirror.git")
 			runGit(t, "", "init", "--bare", "--initial-branch=main", legacyMirror)

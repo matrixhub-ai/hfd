@@ -2,9 +2,15 @@ package mirror_test
 
 import (
 	"context"
+	"maps"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-git/go-billy/v6"
@@ -72,6 +78,33 @@ func hubSource(hubURL string) mirror.SourceFunc {
 	return func(ctx context.Context, repoName string) (string, bool, error) {
 		return hubURL + "/" + repoName, true, nil
 	}
+}
+
+// countingUpstream serves the bare repositories under root with git http-backend and counts the upload-pack advertisements it answers.
+func countingUpstream(t *testing.T, root string) (string, *atomic.Int32) {
+	t.Helper()
+	execPath, err := exec.CommandContext(t.Context(), "git", "--exec-path").Output()
+	if err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	backend := filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skipf("git-http-backend not available: %v", err)
+	}
+	cgiHandler := &cgi.Handler{
+		Path:       backend,
+		InheritEnv: []string{"PATH"},
+		Env:        []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"},
+	}
+	var advertisements atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/info/refs") && r.URL.Query().Get("service") == repository.GitUploadPack {
+			advertisements.Add(1)
+		}
+		cgiHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, &advertisements
 }
 
 // forEachRepositoriesFS runs fn with the host filesystem, where an installed git transfers objects, and with a wrapper that forces go-git.
@@ -180,6 +213,33 @@ func TestPullFromRemoteInitializesMirror(t *testing.T) {
 		}
 		if len(destRefs) != len(srcRefs) {
 			t.Fatalf("dest refs = %v, want same set as source %v", destRefs, srcRefs)
+		}
+	})
+}
+
+// A cold pull reads the source's advertisement once for both its default branch and its refs; the fetch makes the only other.
+func TestPullFromRemoteColdAdvertisements(t *testing.T) {
+	forEachRepositoriesFS(t, func(t *testing.T, fs billy.Filesystem) {
+		root := t.TempDir()
+		src, _ := initSourceRepo(t, root, "src")
+		addCommit(t, src, "feature", "feature.txt", "feature\n")
+		upstream, advertisements := countingUpstream(t, root)
+
+		m := newMirror(t, "", mirror.WithRepositoriesFS(fs), mirror.WithMirrorSourceFunc(staticSource(upstream+"/src.git")))
+		destPath := filepath.Join(root, "dest.git")
+		if err := m.PullFromRemote(context.Background(), destPath, "org/repo", nil); err != nil {
+			t.Fatalf("pull from remote: %v", err)
+		}
+
+		if got := advertisements.Load(); got != 2 {
+			t.Errorf("cold pull read %d advertisements, want 2", got)
+		}
+		srcRefs, err := src.Refs()
+		if err != nil {
+			t.Fatalf("source refs: %v", err)
+		}
+		if destRefs := refsAt(t, destPath); !maps.Equal(destRefs, srcRefs) {
+			t.Fatalf("dest refs = %v, want %v", destRefs, srcRefs)
 		}
 	})
 }
