@@ -372,6 +372,7 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 		backendssh.WithHostKey(hostKey),
 		backendssh.WithStorage(st),
 		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{string(pubKey.Marshal()): ""})),
+		backendssh.WithAnonymousAccess(),
 		backendssh.WithTokenSignValidator(signValidator),
 	}
 	if cfg.sshLFSURL {

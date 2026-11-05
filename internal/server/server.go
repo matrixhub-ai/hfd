@@ -27,7 +27,7 @@ import (
 type Options struct {
 	Storage        *storage.Storage                // CAS routes precede user auth, hub and git routes.
 	Mirror         *mirror.Mirror                  // data plane of the lfs/hf backends; nil for a plain server
-	Authenticators *authenticate.Authenticators    // validators for the default authentication layer and the SSH server; nil = anonymous HTTP, unauthenticated SSH
+	Authenticators *authenticate.Authenticators    // validators for the default authentication layer and the SSH server; callers without credentials are anonymous on both
 	Authenticate   func(http.Handler) http.Handler // replaces the default authenticate.NewHandler layer when set; the xet CAS routes are answered before it
 	CASAuthorizer  auth.Authorizer                 // gates the xet CAS routes; nil rejects every gated route (xorb downloads and /xet-bridge stay anonymous)
 	// Nil hooks are skipped.
@@ -185,6 +185,7 @@ func NewSSHServer(o Options, hostKey pkgssh.Signer) *backendssh.Server {
 		backendssh.WithLFSURL(o.HostURL),
 		backendssh.WithBasicAuthValidator(o.Authenticators.BasicAuth),
 		backendssh.WithPublicKeyValidator(o.Authenticators.PublicKey),
+		backendssh.WithAnonymousAccess(),
 		backendssh.WithTokenSignValidator(o.Authenticators.TokenSign),
 	}
 	return backendssh.NewServer(append(opts, o.SSHOptions...)...)

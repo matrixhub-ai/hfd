@@ -7,10 +7,13 @@ import (
 	"crypto/rand"
 	iofs "io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -327,6 +330,76 @@ func TestNewSSHServer(t *testing.T) {
 		SSHOptions: []backendssh.Option{backendssh.WithLFSURL("https://example.com")},
 	}, hostKey); got == nil {
 		t.Fatal("SSH server is nil")
+	}
+}
+
+func TestNewSSHServerAnonymous(t *testing.T) {
+	signer := func() ssh.Signer {
+		_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer, err := ssh.NewSignerFromKey(privateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signer
+	}
+	userKey := signer()
+	var mu sync.Mutex
+	var seen []string
+	srv := NewSSHServer(Options{
+		Storage:        newStorage(t),
+		Authenticators: &authenticate.Authenticators{PublicKey: authenticate.NewSimplePublicKeyValidator(map[string]string{string(userKey.PublicKey().Marshal()): "alice"})},
+		PreOpen: func(ctx context.Context, _ string, _ bool) error {
+			id := authenticate.IdentityFrom(ctx)
+			mu.Lock()
+			seen = append(seen, id.Name())
+			mu.Unlock()
+			if authenticate.IsAnonymous(id) {
+				return authenticate.ErrUnauthenticated
+			}
+			return nil
+		},
+	}, signer())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = srv.Serve(t.Context(), listener) }()
+	for _, test := range []struct {
+		name       string
+		auth       ssh.AuthMethod
+		want, said string
+	}{
+		{name: "Key", auth: ssh.PublicKeys(userKey), want: "alice", said: "repository not found\n"},
+		// What OpenSSH falls back to once it has no accepted key.
+		{name: "Keyless", auth: ssh.KeyboardInteractive(func(string, string, []string, []bool) ([]string, error) { return nil, nil }), want: authenticate.AnonymousName, said: "authentication required\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mu.Lock()
+			seen = nil
+			mu.Unlock()
+			client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{User: "git", Auth: []ssh.AuthMethod{test.auth}, HostKeyCallback: ssh.InsecureIgnoreHostKey()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			if output, err := session.CombinedOutput("git-upload-pack 'org/repo.git'"); err == nil || string(output) != test.said {
+				t.Errorf("git-upload-pack: err = %v, output = %q, want a failure saying %q", err, output, test.said)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(seen, []string{test.want}) {
+				t.Errorf("PreOpen saw %q, want [%q]", seen, test.want)
+			}
+		})
 	}
 }
 

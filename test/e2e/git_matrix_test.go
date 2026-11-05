@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 )
 
 const (
@@ -333,8 +336,19 @@ func testCrossProtocolReadBack(t *testing.T, s *e2eServer, remote string, env []
 }
 
 // testUnauthorizedKeyDenied clones with a fresh key that is not in the
-// server's authorized list and requires the clone to fail.
-func testUnauthorizedKeyDenied(t *testing.T, s *e2eServer, remote string, env []string) {
+// server's authorized list: it lands as anonymous, so a PreOpen requiring a
+// signed-in user refuses it while the authorized key still clones.
+func testUnauthorizedKeyDenied(t *testing.T, _ *e2eServer, _ string, _ []string) {
+	s := newE2EServer(t, withSSH(), withPreOpenHook(func(ctx context.Context, _ string, _ bool) error {
+		if authenticate.IsAnonymous(authenticate.IdentityFrom(ctx)) {
+			return authenticate.ErrUnauthenticated
+		}
+		return nil
+	}))
+	s.createRepo(t, "test-org", "test-repo")
+	remote, env := s.sshRemote(gitMatrixRepoID)
+	runGit(t, "", env, "clone", remote, filepath.Join(t.TempDir(), "clone"))
+
 	badKeyFile := filepath.Join(t.TempDir(), "id_bad")
 	generateTestKeyFile(t, badKeyFile)
 
@@ -346,7 +360,7 @@ func testUnauthorizedKeyDenied(t *testing.T, s *e2eServer, remote string, env []
 
 	cloneDir := filepath.Join(t.TempDir(), "clone-bad")
 	stdout, stderr, err := gitCmd(t, "", badEnv, "clone", remote, cloneDir)
-	if err == nil {
-		t.Fatalf("Expected clone to fail with unauthorized key, but it succeeded:\nstdout: %s\nstderr: %s", stdout, stderr)
+	if err == nil || !strings.Contains(stderr, "authentication required") {
+		t.Fatalf("Expected clone with unauthorized key to be refused as anonymous, got err=%v:\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 }

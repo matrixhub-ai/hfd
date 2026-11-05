@@ -751,6 +751,100 @@ func testSSHPublicKeyIdentity(t *testing.T, native bool) {
 	}
 }
 
+func TestSSHAnonymousAccess(t *testing.T) {
+	forEachMode(t, testSSHAnonymousAccess)
+}
+
+func testSSHAnonymousAccess(t *testing.T, native bool) {
+	repoDir := t.TempDir()
+	clientDir := t.TempDir()
+	for _, name := range []string{"public.git", "private.git"} {
+		runGitCmd(t, "", nil, "init", "--bare", filepath.Join(repoDir, "repositories", name))
+	}
+	hostKey, err := generateHostKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(clientDir, "id_writer")
+	key, err := generateClientKeyFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badKeyFile := filepath.Join(clientDir, "id_bad")
+	if _, err := generateClientKeyFile(badKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	type call struct {
+		name, repo string
+		write      bool
+	}
+	var mu sync.Mutex
+	var calls []call
+	server := backendssh.NewServer(
+		backendssh.WithHostKey(hostKey),
+		backendssh.WithStorage(newStorage(t, repoDir, native)),
+		backendssh.WithPublicKeyValidator(authenticate.NewSimplePublicKeyValidator(map[string]string{string(key.Marshal()): "writer"})),
+		backendssh.WithAnonymousAccess(),
+		// Anyone reads the public repository; writes and the private one need a signed-in user.
+		backendssh.WithPreOpenHookFunc(func(ctx context.Context, repo string, write bool) error {
+			id := authenticate.IdentityFrom(ctx)
+			mu.Lock()
+			calls = append(calls, call{id.Name(), repo, write})
+			mu.Unlock()
+			if authenticate.IsAnonymous(id) && (write || repo != "/public.git") {
+				return authenticate.ErrUnauthenticated
+			}
+			return nil
+		}),
+	)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = server.Serve(t.Context(), listener) }()
+	addr := listener.Addr().(*net.TCPAddr)
+	repoURL := func(name string) string { return "ssh://git@" + addr.String() + "/" + name }
+	for _, test := range []struct {
+		name string
+		auth string // ssh options choosing what the client offers
+		want string
+	}{
+		{name: "AuthorizedKey", auth: "-o IdentitiesOnly=yes -i " + keyFile, want: "writer"},
+		{name: "UnauthorizedKey", auth: "-o IdentitiesOnly=yes -i " + badKeyFile, want: authenticate.AnonymousName},
+		{name: "NoKey", auth: "-o PubkeyAuthentication=no", want: authenticate.AnonymousName},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mu.Lock()
+			calls = nil
+			mu.Unlock()
+			// No BatchMode: it turns off keyboard-interactive, which anonymous logins ride.
+			sshCmd := fmt.Sprintf("ssh -F /dev/null -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null %s -p %d", test.auth, addr.Port)
+			env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=" + sshCmd}
+			cloneDir := filepath.Join(clientDir, test.name)
+			runGitCmd(t, "", env, "clone", repoURL("public.git"), cloneDir)
+			runGitCmd(t, cloneDir, env, "-c", "user.name=Test User", "-c", "user.email=test@test.com", "commit", "--allow-empty", "-m", test.name)
+			anonymous := test.want == authenticate.AnonymousName
+			for _, args := range [][]string{
+				{"-C", cloneDir, "push", "origin", "HEAD"},
+				{"clone", repoURL("private.git"), cloneDir + "-private"},
+			} {
+				cmd := exec.CommandContext(t.Context(), "git", args...)
+				cmd.Env = append(os.Environ(), env...)
+				output, err := cmd.CombinedOutput()
+				if refused := err != nil; refused != anonymous || (refused && !strings.Contains(string(output), "authentication required")) {
+					t.Fatalf("git %s: err = %v, want refused = %v with \"authentication required\"; output:\n%s", strings.Join(args, " "), err, anonymous, output)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if want := []call{{test.want, "/public.git", false}, {test.want, "/public.git", true}, {test.want, "/private.git", false}}; !slices.Equal(calls, want) {
+				t.Errorf("pre-open calls = %v, want %v", calls, want)
+			}
+		})
+	}
+}
+
 func TestSSHLFSAuthenticate(t *testing.T) {
 	// Create a temporary directory for repositories
 	repoDir, err := os.MkdirTemp("", "sshlfs-test-repos")
