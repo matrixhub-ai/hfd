@@ -49,6 +49,10 @@ type config struct {
 	ProxyDownloadCacheSize  int64
 	ProxyUploadCacheSize    int64
 
+	// CAS reconstruction
+	ReconstructionMinTerms     int
+	ReconstructionMinTermBytes int64
+
 	// Internal management
 	Internal bool
 }
@@ -64,6 +68,9 @@ func defaultConfig() *config {
 		ProxyConcurrencyPerFile: 2,
 		ProxyDownloadCacheSize:  xetdownload.DefaultCacheSize,
 		ProxyUploadCacheSize:    xetupload.DefaultCacheSize,
+		// xetd's defaults; hf_xet keeps about one connection per term.
+		ReconstructionMinTerms:     16,
+		ReconstructionMinTermBytes: 1 << 20,
 	}
 }
 
@@ -100,8 +107,18 @@ func parseConfig() (*config, error) {
 	flag.Int64Var(&cfg.ProxyDownloadCacheSize, "proxy-download-cache-size", cfg.ProxyDownloadCacheSize, "Maximum size in bytes of the download chunk cache used for proxy transfers; 0 or less means unbounded")
 	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 
+	flag.IntVar(&cfg.ReconstructionMinTerms, "reconstruction-min-terms", cfg.ReconstructionMinTerms, "Split large reconstruction terms until a response has at least this many terms; 0 disables splitting")
+	flag.Int64Var(&cfg.ReconstructionMinTermBytes, "reconstruction-min-term-bytes", cfg.ReconstructionMinTermBytes, "Never split a reconstruction term into pieces smaller than this many bytes")
+
 	flag.BoolVar(&cfg.Internal, "internal", cfg.Internal, "Enable unauthenticated management endpoints under /internal/ (object listing under /internal/objects, usage report under /internal/usage, GC via POST /internal/gc (Git garbage collection in every repository, unlinking of unreferenced LFS objects, then the budgeted sweep of storage, spool and engine index; repeat until done); run GC only while pushes are quiescent); expose only on trusted networks")
 	flag.Parse()
+
+	if cfg.ReconstructionMinTerms < 0 {
+		return nil, fmt.Errorf("--reconstruction-min-terms must not be negative, got %d", cfg.ReconstructionMinTerms)
+	}
+	if cfg.ReconstructionMinTermBytes < 0 {
+		return nil, fmt.Errorf("--reconstruction-min-term-bytes must not be negative, got %d", cfg.ReconstructionMinTermBytes)
+	}
 
 	if cfg.HostURL == "" {
 		host, port, err := net.SplitHostPort(cfg.Addr)

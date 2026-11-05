@@ -43,6 +43,7 @@ type Options struct {
 	LFSOptions      []backendlfs.Option
 	GitOptions      []backendhttp.Option
 	SSHOptions      []backendssh.Option
+	CASOptions      []xetserver.Option
 }
 
 type middleware func(next http.Handler) http.Handler
@@ -134,11 +135,12 @@ func xetCASServer(o Options) middleware {
 		authorizer = auth.AuthorizerFunc(func(*http.Request, auth.Grant) error { return auth.ErrUnauthenticated })
 	}
 	return func(next http.Handler) http.Handler {
-		return xetserver.NewHandler(
+		opts := []xetserver.Option{
 			xetserver.WithStorage(o.Storage.XETStorage()),
 			xetserver.WithAuthorizer(authorizer),
 			xetserver.WithNext(next),
-		)
+		}
+		return xetserver.NewHandler(append(opts, o.CASOptions...)...)
 	}
 }
 
