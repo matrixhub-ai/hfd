@@ -17,6 +17,7 @@ import (
 	"github.com/wzshiming/xet/auth"
 	xetmirror "github.com/wzshiming/xet/mirror"
 	xetstorage "github.com/wzshiming/xet/storage"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -309,8 +310,8 @@ func parseOID(oid string) ([32]byte, bool) {
 }
 
 // prefetchLFS registers the scanned objects in the OID index and ingests the
-// missing ones sequentially in the background, falling back to the source's
-// git-lfs batch API when an ingest fails.
+// missing ones in the background, prefetchConcurrency at a time, falling back
+// to the source's git-lfs batch API when an ingest fails.
 func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string]resolveTarget) {
 	if m.xetMirror == nil || len(oids) == 0 {
 		return
@@ -320,25 +321,36 @@ func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string
 	}
 	m.background.Go(func() {
 		ctx := context.Background()
+		var g errgroup.Group
+		g.SetLimit(max(m.prefetchConcurrency, 1))
 		for _, oid := range oids {
-			target := targets[oid]
-			if m.HasObject(ctx, oid) {
-				continue
-			}
-			if _, inflight := m.prefetching.LoadOrStore(oid, struct{}{}); inflight {
-				continue
-			}
-			err := m.ingest(ctx, target)
-			if err != nil {
-				if fbErr := m.fallbackDownload(ctx, sourceURL, oid, target.size); fbErr != nil {
-					slog.Warn("Mirror LFS prefetch failed", "repo", target.repoName, "path", target.path, "oid", oid, "error", err, "fallbackError", fbErr)
-				} else {
-					slog.Info("Mirror LFS prefetch fell back to the git-lfs batch API", "repo", target.repoName, "path", target.path, "oid", oid, "ingestError", err)
-				}
-			}
-			m.prefetching.Delete(oid)
+			g.Go(func() error {
+				m.prefetchObject(ctx, sourceURL, oid, targets[oid])
+				return nil
+			})
 		}
+		_ = g.Wait()
 	})
+}
+
+// prefetchObject ingests one scanned object unless storage holds it or another prefetch has it in flight.
+func (m *Mirror) prefetchObject(ctx context.Context, sourceURL, oid string, target resolveTarget) {
+	if m.HasObject(ctx, oid) {
+		return
+	}
+	if _, inflight := m.prefetching.LoadOrStore(oid, struct{}{}); inflight {
+		return
+	}
+	defer m.prefetching.Delete(oid)
+	err := m.ingest(ctx, target)
+	if err == nil {
+		return
+	}
+	if fbErr := m.fallbackDownload(ctx, sourceURL, oid, target.size); fbErr != nil {
+		slog.Warn("Mirror LFS prefetch failed", "repo", target.repoName, "path", target.path, "oid", oid, "error", err, "fallbackError", fbErr)
+	} else {
+		slog.Info("Mirror LFS prefetch fell back to the git-lfs batch API", "repo", target.repoName, "path", target.path, "oid", oid, "ingestError", err)
+	}
 }
 
 // fallbackDownload fetches an object through the source's git-lfs batch API
