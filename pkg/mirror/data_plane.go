@@ -16,6 +16,7 @@ import (
 
 	"github.com/wzshiming/xet/auth"
 	xetmirror "github.com/wzshiming/xet/mirror"
+	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/lfs"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -286,23 +287,15 @@ func (m *Mirror) OpenObject(ctx context.Context, oid string) (io.ReadSeekCloser,
 	if !ok {
 		return nil, 0, os.ErrNotExist
 	}
-	if _, err := m.xetStorage.GetFileHashBySHA256(ctx, digest); err != nil {
+	sh, err := m.xetStorage.GetShardBySHA256(ctx, digest)
+	if err != nil {
 		return nil, 0, os.ErrNotExist
 	}
-	rs, err := m.xetStorage.GetReconstructedFile(ctx, digest)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reconstruct object %s: %w", oid, err)
+	file := sh.FindFileBySHA256(digest)
+	if file == nil {
+		return nil, 0, os.ErrNotExist
 	}
-	size, err := rs.Seek(0, io.SeekEnd)
-	if err != nil {
-		_ = rs.Close()
-		return nil, 0, fmt.Errorf("size object %s: %w", oid, err)
-	}
-	if _, err := rs.Seek(0, io.SeekStart); err != nil {
-		_ = rs.Close()
-		return nil, 0, fmt.Errorf("rewind object %s: %w", oid, err)
-	}
-	return rs, size, nil
+	return xetstorage.NewReconstructedFile(ctx, m.xetStorage, file.Entries), file.UnpackedSize(), nil
 }
 
 func parseOID(oid string) ([32]byte, bool) {
