@@ -366,6 +366,33 @@ func TestGetContentUpstreamFailure(t *testing.T) {
 	}
 }
 
+// TestGetContentAbandoned pins the download answer for a known object whose
+// client left before the hub answered: nginx's 499, not a 404.
+func TestGetContentAbandoned(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	release := make(chan struct{})
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(hub.Close)
+	// Runs before hub.Close, which waits for the held probe.
+	t.Cleanup(func() { close(release) })
+	m, _ := newXETDataPlane(t, hub.URL)
+	m.RegisterObject(oid, "org/repo", strings.Repeat("c", 40), "model.bin", 5)
+	h := NewHandler(WithMirror(m))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/objects/"+oid, nil).WithContext(ctx))
+		if rec.Code != 499 {
+			t.Fatalf("%s status = %d, want 499", method, rec.Code)
+		}
+	}
+}
+
 // TestGetContentStreamsWhileIngesting pins the pull-scan streaming path:
 // objects the mirror knows but has not fully ingested stream from the
 // in-flight ingest spool on this response. The hub gates the ingest download

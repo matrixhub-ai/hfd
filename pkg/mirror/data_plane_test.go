@@ -334,6 +334,40 @@ func TestServeOIDTargetFailures(t *testing.T) {
 	}
 }
 
+// A request whose client leaves while the hub has yet to answer is answered
+// nginx's 499, not left to the caller's 404; once the hub answers 404, a
+// request that waits for it still is.
+func TestServeOIDAbandonedRequest(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var hits atomic.Int64
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// The client leaves while the hub holds the probe.
+		cancel()
+		<-release
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(hub.Close)
+	releaseHub := sync.OnceFunc(func() { close(release) })
+	// Runs before hub.Close, which waits for the held probe.
+	t.Cleanup(releaseHub)
+	m := newMirror(t, hub.URL)
+	m.RegisterObject(oid, "org/repo", strings.Repeat("c", 40), "model.bin", 1)
+
+	rec := httptest.NewRecorder()
+	served := m.ServeOID(rec, httptest.NewRequest(http.MethodGet, "/anything", nil).WithContext(ctx), oid)
+	if !served || rec.Code != 499 {
+		t.Fatalf("ServeOID = %v, status %d, want true with 499", served, rec.Code)
+	}
+	releaseHub()
+	checkServeOID(t, m, oid, false)
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("hub requests = %d, want 1", n)
+	}
+}
+
 func TestPullMirrorLFSDataPlane(t *testing.T) {
 	root := t.TempDir()
 	src, srcPath := initSourceRepo(t, root, "src")
