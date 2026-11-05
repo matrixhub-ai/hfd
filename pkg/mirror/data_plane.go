@@ -21,6 +21,9 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/repository"
 )
 
+// errNoUpstream marks a target whose repository is not mirrored, so no upstream can have the file.
+var errNoUpstream = errors.New("no upstream")
+
 // resolveTarget locates a file in the upstream hub by its commit-pinned
 // resolve key, along with the object size from the pointer that named it.
 type resolveTarget struct {
@@ -66,31 +69,50 @@ func (m *Mirror) targets(oid string) []resolveTarget {
 // entries are served from storage, in-flight ingests are streamed from the
 // growing spool (ingest-on-miss). Registered targets are tried in order. It
 // reports false when the OID is unregistered, there is no engine, or no
-// upstream has the file, letting the caller answer its own 404.
+// upstream has the file, letting the caller answer its own 404. Any other
+// failure, such as an upstream 5xx or 429, a network error, or a failure the
+// engine holds for its retry backoff, is answered 502 here so clients retry.
 func (m *Mirror) ServeOID(w http.ResponseWriter, r *http.Request, oid string) bool {
 	if m.xetMirror == nil {
 		return false
 	}
+	var (
+		failure error
+		failed  resolveTarget
+	)
 	for _, t := range m.targets(oid) {
-		if m.serveTarget(w, r, oid, t) {
+		err := m.serveTarget(w, r, oid, t)
+		if err == nil {
 			return true
 		}
+		// A request whose own context ended saw no upstream failure.
+		if r.Context().Err() != nil {
+			return false
+		}
+		if failure == nil && !errors.Is(err, xetmirror.ErrUpstreamNotFound) && !errors.Is(err, errNoUpstream) {
+			failure, failed = err, t
+		}
 	}
-	return false
+	if failure == nil {
+		return false
+	}
+	slog.WarnContext(r.Context(), "Mirror LFS fetch failed", "repo", failed.repoName, "path", failed.path, "oid", oid, "error", failure)
+	http.Error(w, fmt.Sprintf("failed to fetch LFS object %s", oid), http.StatusBadGateway)
+	return true
 }
 
-// serveTarget serves the object through one resolve target; false leaves the response unwritten.
-func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) bool {
+// serveTarget serves the object through one resolve target; an error leaves the response unwritten.
+func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) error {
 	res, err := m.resolve(r.Context(), t)
 	if err != nil {
-		return false
+		return err
 	}
 	if res.Entry != nil {
 		return m.serveIngested(w, r, oid)
 	}
 	size, ok := res.Stream.WaitSize(r.Context())
 	if !ok {
-		return false
+		return r.Context().Err()
 	}
 	if size >= 0 {
 		rs, err := res.Stream.NewSeekReader(0, int(size))
@@ -102,7 +124,7 @@ func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string,
 		lfs.SetObjectHeaders(w, oid, size)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		http.ServeContent(w, r, oid, time.Time{}, rs)
-		return true
+		return nil
 	}
 	rc, err := res.Stream.NewReader(0)
 	if err != nil {
@@ -113,7 +135,7 @@ func (m *Mirror) serveTarget(w http.ResponseWriter, r *http.Request, oid string,
 	// Size unknown until the ingest completes: stream the body; a copy error
 	// after the first write cannot be reported anymore.
 	_, _ = io.Copy(w, rc)
-	return true
+	return nil
 }
 
 // resolve runs one engine resolution for the target through its hub download URL.
@@ -129,14 +151,14 @@ func (m *Mirror) resolve(ctx context.Context, t resolveTarget) (*xetmirror.Resol
 // mirror source and sync user info callbacks, with resolvePullSource's precedence.
 func (m *Mirror) upstreamURL(ctx context.Context, t resolveTarget) (rawURL, token string, err error) {
 	if m.mirrorSourceFunc == nil {
-		return "", "", fmt.Errorf("no mirror source configured for repository %q", t.repoName)
+		return "", "", fmt.Errorf("no mirror source configured for repository %q: %w", t.repoName, errNoUpstream)
 	}
 	sourceURL, isMirror, err := m.mirrorSourceFunc(ctx, t.repoName)
 	if err != nil {
 		return "", "", err
 	}
 	if !isMirror {
-		return "", "", fmt.Errorf("repository %q is not configured as a mirror", t.repoName)
+		return "", "", fmt.Errorf("repository %q is not configured as a mirror: %w", t.repoName, errNoUpstream)
 	}
 	u, err := url.Parse(sourceURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -157,25 +179,28 @@ func (m *Mirror) upstreamURL(ctx context.Context, t resolveTarget) (rawURL, toke
 }
 
 // serveIngested serves a fully ingested object from the xet storage.
-func (m *Mirror) serveIngested(w http.ResponseWriter, r *http.Request, oid string) bool {
+func (m *Mirror) serveIngested(w http.ResponseWriter, r *http.Request, oid string) error {
 	rs, size, err := m.OpenObject(r.Context(), oid)
 	if err != nil {
-		return false
+		return err
 	}
 	defer func() { _ = rs.Close() }()
 	lfs.SetObjectHeaders(w, oid, size)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, oid, time.Time{}, rs)
-	return true
+	return nil
 }
 
 // serveDrained covers the rare race where the ingest finished and its spool
 // was drained before the stream was attached: one re-resolve picks up the
-// published terminal entry.
-func (m *Mirror) serveDrained(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) bool {
+// published terminal entry, or the failure the ingest ended with.
+func (m *Mirror) serveDrained(w http.ResponseWriter, r *http.Request, oid string, t resolveTarget) error {
 	res, err := m.resolve(r.Context(), t)
-	if err != nil || res.Entry == nil {
-		return false
+	if err != nil {
+		return err
+	}
+	if res.Entry == nil {
+		return errors.New("the ingest restarted after its spool drained")
 	}
 	return m.serveIngested(w, r, oid)
 }

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -377,6 +378,43 @@ func TestResolveLFSStreamsFromEngine(t *testing.T) {
 	}
 	if got := rec.Result().Header.Get("X-Linked-Size"); got != fmt.Sprint(len(data)) {
 		t.Fatalf("X-Linked-Size = %q, want %d", got, len(data))
+	}
+}
+
+// TestResolveLFSUpstreamFailure pins the resolve answers for an object the
+// upstream fails to serve: 404 only when the upstream lacks the file, else a
+// 502 hub clients retry, also while the engine backs off from the failure.
+func TestResolveLFSUpstreamFailure(t *testing.T) {
+	oid := strings.Repeat("e", 64)
+	st, _ := newLFSRepo(t, map[string]string{
+		"model.bin": hfLFSPointerText(oid, 5),
+	})
+	for _, tc := range []struct{ upstream, want int }{
+		{http.StatusNotFound, http.StatusNotFound},
+		{http.StatusServiceUnavailable, http.StatusBadGateway},
+	} {
+		t.Run(fmt.Sprint(tc.upstream), func(t *testing.T) {
+			var hits atomic.Int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(tc.upstream)
+			}))
+			t.Cleanup(upstream.Close)
+			m, _ := newXETDataPlane(t, upstream.URL, nil)
+			h := NewHandler(WithStorage(st), WithMirror(m))
+
+			// hf_hub probes with HEAD before it downloads; the GET is answered from the engine's backoff.
+			for _, method := range []string{http.MethodHead, http.MethodGet} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(method, "/org/repo/resolve/main/model.bin", nil))
+				if rec.Code != tc.want {
+					t.Fatalf("%s status = %d, want %d", method, rec.Code, tc.want)
+				}
+			}
+			if n := hits.Load(); n != 1 {
+				t.Fatalf("upstream requests = %d, want 1", n)
+			}
+		})
 	}
 }
 
