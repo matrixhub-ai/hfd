@@ -27,17 +27,26 @@ import (
 )
 
 // InitMirror initializes a new bare git repository on fs at repoPath.
-// The returned Repository is ready to be used as a mirror of the source repository.
-func InitMirror(ctx context.Context, fs billy.Filesystem, repoPath string, sourceURL string) (*Repository, error) {
+// The returned Repository is ready to be used as a mirror of the source repository;
+// the returned refs are the source's as GetRemoteRefs lists them, from the same advertisement as its HEAD.
+func InitMirror(ctx context.Context, fs billy.Filesystem, repoPath string, sourceURL string) (*Repository, map[string]string, error) {
 	sourceURL = strings.TrimSuffix(sourceURL, "/")
 	sourceURL = strings.TrimSuffix(sourceURL, ".git") + ".git"
 
-	defaultBranch, err := GetRemoteDefaultBranch(ctx, sourceURL)
+	remoteRefs, err := getRemoteAdvertisedRefs(ctx, sourceURL, transport.UploadPackService)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
+		return nil, nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
+	}
+	defaultBranch, err := headBranch(remoteRefs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get HEAD from source repository: %w", err)
 	}
 
-	return Init(ctx, fs, repoPath, defaultBranch)
+	repo, err := Init(ctx, fs, repoPath, defaultBranch)
+	if err != nil {
+		return nil, nil, err
+	}
+	return repo, hashRefs(remoteRefs), nil
 }
 
 // fileLoader resolves file:// URLs to bare repository storage using absolute
@@ -82,7 +91,10 @@ func GetRemoteDefaultBranch(ctx context.Context, sourceURL string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	return headBranch(remoteRefs)
+}
 
+func headBranch(remoteRefs *transport.RemoteRefs) (string, error) {
 	const prefix = "refs/heads/"
 	for _, ref := range remoteRefs.References {
 		if ref.Name() != plumbing.HEAD || ref.Type() != plumbing.SymbolicReference {
@@ -117,7 +129,10 @@ func advertisedHashRefs(ctx context.Context, url, service string) (map[string]st
 		}
 		return nil, err
 	}
+	return hashRefs(remoteRefs), nil
+}
 
+func hashRefs(remoteRefs *transport.RemoteRefs) map[string]string {
 	refs := make(map[string]string)
 	for _, ref := range remoteRefs.References {
 		if ref.Type() != plumbing.HashReference {
@@ -130,7 +145,7 @@ func advertisedHashRefs(ctx context.Context, url, service string) (map[string]st
 		}
 		refs[name] = ref.Hash().String()
 	}
-	return refs, nil
+	return refs
 }
 
 type remoteRefsFunc func() (map[string]string, error)

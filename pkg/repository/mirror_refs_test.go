@@ -26,7 +26,7 @@ func testPullMirrorRefs(t *testing.T, native bool) {
 	upstream := setupMirrorSyncUpstream(t, root)
 
 	mirrorPath := filepath.Join(root, "mirror.git")
-	repo, err := InitMirror(ctx, osfs.Default, mirrorPath, upstream)
+	repo, _, err := InitMirror(ctx, osfs.Default, mirrorPath, upstream)
 	if err != nil {
 		t.Fatalf("init mirror: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPullMirrorRefsInvalidRef(t *testing.T) {
 		newMirror := func(t *testing.T) (*Repository, string) {
 			t.Helper()
 			mirror := filepath.Join(t.TempDir(), "mirror.git")
-			repo, err := InitMirror(ctx, osfs.Default, mirror, bare)
+			repo, _, err := InitMirror(ctx, osfs.Default, mirror, bare)
 			if err != nil {
 				t.Fatalf("init mirror: %v", err)
 			}

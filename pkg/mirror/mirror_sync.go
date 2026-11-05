@@ -14,7 +14,11 @@ func (m *Mirror) syncMirror(ctx context.Context, repo *repository.Repository, re
 	if err != nil {
 		return fmt.Errorf("failed to list remote refs: %w", err)
 	}
+	return m.syncMirrorRefs(ctx, repo, repoName, sourceURL, remoteRefsMap, refs, progress)
+}
 
+// syncMirrorRefs is syncMirror against remoteRefsMap, the refs already read from sourceURL.
+func (m *Mirror) syncMirrorRefs(ctx context.Context, repo *repository.Repository, repoName string, sourceURL string, remoteRefsMap map[string]string, refs []string, progress io.Writer) error {
 	refsFilter, err := m.filterSyncRefs(ctx, repoName, remoteRefsMap, refs)
 	if err != nil {
 		return err

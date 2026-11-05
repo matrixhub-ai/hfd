@@ -1670,7 +1670,7 @@ func TestMirrorGitBinarySelection(t *testing.T) {
 	bin, log := recordingGit(t)
 	bogus := filepath.Join(root, "no-such-git")
 	mirror := filepath.Join(root, "mirror.git")
-	repo, err := InitMirror(ctx, osfs.Default, mirror, bare)
+	repo, _, err := InitMirror(ctx, osfs.Default, mirror, bare)
 	if err != nil {
 		t.Fatalf("init mirror: %v", err)
 	}
@@ -1811,7 +1811,7 @@ func TestMirrorGitBinaryRelativeURL(t *testing.T) {
 	root := t.TempDir()
 	bare, _ := buildParityUpstream(t, root)
 	want := map[string]string{"refs/heads/main": gitLocalRefs(t, bare)["refs/heads/main"]}
-	repo, err := InitMirror(ctx, osfs.Default, filepath.Join(root, "mirror.git"), bare)
+	repo, _, err := InitMirror(ctx, osfs.Default, filepath.Join(root, "mirror.git"), bare)
 	if err != nil {
 		t.Fatalf("init mirror: %v", err)
 	}
@@ -1838,7 +1838,7 @@ func TestPullMirrorRefsGitBinaryReindex(t *testing.T) {
 		root := t.TempDir()
 		bare, work := buildParityUpstream(t, root)
 		mirror := filepath.Join(root, "mirror.git")
-		repo, err := InitMirror(ctx, osfs.Default, mirror, bare)
+		repo, _, err := InitMirror(ctx, osfs.Default, mirror, bare)
 		if err != nil {
 			t.Fatalf("init mirror: %v", err)
 		}
@@ -1928,7 +1928,7 @@ func TestMirrorGitBinaryHTTPAuth(t *testing.T) {
 			setGitBinary(t, bin)
 		}
 		mirror := filepath.Join(t.TempDir(), "mirror.git")
-		repo, err := InitMirror(ctx, osfs.Default, mirror, authed("upstream.git"))
+		repo, _, err := InitMirror(ctx, osfs.Default, mirror, authed("upstream.git"))
 		if err != nil {
 			t.Fatalf("init mirror: %v", err)
 		}
