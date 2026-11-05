@@ -116,13 +116,14 @@ func buildXETMirror(cfg *config, st *storage.Storage, cache *xetclient.Cache, sp
 		return nil, nil
 	}
 	clientOpts := []xetclient.Options{xetclient.WithCache(cache)}
-	if cfg.ProxyConcurrencyPerFile > 0 {
-		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyConcurrencyPerFile))
+	if cfg.ProxyDownloadConcurrencyPerFile > 0 {
+		clientOpts = append(clientOpts, xetclient.WithConcurrency(cfg.ProxyDownloadConcurrencyPerFile))
 	}
 	engine, err := xetmirror.NewMirror(
 		xetmirror.WithStorage(st.XETStorage()),
 		xetmirror.WithCacheDir(st.XETMirrorDir()),
 		xetmirror.WithSpool(sp),
+		xetmirror.WithMaxConcurrentIngests(cfg.ProxyMaxConcurrentIngests),
 		xetmirror.WithClientOptions(clientOpts...),
 	)
 	if err != nil {
@@ -144,7 +145,8 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 		mirror.WithXETMirror(engine),
 		mirror.WithMintToken(mint),
 		mirror.WithExternalURL(cfg.HostURL),
-		mirror.WithConcurrency(cfg.ProxyConcurrencyPerFile),
+		mirror.WithConcurrency(cfg.ProxyUploadConcurrencyPerFile),
+		mirror.WithPrefetchConcurrency(cfg.ProxyPrefetchConcurrency),
 		mirror.WithPreReceiveHookFunc(hooks.PreReceive),
 		mirror.WithPostReceiveHookFunc(hooks.PostReceive),
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),

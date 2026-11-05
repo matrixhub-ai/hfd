@@ -87,3 +87,30 @@ func parseConfigArgs(t *testing.T, args []string) (*config, error) {
 	os.Args = append([]string{"hfd"}, args...)
 	return parseConfig()
 }
+
+func TestParseConfigProxyConcurrency(t *testing.T) {
+	cases := []struct {
+		name                                                string
+		args                                                []string
+		downloadPerFile, uploadPerFile, ingests, prefetches int
+	}{
+		{name: "defaults", downloadPerFile: 4, uploadPerFile: 4, ingests: 16, prefetches: 1},
+		{
+			name:            "each flag sets its own knob",
+			args:            []string{"-proxy-download-concurrency-per-file", "8", "-proxy-upload-concurrency-per-file", "2", "-proxy-max-concurrent-ingests", "32", "-proxy-prefetch-concurrency", "4"},
+			downloadPerFile: 8, uploadPerFile: 2, ingests: 32, prefetches: 4,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseConfigArgs(t, tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := [4]int{cfg.ProxyDownloadConcurrencyPerFile, cfg.ProxyUploadConcurrencyPerFile, cfg.ProxyMaxConcurrentIngests, cfg.ProxyPrefetchConcurrency}
+			if want := [4]int{tc.downloadPerFile, tc.uploadPerFile, tc.ingests, tc.prefetches}; got != want {
+				t.Errorf("(download per file, upload per file, ingests, prefetches) = %v, want %v", got, want)
+			}
+		})
+	}
+}

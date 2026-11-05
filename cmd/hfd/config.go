@@ -40,14 +40,17 @@ type config struct {
 	AuthSignKey  string
 
 	// Mirror / proxy
-	Proxy                   string
-	ProxyToken              string
-	PullMirrorURL           string
-	PushMirrorURL           string
-	ProxyCacheTTL           time.Duration
-	ProxyConcurrencyPerFile int
-	ProxyDownloadCacheSize  int64
-	ProxyUploadCacheSize    int64
+	Proxy                           string
+	ProxyToken                      string
+	PullMirrorURL                   string
+	PushMirrorURL                   string
+	ProxyCacheTTL                   time.Duration
+	ProxyDownloadConcurrencyPerFile int
+	ProxyUploadConcurrencyPerFile   int
+	ProxyMaxConcurrentIngests       int
+	ProxyPrefetchConcurrency        int
+	ProxyDownloadCacheSize          int64
+	ProxyUploadCacheSize            int64
 
 	// CAS reconstruction
 	ReconstructionMinTerms     int
@@ -59,15 +62,18 @@ type config struct {
 
 func defaultConfig() *config {
 	return &config{
-		Addr:                    ":8080",
-		SSHAddr:                 ":2222",
-		DataDir:                 "./data",
-		AuthUsername:            "admin",
-		AuthSignKey:             "secret-sign-key",
-		ProxyCacheTTL:           time.Minute,
-		ProxyConcurrencyPerFile: 2,
-		ProxyDownloadCacheSize:  xetdownload.DefaultCacheSize,
-		ProxyUploadCacheSize:    xetupload.DefaultCacheSize,
+		Addr:                            ":8080",
+		SSHAddr:                         ":2222",
+		DataDir:                         "./data",
+		AuthUsername:                    "admin",
+		AuthSignKey:                     "secret-sign-key",
+		ProxyCacheTTL:                   time.Minute,
+		ProxyDownloadConcurrencyPerFile: 4,
+		ProxyUploadConcurrencyPerFile:   4,
+		ProxyMaxConcurrentIngests:       16,
+		ProxyPrefetchConcurrency:        1,
+		ProxyDownloadCacheSize:          xetdownload.DefaultCacheSize,
+		ProxyUploadCacheSize:            xetupload.DefaultCacheSize,
 		// xetd's defaults; hf_xet keeps about one connection per term.
 		ReconstructionMinTerms:     16,
 		ReconstructionMinTermBytes: 1 << 20,
@@ -103,7 +109,10 @@ func parseConfig() (*config, error) {
 	flag.StringVar(&cfg.PullMirrorURL, "pull-mirror", cfg.PullMirrorURL, "Pull mirror source base URL for syncing repositories from a remote (e.g. https://huggingface.co)")
 	flag.StringVar(&cfg.PushMirrorURL, "push-mirror", cfg.PushMirrorURL, "Push mirror destination base URL for syncing local pushes to a remote (e.g. https://huggingface.co)")
 	flag.DurationVar(&cfg.ProxyCacheTTL, "proxy-cache-ttl", cfg.ProxyCacheTTL, "Duration to cache proxy-fetched repositories locally")
-	flag.IntVar(&cfg.ProxyConcurrencyPerFile, "proxy-concurrency-per-file", cfg.ProxyConcurrencyPerFile, "Number of concurrent fetches per file when syncing from proxy")
+	flag.IntVar(&cfg.ProxyDownloadConcurrencyPerFile, "proxy-download-concurrency-per-file", cfg.ProxyDownloadConcurrencyPerFile, "Number of concurrent range fetches per file when ingesting from the pull mirror source; 0 or less uses the xet client default")
+	flag.IntVar(&cfg.ProxyUploadConcurrencyPerFile, "proxy-upload-concurrency-per-file", cfg.ProxyUploadConcurrencyPerFile, "Number of concurrent uploads per file when pushing LFS objects to the push mirror destination's xet storage; 0 or less uses the xet client default")
+	flag.IntVar(&cfg.ProxyMaxConcurrentIngests, "proxy-max-concurrent-ingests", cfg.ProxyMaxConcurrentIngests, "Maximum number of files ingested from the pull mirror source at once; further ingests, and the downloads waiting on them, queue for a slot; 0 or less uses the xet engine default")
+	flag.IntVar(&cfg.ProxyPrefetchConcurrency, "proxy-prefetch-concurrency", cfg.ProxyPrefetchConcurrency, "Number of LFS objects a pull mirror sync prefetches at once in the background; 0 or less prefetches one at a time")
 	flag.Int64Var(&cfg.ProxyDownloadCacheSize, "proxy-download-cache-size", cfg.ProxyDownloadCacheSize, "Maximum size in bytes of the download chunk cache used for proxy transfers; 0 or less means unbounded")
 	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 

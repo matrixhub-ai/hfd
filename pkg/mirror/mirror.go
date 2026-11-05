@@ -68,9 +68,10 @@ type Mirror struct {
 	dataDir     string
 	httpClient  *http.Client // LFS batch/upload/verify; no timeout, uploads may run long
 
-	oidMu       sync.Mutex
-	oidIndex    map[string][]resolveTarget // oid -> targets, most recently registered first
-	prefetching sync.Map                   // oid -> struct{}, in-flight prefetch dedupe
+	oidMu               sync.Mutex
+	oidIndex            map[string][]resolveTarget // oid -> targets, most recently registered first
+	prefetching         sync.Map                   // oid -> struct{}, in-flight prefetch dedupe
+	prefetchConcurrency int
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -159,6 +160,14 @@ func WithExternalURL(u string) Option {
 func WithConcurrency(concurrency int) Option {
 	return func(m *Mirror) {
 		m.concurrency = concurrency
+	}
+}
+
+// WithPrefetchConcurrency sets how many LFS objects found by one pull scan are
+// ingested at once in the background; nonpositive values ingest one at a time.
+func WithPrefetchConcurrency(concurrency int) Option {
+	return func(m *Mirror) {
+		m.prefetchConcurrency = concurrency
 	}
 }
 
