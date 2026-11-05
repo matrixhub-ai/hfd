@@ -44,6 +44,7 @@ const (
 // Repository represents a Git repository and provides methods to interact with it.
 type Repository struct {
 	repo          *git.Repository
+	refs          *refCache    // repo's storer; nil when repo was opened around another storer
 	objectCache   cache.Object // the storer's cache, so GC can drop objects bound to deleted packs
 	fs            billy.Filesystem
 	repoPath      string
@@ -170,12 +171,14 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 	repo, ok := lruCache.GetOrNew(cacheKey{fs, repoPath}, func() (*Repository, bool) {
 		var r *git.Repository
 		c := cache.NewObjectLRUDefault()
-		r, err = git.Open(newStorer(fs, repoPath, c), nil)
+		refs := newRefCache(newStorer(fs, repoPath, c))
+		r, err = git.Open(refs, nil)
 		if err != nil {
 			return nil, false
 		}
 		return &Repository{
 			repo:        r,
+			refs:        refs,
 			objectCache: c,
 			fs:          fs,
 			repoPath:    repoPath,
@@ -187,6 +190,19 @@ func Open(fs billy.Filesystem, repoPath string) (repo *Repository, err error) {
 		return repo, nil
 	}
 	return nil, err
+}
+
+// invalidateRefs drops the ref snapshot after a write that bypassed the storer.
+func (r *Repository) invalidateRefs() {
+	r.refs.invalidate()
+}
+
+// liveRef reads name from disk, never from the ref snapshot.
+func (r *Repository) liveRef(name plumbing.ReferenceName) (*plumbing.Reference, error) {
+	if r.refs == nil {
+		return r.repo.Storer.Reference(name)
+	}
+	return r.refs.liveReference(name)
 }
 
 // SplitRevisionAndPath splits a refpath into a revision (branch or tag) and a file path.
