@@ -129,6 +129,17 @@ func WithPublicKeyValidator(auth authenticate.PublicKeyValidator) Option {
 	}
 }
 
+// WithAnonymousAccess logs clients without an accepted key or password in as authenticate.Anonymous,
+// leaving the pre-open hook to admit them, e.g. to read public repositories.
+func WithAnonymousAccess() Option {
+	return func(s *Server) {
+		// OpenSSH sends "none" before its keys but tries keyboard-interactive after them (and before password).
+		s.config.KeyboardInteractiveCallback = func(ssh.ConnMetadata, ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+			return grant(authenticate.Anonymous), nil
+		}
+	}
+}
+
 // WithTokenSignValidator configures the SSH server to include authentication
 // headers in git-lfs-authenticate responses so that LFS clients can authenticate
 // with the HTTP server.
