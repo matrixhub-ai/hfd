@@ -15,6 +15,7 @@ import (
 	"github.com/matrixhub-ai/hfd/pkg/gc"
 	"github.com/matrixhub-ai/hfd/pkg/gc/xetstore"
 	xetauth "github.com/wzshiming/xet/auth"
+	xetserver "github.com/wzshiming/xet/server"
 )
 
 func main() {
@@ -89,6 +90,9 @@ func run(ctx context.Context, cfg *config) error {
 			backendhf.WithUpdateRepoSettingsFunc(hooks.UpdateRepoSettings),
 			backendhf.WithListReposFunc(hooks.ListRepos),
 			backendhf.WithWhoamiFunc(hooks.Whoami),
+		},
+		CASOptions: []xetserver.Option{
+			xetserver.WithTermSplit(cfg.ReconstructionMinTerms, cfg.ReconstructionMinTermBytes),
 		},
 	}
 	if cfg.Internal {

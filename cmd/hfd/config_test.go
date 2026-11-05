@@ -44,6 +44,39 @@ func TestParseConfigInvalidAddress(t *testing.T) {
 	}
 }
 
+func TestParseConfigReconstructionTermSplit(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		wantTerms int
+		wantBytes int64
+		wantErr   bool
+	}{
+		{name: "xetd defaults", wantTerms: 16, wantBytes: 1 << 20},
+		{name: "disabled", args: []string{"-reconstruction-min-terms", "0"}, wantTerms: 0, wantBytes: 1 << 20},
+		{name: "tuned", args: []string{"-reconstruction-min-terms", "32", "-reconstruction-min-term-bytes", "4194304"}, wantTerms: 32, wantBytes: 4 << 20},
+		{name: "negative terms", args: []string{"-reconstruction-min-terms", "-1"}, wantErr: true},
+		{name: "negative bytes", args: []string{"-reconstruction-min-term-bytes", "-1"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseConfigArgs(t, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ReconstructionMinTerms != tc.wantTerms || cfg.ReconstructionMinTermBytes != tc.wantBytes {
+				t.Errorf("term split = (%d, %d), want (%d, %d)", cfg.ReconstructionMinTerms, cfg.ReconstructionMinTermBytes, tc.wantTerms, tc.wantBytes)
+			}
+		})
+	}
+}
+
 func parseConfigArgs(t *testing.T, args []string) (*config, error) {
 	t.Helper()
 	oldFlags, oldArgs := flag.CommandLine, os.Args

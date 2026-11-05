@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	iofs "io/fs"
 	"log/slog"
 	"net"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/wzshiming/xet"
 	"github.com/wzshiming/xet/auth"
+	xetserver "github.com/wzshiming/xet/server"
+	xetstorage "github.com/wzshiming/xet/storage"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	backendhf "github.com/matrixhub-ai/hfd/pkg/backend/hf"
@@ -313,6 +316,55 @@ func TestNewHTTPHandlerCatalogLifecycle(t *testing.T) {
 		if strings.Contains(logs.String(), unwanted) {
 			t.Errorf("logs = %s\nwant no %q", logs.String(), unwanted)
 		}
+	}
+}
+
+func TestCASOptionsSplitReconstructionTerms(t *testing.T) {
+	issuer, err := auth.NewIssuer(nil, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := newStorage(t)
+	data := make([]byte, 4<<20)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	fileHash, err := xetstorage.PutFile(context.Background(), st.XETStorage(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := issuer.Sign(auth.Grant{Permission: auth.Read, File: &fileHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name      string
+		options   []xetserver.Option
+		wantSplit bool
+	}{
+		{"one xorb is one term by default", nil, false},
+		{"term split", []xetserver.Option{xetserver.WithTermSplit(16, 1<<20)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewHTTPHandler(Options{Storage: st, CASAuthorizer: issuer, CASOptions: tc.options})
+			request := httptest.NewRequest(http.MethodGet, "/v1/reconstructions/"+fileHash.String(), nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body)
+			}
+			var response struct {
+				Terms []json.RawMessage `json:"terms"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if split := len(response.Terms) > 1; split != tc.wantSplit {
+				t.Errorf("terms = %d, want split %v", len(response.Terms), tc.wantSplit)
+			}
+		})
 	}
 }
 
