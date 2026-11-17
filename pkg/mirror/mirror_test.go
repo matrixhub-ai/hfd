@@ -80,8 +80,8 @@ func hubSource(hubURL string) mirror.SourceFunc {
 	}
 }
 
-// countingUpstream serves the bare repositories under root with git http-backend and counts the upload-pack advertisements it answers.
-func countingUpstream(t *testing.T, root string) (string, *atomic.Int32) {
+// gitHTTPBackend serves the bare repositories under root with git http-backend, skipping the test where git lacks it.
+func gitHTTPBackend(t *testing.T, root string) http.Handler {
 	t.Helper()
 	execPath, err := exec.CommandContext(t.Context(), "git", "--exec-path").Output()
 	if err != nil {
@@ -91,11 +91,17 @@ func countingUpstream(t *testing.T, root string) (string, *atomic.Int32) {
 	if _, err := os.Stat(backend); err != nil {
 		t.Skipf("git-http-backend not available: %v", err)
 	}
-	cgiHandler := &cgi.Handler{
+	return &cgi.Handler{
 		Path:       backend,
 		InheritEnv: []string{"PATH"},
 		Env:        []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"},
 	}
+}
+
+// countingUpstream serves the bare repositories under root with git http-backend and counts the upload-pack advertisements it answers.
+func countingUpstream(t *testing.T, root string) (string, *atomic.Int32) {
+	t.Helper()
+	cgiHandler := gitHTTPBackend(t, root)
 	var advertisements atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/info/refs") && r.URL.Query().Get("service") == repository.GitUploadPack {

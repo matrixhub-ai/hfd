@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/matrixhub-ai/hfd/pkg/mirror"
 	xetdownload "github.com/wzshiming/xet/download"
 	xetupload "github.com/wzshiming/xet/upload"
 )
@@ -49,6 +50,7 @@ type config struct {
 	ProxyUploadConcurrencyPerFile   int
 	ProxyMaxConcurrentIngests       int
 	ProxyPrefetchConcurrency        int
+	ProxyPullPolicy                 string
 	ProxyDownloadCacheSize          int64
 	ProxyUploadCacheSize            int64
 
@@ -112,7 +114,8 @@ func parseConfig() (*config, error) {
 	flag.IntVar(&cfg.ProxyDownloadConcurrencyPerFile, "proxy-download-concurrency-per-file", cfg.ProxyDownloadConcurrencyPerFile, "Number of concurrent range fetches per file when ingesting from the pull mirror source; 0 or less uses the xet client default")
 	flag.IntVar(&cfg.ProxyUploadConcurrencyPerFile, "proxy-upload-concurrency-per-file", cfg.ProxyUploadConcurrencyPerFile, "Number of concurrent uploads per file when pushing LFS objects to the push mirror destination's xet storage; 0 or less uses the xet client default")
 	flag.IntVar(&cfg.ProxyMaxConcurrentIngests, "proxy-max-concurrent-ingests", cfg.ProxyMaxConcurrentIngests, "Maximum number of files ingested from the pull mirror source at once; further ingests, and the downloads waiting on them, queue for a slot; 0 or less uses the xet engine default")
-	flag.IntVar(&cfg.ProxyPrefetchConcurrency, "proxy-prefetch-concurrency", cfg.ProxyPrefetchConcurrency, "Number of LFS objects a pull mirror sync prefetches at once in the background; 0 or less prefetches one at a time")
+	flag.IntVar(&cfg.ProxyPrefetchConcurrency, "proxy-prefetch-concurrency", cfg.ProxyPrefetchConcurrency, "Number of LFS objects a pull mirror sync prefetches at once in the background; takes effect only under the full pull policy; 0 or less prefetches one at a time")
+	flag.StringVar(&cfg.ProxyPullPolicy, "proxy-pull-policy", "full", "Which LFS objects a pull mirror sync downloads: full prefetches every LFS object at the ref tips in the background after each pull; on-demand downloads an object only when a client first reads it, which requires the upstream to serve /resolve/; git refs and history sync in full under both")
 	flag.Int64Var(&cfg.ProxyDownloadCacheSize, "proxy-download-cache-size", cfg.ProxyDownloadCacheSize, "Maximum size in bytes of the download chunk cache used for proxy transfers; 0 or less means unbounded")
 	flag.Int64Var(&cfg.ProxyUploadCacheSize, "proxy-upload-cache-size", cfg.ProxyUploadCacheSize, "Maximum size in bytes of the cache of chunk locations learned from remote CAS uploads; 0 or less means unbounded")
 
@@ -127,6 +130,9 @@ func parseConfig() (*config, error) {
 	}
 	if cfg.ReconstructionMinTermBytes < 0 {
 		return nil, fmt.Errorf("--reconstruction-min-term-bytes must not be negative, got %d", cfg.ReconstructionMinTermBytes)
+	}
+	if _, err := mirror.ParsePullPolicy(cfg.ProxyPullPolicy); err != nil {
+		return nil, fmt.Errorf("--proxy-pull-policy: %w", err)
 	}
 
 	if cfg.HostURL == "" {

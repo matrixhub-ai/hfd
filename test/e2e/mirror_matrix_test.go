@@ -828,6 +828,61 @@ func testMirrorRemap(t *testing.T, ssh bool) {
 	}
 }
 
+// TestMirrorOnDemandDownloadsOnlyReadFiles: an on-demand mirror registers both LFS files at its pull and downloads each only when a client reads it.
+func TestMirrorOnDemandDownloadsOnlyReadFiles(t *testing.T) {
+	const repoID = "on-demand-org/on-demand-repo"
+	const fileA = "a.bin"
+	dataA, dataB := makeBinaryData(64*1024, 4), makeBinaryData(64*1024, 5)
+	origin, oidA := seedLFSOrigin(t, repoID, dataA)
+	// A moves aside so that only B carries the file name the gated upstream counts.
+	remote, env := origin.httpRemote(repoID)
+	env = append(env, "GIT_LFS_SKIP_SMUDGE=1")
+	dir := filepath.Join(t.TempDir(), "move-a")
+	runGit(t, "", env, "clone", remote, dir)
+	runGit(t, dir, env, "config", "user.email", "test@test.com")
+	runGit(t, dir, env, "config", "user.name", "Test User")
+	runGit(t, dir, env, "mv", transferMatrixFile, fileA)
+	runGit(t, dir, env, "commit", "-m", "Move A aside")
+	runGit(t, dir, env, "push", "origin", "main")
+	pushViaXetBatch(t, origin, repoID, dataB)
+	sumB := sha256.Sum256(dataB)
+	oidB := hex.EncodeToString(sumB[:])
+	up := newGatedUpstream(t, origin, oidB, false)
+	up.release()
+	proxy := newE2EServer(t, withMirrorSource(up.url), withPullPolicy(mirror.PullOnDemand))
+
+	if got := mustGet(t, proxy.httpURL+"/"+repoID+"/resolve/main/"+fileA); !bytes.Equal(got, dataA) {
+		t.Fatalf("HF resolve of A returned %d bytes, want %d", len(got), len(dataA))
+	}
+	// The mirror's background work ends first: the ingest A's read started and any pull prefetch.
+	waitIngested(t, proxy, oidA)
+	proxy.mirror.Wait()
+	if n := up.gets.Load(); n != 0 {
+		t.Fatalf("upstream downloads of B = %d before any client read it, want 0", n)
+	}
+
+	action := negotiateLFSDownload(t, proxy, repoID, oidB, len(dataB))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, action.Href, nil)
+	if err != nil {
+		t.Fatalf("build LFS download request: %v", err)
+	}
+	for k, v := range action.Header {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("LFS download %s: %v", action.Href, err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !bytes.Equal(got, dataB) {
+		t.Fatalf("LFS download of B: status=%d err=%v bytes=%d, want %d bytes", resp.StatusCode, err, len(got), len(dataB))
+	}
+	if n := up.gets.Load(); n != 1 {
+		t.Fatalf("upstream downloads of B = %d after one client read, want 1", n)
+	}
+}
+
 // TestXETPushMirror_E2E is an end-to-end test for the XET upload path in the
 // push-mirror flow.  The scenario mirrors a real deployment:
 //

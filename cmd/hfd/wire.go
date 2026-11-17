@@ -147,6 +147,7 @@ func buildMirror(ctx context.Context, cfg *config, st *storage.Storage, hooks *s
 		mirror.WithExternalURL(cfg.HostURL),
 		mirror.WithConcurrency(cfg.ProxyUploadConcurrencyPerFile),
 		mirror.WithPrefetchConcurrency(cfg.ProxyPrefetchConcurrency),
+		mirror.WithPullPolicy(mirror.PullPolicy(cfg.ProxyPullPolicy)),
 		mirror.WithPreReceiveHookFunc(hooks.PreReceive),
 		mirror.WithPostReceiveHookFunc(hooks.PostReceive),
 		mirror.WithRepositoriesFS(st.RepositoriesFS()),

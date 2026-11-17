@@ -4,6 +4,7 @@ import (
 	"flag"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -110,6 +111,49 @@ func TestParseConfigProxyConcurrency(t *testing.T) {
 			got := [4]int{cfg.ProxyDownloadConcurrencyPerFile, cfg.ProxyUploadConcurrencyPerFile, cfg.ProxyMaxConcurrentIngests, cfg.ProxyPrefetchConcurrency}
 			if want := [4]int{tc.downloadPerFile, tc.uploadPerFile, tc.ingests, tc.prefetches}; got != want {
 				t.Errorf("(download per file, upload per file, ingests, prefetches) = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestParseConfigProxyPullPolicy(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "default", want: "full"},
+		{name: "on-demand", args: []string{"-proxy-pull-policy", "on-demand"}, want: "on-demand"},
+		{name: "full", args: []string{"-proxy-pull-policy", "full"}, want: "full"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseConfigArgs(t, tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.ProxyPullPolicy; got != tc.want {
+				t.Errorf("ProxyPullPolicy = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseConfigRejectsInvalidProxyPullPolicy(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{name: "unknown", value: "lazy"},
+		{name: "empty", value: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseConfigArgs(t, []string{"-proxy-pull-policy", tc.value})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, want := range []string{"--proxy-pull-policy", "full", "on-demand"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %s", err, want)
+				}
 			}
 		})
 	}
