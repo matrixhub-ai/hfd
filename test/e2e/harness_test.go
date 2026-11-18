@@ -65,6 +65,7 @@ type e2eConfig struct {
 	catalogGate   catalogGateFunc
 	mirrorSources upstreamMap
 	refFilter     mirror.RefFilterFunc
+	pullPolicy    mirror.PullPolicy
 }
 
 type e2eOption func(*e2eConfig)
@@ -163,6 +164,11 @@ func withRefFilter(fn mirror.RefFilterFunc) e2eOption {
 	return func(c *e2eConfig) { c.refFilter = fn }
 }
 
+// withPullPolicy sets the mirror's default pull policy; without it the mirror keeps the full prefetch some rows rely on.
+func withPullPolicy(policy mirror.PullPolicy) e2eOption {
+	return func(c *e2eConfig) { c.pullPolicy = policy }
+}
+
 // newMirrorSourceFunc maps every repository name onto the same upstream base
 // URL, marking all of them as mirror sources.
 func newMirrorSourceFunc(baseURL string) mirror.SourceFunc {
@@ -249,6 +255,9 @@ func newE2EServer(t *testing.T, opts ...e2eOption) *e2eServer {
 	}
 	if cfg.refFilter != nil {
 		mirrorOpts = append(mirrorOpts, mirror.WithMirrorRefFilterFunc(cfg.refFilter))
+	}
+	if cfg.pullPolicy != "" {
+		mirrorOpts = append(mirrorOpts, mirror.WithPullPolicy(cfg.pullPolicy))
 	}
 	var signValidator authenticate.TokenSignValidator
 	if cfg.authPass != "" {

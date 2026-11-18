@@ -309,15 +309,10 @@ func parseOID(oid string) ([32]byte, bool) {
 	return digest, true
 }
 
-// prefetchLFS registers the scanned objects in the OID index and ingests the
-// missing ones in the background, prefetchConcurrency at a time, falling back
-// to the source's git-lfs batch API when an ingest fails.
+// prefetchLFS ingests the missing scanned objects in the background, prefetchConcurrency at a time, falling back to the source's git-lfs batch API when an ingest fails.
 func (m *Mirror) prefetchLFS(sourceURL string, oids []string, targets map[string]resolveTarget) {
 	if m.xetMirror == nil || len(oids) == 0 {
 		return
-	}
-	for _, oid := range oids {
-		m.registerTarget(oid, targets[oid])
 	}
 	m.background.Go(func() {
 		ctx := context.Background()

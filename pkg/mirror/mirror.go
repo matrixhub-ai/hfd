@@ -72,6 +72,7 @@ type Mirror struct {
 	oidIndex            map[string][]resolveTarget // oid -> targets, most recently registered first
 	prefetching         sync.Map                   // oid -> struct{}, in-flight prefetch dedupe
 	prefetchConcurrency int
+	pullPolicy          PullPolicy
 }
 
 // Option defines a functional option for configuring the Mirror.
@@ -163,11 +164,17 @@ func WithConcurrency(concurrency int) Option {
 	}
 }
 
-// WithPrefetchConcurrency sets how many LFS objects found by one pull scan are
-// ingested at once in the background; nonpositive values ingest one at a time.
+// WithPrefetchConcurrency sets how many LFS objects found by one pull scan are ingested at once in the background under PullFull; nonpositive values ingest one at a time.
 func WithPrefetchConcurrency(concurrency int) Option {
 	return func(m *Mirror) {
 		m.prefetchConcurrency = concurrency
+	}
+}
+
+// WithPullPolicy sets the PullPolicy of pulls whose PullOptions leave it unset; unset here too means PullFull.
+func WithPullPolicy(policy PullPolicy) Option {
+	return func(m *Mirror) {
+		m.pullPolicy = policy
 	}
 }
 
@@ -245,8 +252,7 @@ func (m *Mirror) IsMirrorDestination(ctx context.Context, repoName string) (bool
 	return isMirror, err
 }
 
-// PullOptions carries per-call overrides for PullFromRemote.
-// The zero value uses the Mirror's configured callbacks for every field.
+// PullOptions carries per-call overrides for PullFromRemote; a zero field defers to the Mirror's configuration.
 type PullOptions struct {
 	// SourceURL overrides the mirrorSourceFunc lookup.
 	SourceURL string
@@ -256,6 +262,8 @@ type PullOptions struct {
 	UserInfo *url.Userinfo
 	// Output captures git command output, overriding the GitOutputFunc.
 	Output io.Writer
+	// Policy decides which LFS objects this pull downloads, overriding WithPullPolicy.
+	Policy PullPolicy
 }
 
 // PushOptions carries per-call overrides for PushToRemote.

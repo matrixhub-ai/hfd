@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sync"
 
 	"github.com/matrixhub-ai/hfd/pkg/authenticate"
 	"github.com/matrixhub-ai/hfd/pkg/repository"
@@ -29,25 +30,40 @@ func (m *Mirror) PullFromRemote(ctx context.Context, repoPath, repoName string, 
 	if err := m.resolvePullSource(ctx, repoName, &opt); err != nil {
 		return err
 	}
+	scan, err := m.syncAndScan(ctx, logctx, repoPath, repoName, opt)
+	if err != nil {
+		return err
+	}
+	policy := opt.Policy
+	if policy == "" {
+		policy = m.pullPolicy
+	}
+	if policy != PullOnDemand {
+		scan.prefetch.Do(func() { m.prefetchLFS(scan.sourceURL, scan.oids, scan.targets) })
+	}
+	return nil
+}
 
+// syncAndScan syncs the mirror at repoPath and scans its LFS objects, once for all overlapping pulls of it.
+func (m *Mirror) syncAndScan(ctx context.Context, logctx context.Context, repoPath, repoName string, opt PullOptions) (*lfsScan, error) {
 	repo, err := repository.Open(m.repositoriesFS, repoPath)
 	if err != nil {
 		if err != repository.ErrRepositoryNotExists {
-			return fmt.Errorf("failed to open mirror repository: %w", err)
+			return nil, fmt.Errorf("failed to open mirror repository: %w", err)
 		}
 		return m.initMirrorAndSync(ctx, logctx, repoPath, repoName, opt)
 	}
 
-	_, err, _ = m.pullGroup.Do(repoPath, func() (any, error) {
+	scan, err, _ := m.pullGroup.Do(repoPath, func() (any, error) {
 		if err := m.syncMirror(ctx, repo, repoName, opt.SourceURL, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
-			return nil, err
-		}
-		return repo, nil
+		return m.pullMirrorLFS(repo, repoName, opt.SourceURL)
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return scan.(*lfsScan), nil
 }
 
 // resolvePullSource fills in the source URL and embedded credentials from the
@@ -89,8 +105,8 @@ func (m *Mirror) resolvePullSource(ctx context.Context, repoName string, opt *Pu
 // initMirrorAndSync initializes the mirror repository and performs the first sync.
 // Initialization failures are reported as ErrRepositoryNotExists so callers treat
 // the repository as absent.
-func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, repoPath, repoName string, opt PullOptions) error {
-	_, err, _ := m.pullGroup.Do(repoPath, func() (any, error) {
+func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, repoPath, repoName string, opt PullOptions) (*lfsScan, error) {
+	scan, err, _ := m.pullGroup.Do(repoPath, func() (any, error) {
 		repo, remoteRefs, err := repository.InitMirror(logctx, m.repositoriesFS, repoPath, opt.SourceURL)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to initialize mirror repository", "repo", repoName, "error", err)
@@ -100,25 +116,31 @@ func (m *Mirror) initMirrorAndSync(ctx context.Context, logctx context.Context, 
 		if err := m.syncMirrorRefs(ctx, repo, repoName, opt.SourceURL, remoteRefs, opt.Refs, opt.Output); err != nil {
 			return nil, err
 		}
-		if err := m.pullMirrorLFS(repo, repoName, opt.SourceURL); err != nil {
-			return nil, err
-		}
-		return repo, nil
+		return m.pullMirrorLFS(repo, repoName, opt.SourceURL)
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return scan.(*lfsScan), nil
 }
 
-// pullMirrorLFS scans the tips of all local refs for LFS pointers and
-// prefetches the referenced objects through the xet data plane, keyed by the
-// immutable commit each pointer was seen at.
-func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL string) error {
+// lfsScan holds what one pull scan registered; every pull that shared the scan shares it.
+type lfsScan struct {
+	sourceURL string
+	oids      []string
+	targets   map[string]resolveTarget
+	prefetch  sync.Once // one prefetch batch per scan, however many pulls shared it
+}
+
+// pullMirrorLFS registers the LFS objects at the tips of all local refs, each keyed by the immutable commit its pointer was seen at.
+func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL string) (*lfsScan, error) {
 	if m.xetMirror == nil {
-		return nil
+		return &lfsScan{}, nil
 	}
 
 	refs, err := repo.Refs()
 	if err != nil {
-		return fmt.Errorf("failed to get local refs: %w", err)
+		return nil, fmt.Errorf("failed to get local refs: %w", err)
 	}
 
 	var oids []string
@@ -146,6 +168,8 @@ func (m *Mirror) pullMirrorLFS(repo *repository.Repository, repoName, sourceURL 
 		}
 	}
 
-	m.prefetchLFS(sourceURL, oids, targets)
-	return nil
+	for _, oid := range oids {
+		m.registerTarget(oid, targets[oid])
+	}
+	return &lfsScan{sourceURL: sourceURL, oids: oids, targets: targets}, nil
 }
