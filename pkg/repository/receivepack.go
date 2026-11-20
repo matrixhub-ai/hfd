@@ -100,7 +100,7 @@ func (r *Repository) updateReference(cmd *packp.Command, cfg receiveConfig) stri
 		if cmd.Name.IsBranch() && cfg.denyDeletes {
 			return "deletion prohibited"
 		}
-		if head, herr := st.Reference(plumbing.HEAD); herr == nil && head.Target() == cmd.Name && cfg.denyDeleteCurrent {
+		if head, herr := r.liveRef(plumbing.HEAD); herr == nil && head.Target() == cmd.Name && cfg.denyDeleteCurrent {
 			return "deletion of the current branch prohibited"
 		}
 	}
@@ -112,8 +112,12 @@ func (r *Repository) updateReference(cmd *packp.Command, cfg receiveConfig) stri
 	if err != nil {
 		return "failed to update ref"
 	}
-	defer lock.release()
-	cur, err := st.Reference(cmd.Name)
+	defer func() {
+		lock.release()
+		r.invalidateRefs()
+	}()
+	// The lock makes this read authoritative; a snapshot could predate another writer.
+	cur, err := r.liveRef(cmd.Name)
 	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return "failed to update ref"
 	}

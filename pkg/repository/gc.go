@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,9 +19,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/cache"
 	"github.com/go-git/go-git/v6/plumbing/format/idxfile"
 	"github.com/go-git/go-git/v6/plumbing/hash"
-	"github.com/go-git/go-git/v6/plumbing/revlist"
-	"github.com/go-git/go-git/v6/plumbing/storer"
-	"github.com/go-git/go-git/v6/storage"
 	"github.com/go-git/go-git/v6/storage/filesystem"
 )
 
@@ -40,6 +38,8 @@ func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCR
 	if err := ctx.Err(); err != nil {
 		return GCResult{}, err
 	}
+	// An in-place ref rewrite moves no stamp the snapshot checks.
+	r.invalidateRefs()
 	before, err := objectInventory(ctx, r.fs, r.repoPath)
 	if err != nil {
 		return GCResult{}, err
@@ -54,7 +54,7 @@ func (r *Repository) GC(ctx context.Context, cutoff time.Time, dryRun bool) (GCR
 	if dir := r.gitDir(); dir != "" {
 		err = gcGit(ctx, dir, cutoff)
 	} else {
-		err = gcGoGit(ctx, r.repo, cutoff)
+		err = r.gcGoGit(ctx, cutoff)
 	}
 	// Packs may have moved even when git failed, so the handle is refreshed either way.
 	err = errors.Join(err, r.reindex())
@@ -85,7 +85,7 @@ func (r *Repository) previewGC(ctx context.Context, cutoff time.Time, before map
 	if r.gitDir() != "" {
 		kept, err = r.previewGit(ctx, st, cutoff, packs)
 	} else {
-		kept, err = previewGoGit(ctx, st, cutoff, packs)
+		kept, err = r.previewGoGit(ctx, st, cutoff, packs)
 	}
 	if err = joinCtx(ctx, err); err != nil {
 		return GCResult{}, err
@@ -93,8 +93,8 @@ func (r *Repository) previewGC(ctx context.Context, cutoff time.Time, before map
 	return deletedFrom(before, kept), nil
 }
 
-// previewGoGit mirrors gcGoGit: Prune's candidates go; a repack then keeps what refs reach, the loose objects Prune spared and packs not older than cutoff.
-func previewGoGit(ctx context.Context, st *filesystem.Storage, cutoff time.Time, packs []packInfo) (map[plumbing.Hash]bool, error) {
+// previewGoGit lists the objects gcGoGit would keep, writing nothing.
+func (r *Repository) previewGoGit(ctx context.Context, st *filesystem.Storage, cutoff time.Time, packs []packInfo) (map[plumbing.Hash]bool, error) {
 	repo, err := git.Open(st, nil)
 	if err != nil {
 		return nil, err
@@ -113,35 +113,31 @@ func previewGoGit(ctx context.Context, st *filesystem.Storage, cutoff time.Time,
 	if err != nil {
 		return nil, err
 	}
-	refs, err := repo.References()
+	m, err := r.manifestLoad()
 	if err != nil {
 		return nil, err
 	}
-	var wants []plumbing.Hash
-	if err := refs.ForEach(func(ref *plumbing.Reference) error {
-		if ref.Type() == plumbing.HashReference {
-			wants = append(wants, ref.Hash())
-		}
-		return nil
-	}); err != nil {
+	t, err := packTargetsOf(st)
+	if err != nil {
 		return nil, err
 	}
-	repack := len(wants) > 0 && (len(kept) > 0 || len(packs) > 1)
+	triggered := packTriggered(t, len(kept) > 0, packs, m)
+	expired := packExpiredGC(cutoff)
 	for _, p := range packs {
-		if !repack || !cutoff.IsZero() && !p.mtime.Before(cutoff) {
+		if !triggered || !expired(p.mtime) {
 			for _, h := range p.objects {
 				kept[h] = true
 			}
 		}
 	}
-	if !repack {
+	if !triggered {
 		return kept, nil
 	}
-	reachable, err := revlist.Objects(st, wants, nil)
+	_, _, in, err := packSets(st, t)
 	if err != nil {
 		return nil, err
 	}
-	for _, h := range reachable {
+	for h := range in {
 		kept[h] = true
 	}
 	return kept, nil
@@ -382,8 +378,9 @@ func objectsSize(fs billy.Filesystem, path string) (int64, error) {
 	return total, err
 }
 
-// gcGoGit prunes unreachable loose objects, then repacks only when a ref exists and loose objects or several packs remain.
-func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time) error {
+// gcGoGit prunes unreachable loose objects, then repacks when triggered.
+func (r *Repository) gcGoGit(ctx context.Context, cutoff time.Time) error {
+	repo := r.repo
 	err := repo.Prune(git.PruneOptions{OnlyObjectsOlderThan: cutoff, Handler: func(h plumbing.Hash) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -393,71 +390,34 @@ func gcGoGit(ctx context.Context, repo *git.Repository, cutoff time.Time) error 
 	if err != nil {
 		return err
 	}
-	s, ok := repo.Storer.(repackable)
+	if ok, err := r.packScoped(); err != nil || !ok {
+		return err
+	}
+	st, ok := repo.Storer.(packStorer)
 	if !ok {
 		return git.ErrPackedObjectsNotSupported
 	}
-	refs, err := repo.References()
-	if err != nil {
+	snap, err := r.repackSnapshot(ctx, st)
+	if err != nil || !packTriggered(snap.targets, len(snap.loose) > 0, snap.packs, snap.manifest) {
 		return err
 	}
-	var hashRefs, loose bool
-	if err := refs.ForEach(func(ref *plumbing.Reference) error {
-		hashRefs = ref.Type() == plumbing.HashReference
-		if hashRefs {
-			return storer.ErrStop
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := s.ForEachObjectHash(func(plumbing.Hash) error {
-		loose = true
-		return storer.ErrStop
-	}); err != nil {
-		return err
-	}
-	packs, err := s.ObjectPacks()
-	if err != nil {
-		return err
-	}
-	if !hashRefs || (!loose && len(packs) <= 1) {
-		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	// go-git deletes the loose objects it packed before the new pack is published, so a failed publication would lose them.
-	rs := &repackStorer{repackable: s}
-	repack := *repo
-	repack.Storer = rs
-	if err := repack.RepackObjects(&git.RepackConfig{OnlyDeletePacksOlderThan: cutoff}); err != nil {
-		return err
-	}
-	for _, h := range rs.pending {
-		if err := s.DeleteLooseObject(h); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.repackFrom(ctx, st, snap, packExpiredGC(cutoff))
 }
 
-// repackable is everything git.Repository.RepackObjects asks of a storer; DeltaObjectStorer keeps its encoder reusing existing deltas.
-type repackable interface {
-	storage.Storer
-	storer.LooseObjectStorer
-	storer.PackedObjectStorer
-	storer.PackfileWriter
-	storer.DeltaObjectStorer
+// packTriggered is GC's repack condition: a hash ref exists and loose objects remain or the packs are not the canonical layout.
+func packTriggered(t packTargets, loose bool, packs []packInfo, m *packManifest) bool {
+	return t.hashRef && (loose || !packCanonical(packs, m))
 }
 
-// repackStorer holds back the loose deletions of a repack until its pack exists.
-type repackStorer struct {
-	repackable
-	pending []plumbing.Hash
+// packCanonical reports whether the packs are exactly those m names; without a manifest a single pack is left alone.
+func packCanonical(packs []packInfo, m *packManifest) bool {
+	if m == nil {
+		return len(packs) <= 1
+	}
+	return len(packs) == len(m.records()) && !slices.ContainsFunc(packs, func(p packInfo) bool { return !m.names(p.hash) })
 }
 
-func (s *repackStorer) DeleteLooseObject(h plumbing.Hash) error {
-	s.pending = append(s.pending, h)
-	return nil
+// packExpiredGC is GC's pack expiry: every pack without a cutoff, else those older than it.
+func packExpiredGC(cutoff time.Time) func(modTime time.Time) bool {
+	return func(modTime time.Time) bool { return cutoff.IsZero() || modTime.Before(cutoff) }
 }

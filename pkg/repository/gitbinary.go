@@ -336,7 +336,7 @@ func writeReport(output io.Writer, caps *capability.List, rs *packp.ReportStatus
 func (r *Repository) refSnapshot(cmds []*packp.Command) map[plumbing.ReferenceName]plumbing.Hash {
 	snap := make(map[plumbing.ReferenceName]plumbing.Hash, len(cmds))
 	for _, cmd := range cmds {
-		if ref, err := r.repo.Storer.Reference(cmd.Name); err == nil {
+		if ref, err := r.liveRef(cmd.Name); err == nil {
 			snap[cmd.Name] = ref.Hash()
 		}
 	}
@@ -364,6 +364,7 @@ func appliedCommands(cmds []*packp.Command, before, after map[plumbing.Reference
 
 // reindex refreshes go-git's pack list after git wrote objects behind it, evicting the handle when that fails.
 func (r *Repository) reindex() error {
+	r.invalidateRefs()
 	s, ok := r.repo.Storer.(interface{ Reindex() error })
 	if !ok {
 		return nil
